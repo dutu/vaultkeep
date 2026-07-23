@@ -25,7 +25,7 @@ Document status: **v1 design approved; project foundation in progress; product c
 
 Specification revision: **2026-07-23**.
 
-The repository currently contains this specification and IDE metadata. It does not yet contain the Python package, project metadata, tests, examples, systemd units, or installer.
+The repository currently contains this specification, the README user guide, and IDE metadata. It does not yet contain the Python package, project metadata, tests, examples, systemd units, or installer.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -41,7 +41,7 @@ Active v1 scope:
 - local, CIFS-mounted, and NFS-mounted destination filesystems;
 - lifecycle hooks with controlled execution and fixed failure semantics;
 - systemd timer management with deterministic schedule spreading;
-- a root-run Debian installer with atomic virtual-environment upgrades.
+- a root-run Debian installer with versioned releases, atomic updates, rollback, and manifest-driven uninstallation.
 
 Future enhancements, excluded from v1:
 
@@ -66,7 +66,7 @@ Future enhancements, excluded from v1:
 | Lifecycle hooks | v1 | Not implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
 | Systemd scheduling | v1 | Not implemented |
-| Installer and atomic upgrades | v1 | Not implemented |
+| Installer, atomic updates, rollback, and uninstallation | v1 | Not implemented |
 
 Every change that implements, removes, or reclassifies a capability must update this table in the same commit.
 
@@ -107,7 +107,7 @@ A backup contains one or more files and directories. The v1 design includes:
 - scheduled execution through one systemd timer per job;
 - deterministic schedule spreading across machines and jobs;
 - controlled lifecycle hooks for preparation, source quiescing, cleanup, and result notification;
-- Debian installation and atomic upgrades;
+- Debian installation, atomic updates, rollback, and uninstallation;
 - semantic and PEP 440-compatible versioning;
 - modular, testable implementation.
 
@@ -677,10 +677,10 @@ V1 uses one unchanged password for every encrypted backup in a job and destinati
 Each archive has a SHA-256 checksum sidecar:
 
 ```text
-app.tar.zst
-app.tar.zst.sha256
-app.tar.7z
-app.tar.7z.sha256
+backup-app-20260723T090000Z.tar.zst
+backup-app-20260723T090000Z.tar.zst.sha256
+backup-app-20260723T090000Z.tar.7z
+backup-app-20260723T090000Z.tar.7z.sha256
 ```
 
 The checksum must cover the final archive file.
@@ -717,8 +717,7 @@ Example configuration:
 ```yaml
 destination:
   root: /mnt/backups/myapp
-  directory_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}-{backup_id}"
-  archive_template: "{job}.tar.zst"
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 ```
 
 Example result:
@@ -726,17 +725,28 @@ Example result:
 ```text
 /mnt/backups/myapp/
 ├── backup-myapp-20260723T090000Z-550e8400e29b41d4a716446655440000/
-│   ├── myapp.tar.zst
-│   ├── myapp.tar.zst.sha256
-│   └── backup.json
+│   ├── backup-myapp-20260723T090000Z.tar.zst
+│   ├── backup-myapp-20260723T090000Z.tar.zst.sha256
+│   └── backup-myapp-20260723T090000Z.json
 ├── backup-myapp-20260723T130000Z-6ba7b8109dad41d180b400c04fd430c8/
-│   ├── myapp.tar.zst
-│   ├── myapp.tar.zst.sha256
-│   └── backup.json
+│   ├── backup-myapp-20260723T130000Z.tar.zst
+│   ├── backup-myapp-20260723T130000Z.tar.zst.sha256
+│   └── backup-myapp-20260723T130000Z.json
 └── unrelated-directory/
 ```
 
 Unrelated entries must be ignored.
+
+Vaultkeep renders `destination.name_template` once for each new backup and calls the result the **backup base name**. It derives every final name:
+
+```text
+directory: <backup-base-name>-<backup_id>
+archive:   <backup-base-name>.<archive-format>
+checksum:  <backup-base-name>.<archive-format>.sha256
+manifest:  <backup-base-name>.json
+```
+
+`archive-format` is `tar.zst` or `tar.7z`. The backup ID appears only in the directory name because the directory already provides a unique namespace for its files.
 
 ## 11.2 Template fields
 
@@ -749,7 +759,6 @@ V1 template fields are:
 {timestamp_utc}
 {source_hash}
 {format}
-{backup_id}
 ```
 
 Datetime fields use Python `strftime` notation:
@@ -775,12 +784,12 @@ Templates must:
 - not contain null bytes;
 - not contain control characters;
 - not escape the configured destination root;
-- include a timestamp in the effective backup name or directory name;
-- include `{backup_id}` in the v1 directory name.
+- include a timestamp;
+- not contain `{backup_id}`.
 
-`{backup_id}` prevents directory-name collisions when two backups receive the same second-resolution timestamp, the system clock moves backward, or existing backup directories are copied into the destination. It also binds the final directory name to the manifest identity. Vaultkeep never overwrites an existing final directory and never resolves a collision by appending an inferred numeric suffix.
+Vaultkeep appends `-{backup_id}` to the rendered backup base name. The ID prevents directory-name collisions when two backups receive the same second-resolution timestamp, the system clock moves backward, or existing backup directories are copied into the destination. It also binds the final directory name to the manifest identity. Vaultkeep never overwrites an existing final directory and never resolves a collision by appending an inferred numeric suffix.
 
-The backup manifest is authoritative for backup identity and timestamps. Discovery validates that a directory name matches the configured template; it does not reconstruct authoritative metadata from the name.
+The backup manifest is authoritative for backup identity and timestamps. Discovery validates that a directory name matches the configured base-name template plus the fixed backup-ID suffix; it does not reconstruct authoritative metadata from the name.
 
 ## 11.4 Destination discovery
 
@@ -788,10 +797,10 @@ Discovery rules:
 
 1. list only immediate children of the destination root;
 2. ignore hidden temporary entries;
-3. strictly match names against the configured template;
+3. strictly match directory names against the configured base-name template plus `-{backup_id}`;
 4. ignore all nonmatching entries;
-5. for matching backup directories, require the expected files;
-6. validate the manifest;
+5. derive the backup base name and expected `<backup-base-name>.json` manifest path;
+6. validate the manifest and derive the archive and checksum names from its archive format;
 7. return normalized backup records;
 8. warn about malformed matching entries;
 9. never apply retention to unrelated content.
@@ -832,7 +841,7 @@ After writing files, Vaultkeep flushes file data and directory metadata where th
 
 ## 13.1 Backup manifest
 
-Each backup directory contains `backup.json`.
+Each backup directory contains one manifest named `<backup-base-name>.json`.
 
 Example:
 
@@ -843,11 +852,11 @@ Example:
   "application_version": "0.1.0.dev0",
   "backup_id": "019c...",
   "job": "myapp",
-  "created_at": "2026-07-23T09:00:00+03:00",
-  "created_at_utc": "2026-07-23T06:00:00Z",
+  "created_at": "2026-07-23T12:00:00+03:00",
+  "created_at_utc": "2026-07-23T09:00:00Z",
   "source_digest": "sha256:...",
   "config_fingerprint": "sha256:...",
-  "archive": "myapp.tar.zst",
+  "archive": "backup-myapp-20260723T090000Z.tar.zst",
   "archive_digest": "sha256:...",
   "archive_format": "tar.zst",
   "encrypted": false,
@@ -1002,7 +1011,7 @@ A finer tier's configured count is a maximum. The tier retains fewer recovery po
 
 ## 14.3 Participation and deletion safety
 
-Only complete, valid backups recognized through the configured directory template and manifest participate in retention.
+Only complete, valid backups recognized through the configured naming rule and manifest participate in retention.
 
 Vaultkeep ignores unrelated and hidden temporary destination entries. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `list` and `prune --dry-run` still report the complete state.
 
@@ -1200,10 +1209,10 @@ Check cross-field relationships:
 - destination root is absolute;
 - destination is not inside a source;
 - sources do not overlap;
-- `directory_template` is present;
+- `name_template` is present;
 - effective naming includes a timestamp;
 - template placeholders are supported;
-- archive extension matches `tar.zst` or `tar.7z`;
+- `name_template` does not contain `{backup_id}`;
 - `tar.zst` requires `encryption.mode: none` and forbids `password_file`;
 - `tar.7z` requires `encryption.mode: password` and an absolute `password_file`;
 - `archive.compression_level` is an integer in the range for the selected format;
@@ -1274,7 +1283,7 @@ Configuration contains 3 errors:
 1. retention.hourly
    Expected a non-negative integer, received "24".
 
-2. destination.directory_template
+2. destination.name_template
    Unknown placeholder: {date}.
 
 3. logging.levle
@@ -1992,12 +2001,9 @@ destination:
   # Root directory for this job. It is a local, CIFS, or NFS filesystem path.
   root: /mnt/backups/example
 
-  # Every backup is stored in its own directory.
-  directory_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}-{backup_id}"
-
-  # Archive file name inside each backup directory.
-  archive_template: "{job}.tar.zst"
-  # For archive.format tar.7z, use: "{job}.tar.7z"
+  # Vaultkeep derives the directory, archive, checksum, and manifest names
+  # from this shared base. The backup ID is appended only to the directory.
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 
   # Optional marker that must exist below destination.root.
   # marker_file: ".vaultkeep-target"
@@ -2088,19 +2094,25 @@ Future schema versions add fields only when their features are implemented. The 
 
 ## 25. Debian installer
 
-V1 provides an idempotent `install.sh` script.
+V1 provides one idempotent `install.sh` script for installation, updates, and uninstallation.
 
 The installer targets Debian Linux hosts with systemd and uses `apt`.
 
-The supported v1 operating-system matrix is Debian 12 `bookworm` and Debian 13 `trixie`, on architectures for which the required Debian packages are available. Every supported entry must pass the installer, systemd, archive, upgrade, rollback, and restore integration suites before release.
+The installer input is a trusted local source tree containing a complete Vaultkeep release. A GitHub repository clone checked out at a release tag is the normal input; an extracted source-release archive containing the same files is also valid. The installer never clones, fetches, pulls, or modifies the input source tree. It computes the source digest and copies the selected release into `/opt/vaultkeep`.
+
+The supported v1 operating-system matrix is Debian 12 `bookworm` and Debian 13 `trixie`, on architectures for which the required Debian packages are available. Every supported entry must pass the installer, systemd, archive, update, rollback, uninstall, and restore integration suites before release.
 
 Support for `dnf` and `yum` is excluded until a future platform-support milestone explicitly adds and tests those package managers.
 
 ## 25.1 Installation paths
 
 ```text
-/opt/vaultkeep-src
-/opt/vaultkeep-venv-<version>
+/opt/vaultkeep
+/opt/vaultkeep/releases/<version>/src
+/opt/vaultkeep/releases/<version>/venv
+/opt/vaultkeep/releases/<version>/deployment.json
+/opt/vaultkeep/current -> releases/<version>
+/opt/vaultkeep/install-manifest.json
 /etc/vaultkeep
 /etc/vaultkeep/jobs
 /etc/vaultkeep/secrets
@@ -2125,24 +2137,28 @@ The installer performs these operations:
 6. install Debian's `7zip` package and fail when it has no installable candidate;
 7. verify the resolved `python3`, `tar`, `zstd`, `7z`, `findmnt`, `rsync`, `systemctl`, and `systemd-analyze` executables;
 8. run a private temporary compatibility check that creates, tests, lists, and streams a header-encrypted archive while supplying a generated test password through standard input;
-9. synchronize the current checkout into `/opt/vaultkeep-src`;
-10. create a fresh staged versioned virtual environment or verify the matching active deployment;
-11. install the Vaultkeep Python package when a new staged virtual environment is required;
+9. calculate the checkout version and source digest and enforce the selected `install` or `update` mode;
+10. synchronize the checkout into a unique staged release below `/opt/vaultkeep`;
+11. create the staged release's virtual environment and install the Vaultkeep Python package;
 12. create configuration, secrets, state, temporary, and registry locations with the required ownership and permissions;
 13. install the disabled example configuration without activating it or overwriting an existing example;
-14. install the shared systemd service and timer templates;
-15. validate the service template and a synthetic timer instance composed from the timer template and a generated validation drop-in with `systemd-analyze verify`;
-16. run the staged executable with `--version`;
-17. validate the inactive example with the staged executable and `validate --schema-only`;
-18. create or atomically update `/usr/local/bin/vaultkeep`;
-19. run `systemctl daemon-reload`;
-20. run `vaultkeep timers sync` for existing managed jobs;
-21. verify generated timers and report their next activations;
-22. report the installed version and retained rollback version.
+14. validate the staged service template and a synthetic timer instance composed from the staged timer template and a generated validation drop-in with `systemd-analyze verify`;
+15. run the staged executable with `--version`;
+16. validate the inactive example with the staged executable and `validate --schema-only`;
+17. record installed unit contents and timer states, stop active Vaultkeep timers for the commit transaction, and confirm no Vaultkeep backup service is active;
+18. atomically rename the validated staged release to `/opt/vaultkeep/releases/<version>`;
+19. install the shared systemd service and timer templates;
+20. create or atomically switch `/opt/vaultkeep/current` to the candidate release;
+21. create or verify `/usr/local/bin/vaultkeep`;
+22. atomically write `/opt/vaultkeep/install-manifest.json`;
+23. run `systemctl daemon-reload`;
+24. run `vaultkeep timers sync` for existing managed jobs;
+25. verify generated timers, restore their enabled and active states, and report their next activations;
+26. report the installed version and retained rollback version.
 
-It does not run an actual backup automatically during installation.
+It does not run an actual backup automatically during installation or update.
 
-The source synchronization uses `rsync --archive --delete` against the exact validated `/opt/vaultkeep-src` target and excludes `.git`, `.idea`, `.venv`, caches, build output, and runtime secrets. The installer must verify that both the source checkout and resolved target are absolute and that the target equals `/opt/vaultkeep-src` before using deletion.
+The source synchronization uses `rsync --archive --delete` against the exact source directory inside a newly created transaction staging directory below `/opt/vaultkeep`. It excludes `.git`, `.idea`, `.venv`, caches, build output, and runtime secrets. The installer verifies that the checkout and resolved staging target are absolute, the target is a newly created root-owned directory, and the target remains below `/opt/vaultkeep` before using deletion.
 
 The installer creates directories with these minimum restrictions:
 
@@ -2159,27 +2175,63 @@ The installer creates directories with these minimum restrictions:
 
 Existing files below jobs and secrets retain their ownership and modes; insecure existing job configurations and secret files are reported and rejected by runtime validation rather than silently rewritten. The installer never modifies hook executables, and runtime validation rejects insecure ones.
 
-`/opt/vaultkeep-src`, every versioned virtual environment, both systemd templates, and the executable symlink are root-owned and not writable by group or other users.
+`/opt/vaultkeep`, every release, the current-release symlink, the installation manifest, both systemd templates, and the executable symlink are root-owned and not writable by group or other users.
 
-## 25.3 Upgrade safety
+## 25.3 Installer command modes
 
-The installer creates a new versioned virtual environment for every installed application version:
+The same script exposes:
 
-```text
-/opt/vaultkeep-venv-0.6.0
-/usr/local/bin/vaultkeep
-→ /opt/vaultkeep-venv-0.6.0/bin/vaultkeep
+```bash
+sudo ./install.sh install
+sudo ./install.sh install --dry-run
+sudo ./install.sh update
+sudo ./install.sh update --dry-run
 ```
 
-Staging uses a unique root-owned directory below `/opt` that cannot equal an active environment path. The installer writes deployment metadata containing the application version and a digest of the synchronized package source. If the active deployment has the same version and source digest, rerunning the installer verifies and reuses it. If the source digest differs while the version is unchanged, installation fails and requires a version bump.
+`install` creates the first deployment. When the same version and source digest are already active, it performs an idempotent verification and reconciliation. An existing different deployment causes `install` to fail with an instruction to use `update`.
 
-The executable symlink switches only after dependency installation, package installation, staged-executable version verification, example validation, and staged-unit verification succeed.
+`update` requires a valid existing installation manifest. It installs the checkout from which the script is executed and never performs an implicit network fetch. A candidate version newer than the active version creates a new release. An exact version-and-source-digest match performs idempotent verification without a release switch. The same version with a different source digest, an older version, and every other non-upgrade combination are rejected.
 
-The previously active virtual environment remains available for rollback. Failed staging never modifies the active symlink. The installer retains the active version and one preceding version; removal of older versioned environments occurs only after resolving their exact paths below `/opt`.
+`install --dry-run` and `update --dry-run` perform non-mutating preflight, validate the checkout and any existing ownership metadata, and print the dependency, release, symlink, unit, timer, and cleanup plan.
 
-Before replacing installed templates or the executable symlink, the installer records the exact preceding targets and template contents. A failure after the switch restores the preceding symlink, templates, timer registry, generated drop-ins, and enabled states, runs `systemctl daemon-reload`, verifies the restored timers, and exits non-zero. A first installation with no preceding version removes only the files it created during that failed transaction.
+## 25.4 Installation ownership manifest
 
-## 25.4 Config preservation
+The installer atomically maintains:
+
+```text
+/opt/vaultkeep/install-manifest.json
+```
+
+The manifest records the installed application version, source digest, active and retained release paths, current-release symlink, executable symlink, shared unit files, and every other installer-owned file outside the user configuration and application-state trees. Each external artifact record includes its absolute path, file type, ownership, mode, and content digest or symlink target. Generated timer drop-ins remain tracked by `/var/lib/vaultkeep/systemd-instances.json`.
+
+Update, rollback, and uninstall operations parse the manifest with a strict schema and reject unknown fields, non-absolute paths, symlink traversal, and paths outside the fixed v1 installation allowlist. The allowlist is compiled into `install.sh`; manifest contents cannot extend it. Missing or invalid ownership metadata blocks destructive cleanup and produces a diagnostic plan for manual recovery.
+
+## 25.5 Update and rollback safety
+
+The installer creates a complete release for every installed application version:
+
+```text
+/opt/vaultkeep/releases/0.6.0/
+├── src/
+├── venv/
+└── deployment.json
+
+/opt/vaultkeep/current
+→ releases/0.6.0
+
+/usr/local/bin/vaultkeep
+→ /opt/vaultkeep/current/venv/bin/vaultkeep
+```
+
+Staging uses a unique root-owned directory below `/opt/vaultkeep` that cannot equal an active or retained release path. Each release's deployment metadata contains the application version and synchronized-source digest.
+
+The `current` symlink switches only after dependency installation, package installation, staged-executable version verification, example validation, staged-unit verification, and confirmation that no Vaultkeep backup service is active. Before changing unit files or `current`, update mode stops every active Vaultkeep timer while recording its enabled state. It restores timer states only after daemon reload, timer synchronization, and verification succeed. `/usr/local/bin/vaultkeep` remains a stable symlink through `current` and does not change during a normal update.
+
+The complete previously active release remains available for rollback. Failed staging never modifies `current`. The installer retains the active release and one preceding release; removal of older releases occurs only after resolving their exact paths below `/opt/vaultkeep/releases`.
+
+Before replacing installed templates or switching `current`, the installer records the exact preceding targets and template contents. A failed update restores the preceding release symlink, templates, timer registry, generated drop-ins, and enabled states, removes the exact candidate release created by that transaction, runs `systemctl daemon-reload`, verifies the restored timers, and exits non-zero. A first installation with no preceding version removes only the files it created during that failed transaction.
+
+## 25.6 Config preservation
 
 The installer must never overwrite existing job configurations or secrets.
 
@@ -2188,6 +2240,37 @@ Updated examples are installed under a versioned or `.new` name.
 It must not silently rewrite user configuration.
 
 Configuration migration belongs in explicit application commands, not automatic installer edits, unless the migration is narrowly defined and safe.
+
+## 25.7 Uninstallation
+
+The same installer provides three uninstall modes:
+
+```bash
+sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
+sudo /opt/vaultkeep/current/src/install.sh uninstall
+sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
+```
+
+`uninstall --dry-run` validates ownership metadata and prints every service action and filesystem path without changing the system.
+
+`uninstall`:
+
+1. requires root and acquires the installer lock;
+2. validates the installation manifest and timer ownership registry;
+3. refuses to proceed while a Vaultkeep backup service is running;
+4. disables every timer instance owned by Vaultkeep;
+5. removes owned timer drop-ins and their empty instance directories;
+6. removes the shared service and timer templates;
+7. removes `/usr/local/bin/vaultkeep` only when it is the recorded Vaultkeep symlink;
+8. removes the validated `/opt/vaultkeep` application tree;
+9. removes `/var/lib/vaultkeep/tmp` and `/var/lib/vaultkeep/systemd-instances.json`;
+10. reloads systemd and reports preserved data.
+
+The normal uninstall preserves `/etc/vaultkeep`, including job configurations and secrets, and preserves `/var/lib/vaultkeep/jobs` so a reinstall retains local operational history. It never removes backup destinations or hook executables. Debian packages installed as prerequisites remain installed because they can be shared by other applications.
+
+`uninstall --purge` performs the normal uninstall and then removes the exact `/etc/vaultkeep` and `/var/lib/vaultkeep` trees. The explicit `--purge` flag is the authorization boundary for deleting configurations, secrets, and local state. Purge still never accesses or deletes configured backup destinations.
+
+The uninstall implementation copies its required routine into a root-owned private temporary directory before deleting `/opt/vaultkeep`, removes the temporary copy on exit, and reports every preserved, removed, skipped, or ownership-conflicting path. A path whose current type, ownership, mode, content digest, or symlink target conflicts with the recorded installation is preserved and reported instead of deleted.
 
 ---
 
@@ -2242,6 +2325,7 @@ symlink handling
 cross-filesystem behavior
 deterministic source hashing
 template rendering
+derived directory, archive, checksum, and manifest naming
 destination discovery
 manifest parsing
 atomic finalization
@@ -2275,6 +2359,8 @@ hook environment isolation
 hook timeout and process-group termination
 hook output bounds and failure precedence
 installer staging and rollback
+installation-manifest validation
+uninstall and purge planning
 CLI exit codes
 version output
 ```
@@ -2338,7 +2424,7 @@ V1 integration suites cover:
 - real hook executables covering success, non-zero exit, timeout, signal, in-group descendant cleanup, and bounded output;
 - systemd service and timer templates;
 - timer installation, persistence, disablement, and removal;
-- installer execution and upgrade rollback on supported Debian releases.
+- installer execution, update rollback, uninstall preservation, and purge on supported Debian releases.
 
 Real-tool local-filesystem tests run in continuous integration. CIFS, NFS, systemd, and full installer suites can require an explicit Debian VM or container environment, but passing them on every supported Debian release is a v1 release gate.
 
@@ -2369,6 +2455,7 @@ Encrypted-archive integration tests inspect `/proc/<pid>/cmdline` and the captur
 - Remove local plaintext TAR files before the destination commit point and report any cleanup failure.
 - Validate generated systemd instance names and modify only files recorded in the ownership registry.
 - Resolve and verify every destructive installer target before synchronization or old-version cleanup.
+- Validate the installation manifest against a fixed allowlist before uninstall and preserve ownership-conflicting paths.
 - Treat hook configuration as root-code configuration: require secure config and executable ownership and modes.
 - Execute hooks without a shell, inherited environment, inherited standard input, or password-related context.
 - Terminate and reap the complete hook process group on timeout or Vaultkeep cancellation.
@@ -2471,14 +2558,14 @@ The v1 decisions are closed:
 1. YAML is parsed as YAML 1.2 with `ruamel.yaml` safe, pure-Python loading and validated with strict Pydantic v2 models.
 2. Exclusions use the documented GitWildMatch subset without negation.
 3. TAR preserves modification times, while the source digest excludes modification time. ACLs, extended attributes, and SELinux attributes are excluded.
-4. Every backup uses its own directory and contains `backup.json`.
+4. Every backup uses its own backup-ID-suffixed directory; its archive, checksum, and JSON manifest share the rendered base name without the backup ID.
 5. V1 lifecycle hooks are `before_check`, `before_archive`, `after_archive`, `on_success`, `on_failure`, and `on_unchanged`; they use direct argument-list execution, a controlled environment, bounded output, timeouts, and fixed failure semantics.
 6. A matching but malformed backup blocks destructive pruning and is never automatically deleted.
 7. A source change during hashing or archiving fails immediately without an automatic retry.
 8. Scheduling uses one systemd timer instance per job, native calendar timers, persistent catch-up, and deterministic fixed random delay for configured windows.
 9. Debian is the only v1 target.
 10. V1 archive formats are unencrypted `.tar.zst` and password-protected `.tar.7z` containing one inner TAR.
-11. V1 installation uses the root-run Debian `install.sh`, versioned virtual environments, atomic executable-symlink replacement, and a retained rollback version.
+11. V1 installation and updates use the root-run Debian `install.sh`, complete versioned releases, an atomic `current` symlink switch, and one retained rollback release.
 12. Retention evaluates enabled tiers from yearly through hourly, and each selected coarser tier limits how far back the next enabled finer tier can retain backups.
 13. Local state is a disposable cache; missing or unusable state is reconstructed automatically from valid destination manifests and never blocks execution by itself.
 
@@ -2590,11 +2677,14 @@ Status: **Not started**.
 - [ ] Debian, root, systemd, and package preflight;
 - [ ] dependency installation and executable verification;
 - [ ] safe checkout synchronization;
-- [ ] versioned virtual-environment staging;
+- [ ] explicit install and update modes with non-mutating dry-run plans;
+- [ ] complete versioned-release staging;
 - [ ] configuration, secret, state, and temporary directories;
 - [ ] inactive example configuration;
 - [ ] systemd template installation and verification;
-- [ ] atomic executable-symlink switch and rollback;
+- [ ] atomic current-release switch and rollback;
+- [ ] strict installation ownership manifest;
+- [ ] uninstall dry-run, preservation, and purge modes;
 - [ ] post-install version, schema, timer, and daemon-reload validation.
 
 ### Milestone 10 — V1 hardening and release
@@ -2634,7 +2724,7 @@ V1 Vaultkeep is designed as:
 - count-based and calendar-bucketed for hourly/daily/weekly/monthly/yearly retention with coarser-tier horizons limiting finer-tier selections;
 - equipped with controlled lifecycle hooks for preparation, source quiescing, cleanup, and result notification;
 - equipped with helper commands for timer installation, updates, status, next-run reporting, disabling, removal, validation, and synchronization;
-- installed and upgraded by an idempotent root-run Debian installer with an atomic executable switch and retained rollback version;
+- installed, updated, and uninstalled by an idempotent root-run Debian installer with an atomic current-release switch, retained rollback release, ownership manifest, non-mutating update and removal plans, and explicit purge mode;
 - modular and extensively testable;
 - conservative about deletion and partial failures.
 
