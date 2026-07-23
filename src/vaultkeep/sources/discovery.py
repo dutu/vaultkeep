@@ -93,7 +93,14 @@ def _walk(
         return
 
     link_target = os.readlink(path) if entry_type is SourceEntryType.SYMLINK else None
-    yield _source_entry(path, source_index, entry_type, effective_stat, link_target)
+    yield _source_entry(
+        path,
+        source_index,
+        entry_type,
+        effective_stat,
+        link_target,
+        followed_symlink=is_link and follow_symlinks,
+    )
 
     if not is_directory:
         return
@@ -144,6 +151,8 @@ def _source_entry(
     entry_type: SourceEntryType,
     status: os.stat_result,
     link_target: str | None,
+    *,
+    followed_symlink: bool,
 ) -> SourceEntry:
     return SourceEntry(
         absolute_path=path,
@@ -155,7 +164,10 @@ def _source_entry(
         device=status.st_dev,
         inode=status.st_ino,
         size=status.st_size,
+        mtime_ns=status.st_mtime_ns,
+        ctime_ns=status.st_ctime_ns,
         link_target=link_target,
+        followed_symlink=followed_symlink,
         source_index=source_index,
     )
 

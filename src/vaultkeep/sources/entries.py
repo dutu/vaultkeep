@@ -29,7 +29,10 @@ class SourceEntry:
     device: int
     inode: int
     size: int
+    mtime_ns: int
+    ctime_ns: int
     link_target: str | None
+    followed_symlink: bool
     source_index: int
 
     @property

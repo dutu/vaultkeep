@@ -57,3 +57,19 @@ class ConfigurationError(VaultkeepError):
 
 class SourceDiscoveryError(VaultkeepError):
     """Source traversal cannot produce a valid immutable snapshot."""
+
+
+class SourceHashError(VaultkeepError):
+    """Source content cannot be hashed."""
+
+
+class SourceChangedError(SourceHashError):
+    """A source entry changed after discovery or during hashing."""
+
+
+class StateError(VaultkeepError):
+    """Local state cannot be safely reconciled or persisted."""
+
+
+class CredentialContinuityError(StateError):
+    """Encrypted-backup credential continuity cannot be established."""

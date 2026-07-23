@@ -21,11 +21,11 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestones 1 and 2 implemented; hashing, archive, destination, retention, workflow, hook execution, scheduling, and installer capabilities not implemented**.
+Document status: **v1 design approved; Milestones 1 through 3 implemented; archive, destination, retention, workflow, hook execution, scheduling, and installer capabilities not implemented**.
 
 Specification revision: **2026-07-23**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, unit tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Source hashing, archive creation, operational commands, runtime validation, systemd units, release integration tests, and the installer are not implemented.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, unit tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Archive creation, destination-manifest discovery, operational commands, runtime validation, systemd units, release integration tests, and the installer are not implemented.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -56,10 +56,10 @@ Future enhancements, excluded from v1:
 |---|---|---|
 | Package, PEP 440 version, and development quality gates | v1 | Implemented |
 | Strict YAML 1.2 configuration | v1 | Implemented — runtime environment validation remains part of later workflows |
-| Source discovery, exclusions, and hashing | v1 | Partially implemented — discovery and exclusions complete; hashing not implemented |
+| Source discovery, exclusions, and hashing | v1 | Implemented |
 | `.tar.zst` archive creation and verification | v1 | Not implemented |
 | Per-backup-directory destination and manifests | v1 | Not implemented |
-| Local state reconciliation and unchanged detection | v1 | Not implemented |
+| Local state reconciliation and unchanged detection | v1 | Implemented — consumes validated destination records supplied by the later destination-manifest capability |
 | Count-based retention and dry-run pruning | v1 | Not implemented |
 | Manual CLI and operational reporting | v1 | Partially implemented — version reporting complete; operational commands not implemented |
 | CIFS and NFS release validation | v1 | Not implemented |
@@ -531,9 +531,13 @@ Entries must be sorted deterministically before digest calculation.
 
 The digest encoding is versioned and collision-safe. Every field is type-tagged and length-prefixed before hashing. The digest includes the digest-format version and the source-entry type; it does not rely on ambiguous concatenation.
 
+Digest format version 1 uses SHA-256. Every field is framed as a two-byte big-endian tag length, the ASCII tag, an eight-byte big-endian payload length, and the payload. Integer fields use unsigned eight-byte big-endian values. Regular-file content is streamed directly as one framed payload. Paths and symbolic-link targets use Python's lossless filesystem encoding. The external representation is `sha256:<64 lowercase hexadecimal characters>`.
+
 The same immutable `SourceSnapshot` entry list drives hashing and archive creation. Archive tools must not independently recurse through source directories.
 
 Vaultkeep also calculates a backup-relevant configuration fingerprint. It includes source paths, exclusions, source options, destination identity, archive format, encryption mode, password-file path, and metadata policy. It excludes password contents, logging, retention counts, hooks, and scheduling. A changed fingerprint forces a new backup even when the source digest is unchanged.
+
+Configuration fingerprint format version 1 uses canonical, key-sorted JSON and SHA-256. Destination identity includes the root, naming template, marker path, and mount requirement. Archive identity includes the format and compression level. The fixed metadata-policy identifier records that mode, numeric user ID, and numeric group ID participate in source hashing.
 
 For password-protected jobs, Vaultkeep also records a local credential-generation fingerprint containing the password file's device, inode, size, nanosecond modification time, and nanosecond change time. This local fingerprint is never copied into a destination manifest and never contains a digest of the password.
 
@@ -906,20 +910,16 @@ State path:
 
 `job-identity-hash` is the first 16 hexadecimal characters of SHA-256 over the canonical configuration path, a null separator, and the normalized job ID.
 
-State includes:
+The implementation encodes the canonical configuration path with Python's lossless filesystem encoding, appends one null byte, and appends the exact validated ASCII job ID before hashing.
 
-- state format version;
-- last successful source digest;
-- last successful configuration fingerprint;
-- current established local credential-generation fingerprint for password-protected jobs;
-- last successful backup ID;
-- last successful backup timestamp;
-- last backup path;
+State format version 1 contains:
+
+- job ID and job-identity hash;
+- `last_successful_backup`, containing the source digest, configuration fingerprint, backup ID, creation timestamp, backup path, and creating application version, or null;
+- the current established local credential-generation fingerprint for password-protected jobs, or null;
 - `last_unchanged_at_utc`, or null when no unchanged run has confirmed the current last successful backup;
-- last result;
-- last run timestamp and result, stored separately from the last successful backup;
-- last-run hook phase, duration, exit, timeout, and truncation outcomes without captured output;
-- application version.
+- `last_run`, containing its UTC timestamp, `created`, `unchanged`, or `failed` result, and hook phase, duration, exit, timeout, and truncation outcomes without captured output, or null;
+- the application version that last wrote the operational state.
 
 State updates must be atomic.
 
@@ -950,6 +950,8 @@ When no valid destination backup exists, Vaultkeep initializes empty local state
 State absence never causes failure by itself. Independent safety failures still block execution, including an unavailable or unreadable destination, an unwritable state directory, or failure to establish encrypted credential continuity.
 
 Reconstruction never modifies a destination archive or manifest. The run reports that local state was reconstructed.
+
+The Milestone 3 reconstruction API consumes typed `BackupStateRecord` values containing facts from already validated destination manifests. Milestone 5 implements manifest parsing and destination discovery that produce those records. This boundary keeps local-state recovery independent from destination scanning and does not treat unvalidated JSON as a recovery source.
 
 ---
 
@@ -2640,14 +2642,14 @@ Status: **Complete**.
 
 ### Milestone 3 — Hashing and state
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] full-content digest;
-- [ ] metadata policy;
-- [ ] local job state;
-- [ ] automatic missing, corrupt, incompatible, and stale state reconstruction;
-- [ ] unchanged detection;
-- [ ] atomic state writes.
+- [x] full-content digest;
+- [x] metadata policy;
+- [x] local job state;
+- [x] automatic missing, corrupt, incompatible, and stale state reconstruction;
+- [x] unchanged detection;
+- [x] atomic state writes.
 
 ### Milestone 4 — V1 archive creation
 
