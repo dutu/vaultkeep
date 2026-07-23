@@ -214,6 +214,29 @@ Reasons:
 
 Bash is appropriate only for installation and small operational wrappers.
 
+V1 uses the default CPython supplied by each supported Debian release:
+
+```text
+Debian 12 bookworm: Python 3.11
+Debian 13 trixie:   Python 3.13
+```
+
+`pyproject.toml` declares `requires-python = ">=3.11"`. Production code remains compatible with Python 3.11, and continuous integration runs the complete Python test suite on 3.11 and 3.13. The CLI uses the standard-library `argparse` module.
+
+V1 runtime dependency ranges are:
+
+```text
+pydantic >=2.10,<3
+ruamel.yaml >=0.18.16,<0.19
+pathspec >=0.12.1,<1
+```
+
+The `pathspec` upper bound preserves the v1 GitWildMatch contract. The `ruamel.yaml` upper bound preserves the reviewed 0.18 safe-loader API and pure-Python behavior. Hatchling `>=1.26,<2` is the build backend.
+
+Every release contains a fully resolved `requirements.lock` with hashes for every supported Python and machine-architecture combination. The installer installs that lock with hash verification and installs Vaultkeep with `--no-deps --no-build-isolation`. A dependency update requires a new Vaultkeep version and the complete release test matrix.
+
+Development uses Ruff for linting and formatting, mypy in strict mode for static type checking, and pytest with pytest-cov for tests and coverage reporting. Development dependencies are locked separately in `requirements-dev.lock` and are never installed by the production installer.
+
 ## 5.2 External utilities
 
 Vaultkeep orchestrates established system tools instead of reimplementing archive formats.
@@ -499,7 +522,7 @@ V1 metadata excluded from the digest:
 
 - access time;
 - change time;
-- modification time, unless configured otherwise.
+- modification time.
 
 Identical file contents and relevant metadata produce the same digest regardless of traversal order.
 
@@ -850,7 +873,7 @@ Example:
   "manifest_version": 1,
   "application": "vaultkeep",
   "application_version": "0.1.0.dev0",
-  "backup_id": "019c...",
+  "backup_id": "550e8400e29b41d4a716446655440000",
   "job": "myapp",
   "created_at": "2026-07-23T12:00:00+03:00",
   "created_at_utc": "2026-07-23T09:00:00Z",
@@ -2139,7 +2162,7 @@ The installer performs these operations:
 8. run a private temporary compatibility check that creates, tests, lists, and streams a header-encrypted archive while supplying a generated test password through standard input;
 9. calculate the checkout version and source digest and enforce the selected `install` or `update` mode;
 10. synchronize the checkout into a unique staged release below `/opt/vaultkeep`;
-11. create the staged release's virtual environment and install the Vaultkeep Python package;
+11. create the staged release's virtual environment, install the hashed dependency lock, and install the Vaultkeep Python package with dependency resolution disabled;
 12. create configuration, secrets, state, temporary, and registry locations with the required ownership and permissions;
 13. install the disabled example configuration without activating it or overwriting an existing example;
 14. validate the staged service template and a synthetic timer instance composed from the staged timer template and a generated validation drop-in with `systemd-analyze verify`;
@@ -2281,11 +2304,17 @@ V1 repository layout:
 ```text
 vaultkeep/
 ├── pyproject.toml
+├── requirements.lock
+├── requirements-dev.lock
+├── .gitignore
 ├── README.md
-├── DESIGN.md
+├── architecture_and_design.md
 ├── LICENSE
 ├── CHANGELOG.md
 ├── install.sh
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 ├── src/
 │   └── vaultkeep/
 ├── tests/
@@ -2301,7 +2330,7 @@ vaultkeep/
 └── docs/
 ```
 
-This document remains the authoritative design file. A future rename to `DESIGN.md` must update every repository reference in the same change.
+`architecture_and_design.md` remains the authoritative design and implementation specification.
 
 ---
 
@@ -2310,6 +2339,8 @@ This document remains the authoritative design file. A future rename to `DESIGN.
 Use `pytest`.
 
 Testing must mirror the modular design.
+
+Every continuous-integration run executes Ruff format checking, Ruff linting, strict mypy, and pytest. Release integration gates remain additional to these per-commit checks.
 
 Core test areas:
 
@@ -2582,10 +2613,15 @@ Status: **In progress**.
 - [x] create repository;
 - [x] approve the v1 architecture and scope;
 - [ ] define `pyproject.toml`;
+- [ ] set the Python 3.11 baseline and runtime dependency ranges;
+- [ ] generate the hashed release dependency lock;
+- [ ] generate the development dependency lock;
 - [ ] add PEP 440 version;
 - [ ] implement `vaultkeep --version`;
 - [ ] establish package layout;
-- [ ] add linting and tests;
+- [ ] add the root `.gitignore`;
+- [ ] configure Ruff, strict mypy, pytest, and pytest-cov;
+- [ ] add Python 3.11 and 3.13 continuous-integration jobs;
 - [ ] add strict config models.
 
 ### Milestone 2 — Validation and source discovery

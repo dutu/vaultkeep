@@ -76,7 +76,7 @@ Installation requires:
 - root access;
 - systemd as the active system manager;
 - a trusted local Vaultkeep source tree, normally a clone of the GitHub repository checked out at the intended release tag;
-- configured Debian package repositories;
+- network access to configured Debian package repositories and the Python package index;
 - an existing backup destination or mounted share.
 
 The installer installs:
@@ -95,7 +95,7 @@ Legacy `p7zip-full` is not used.
 Clone the repository and select the release to install:
 
 ```bash
-git clone <vaultkeep-repository-url> /path/to/vaultkeep
+git clone https://github.com/dutu/vaultkeep.git /path/to/vaultkeep
 cd /path/to/vaultkeep
 git checkout <release-tag>
 ```
