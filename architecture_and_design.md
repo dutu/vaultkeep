@@ -21,11 +21,11 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestone 1 project foundation implemented; backup product capabilities not implemented**.
+Document status: **v1 design approved; Milestones 1 and 2 implemented; hashing, archive, destination, retention, workflow, hook execution, scheduling, and installer capabilities not implemented**.
 
 Specification revision: **2026-07-23**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, strict schema-v1 configuration models, the `vaultkeep --version` command, unit tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Archive creation, operational commands, YAML loading and semantic validation, systemd units, integration tests, and the installer are not implemented.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, unit tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Source hashing, archive creation, operational commands, runtime validation, systemd units, release integration tests, and the installer are not implemented.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -55,8 +55,8 @@ Future enhancements, excluded from v1:
 | Capability | Release classification | Implementation status |
 |---|---|---|
 | Package, PEP 440 version, and development quality gates | v1 | Implemented |
-| Strict YAML 1.2 configuration | v1 | Partially implemented — strict models and example-model test complete; YAML loading and semantic validation not implemented |
-| Source discovery, exclusions, and hashing | v1 | Not implemented |
+| Strict YAML 1.2 configuration | v1 | Implemented — runtime environment validation remains part of later workflows |
+| Source discovery, exclusions, and hashing | v1 | Partially implemented — discovery and exclusions complete; hashing not implemented |
 | `.tar.zst` archive creation and verification | v1 | Not implemented |
 | Per-backup-directory destination and manifests | v1 | Not implemented |
 | Local state reconciliation and unchanged detection | v1 | Not implemented |
@@ -2629,14 +2629,14 @@ Status: **Complete**.
 
 ### Milestone 2 — Validation and source discovery
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] YAML duplicate-key rejection;
-- [ ] strict unknown-field validation;
-- [ ] semantic checks;
-- [ ] source traversal;
-- [ ] exclusions;
-- [ ] deterministic source entries.
+- [x] YAML duplicate-key rejection;
+- [x] strict unknown-field validation;
+- [x] semantic checks;
+- [x] source traversal;
+- [x] exclusions;
+- [x] deterministic source entries.
 
 ### Milestone 3 — Hashing and state
 

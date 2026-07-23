@@ -39,9 +39,9 @@ class SourceConfig(StrictConfigModel):
 class SourceOptionsConfig(StrictConfigModel):
     """Source traversal behavior."""
 
-    follow_symlinks: bool
-    cross_filesystems: bool
-    ignore_missing: bool
+    follow_symlinks: bool = False
+    cross_filesystems: bool = False
+    ignore_missing: bool = False
 
 
 class DestinationConfig(StrictConfigModel):
@@ -85,7 +85,7 @@ class ScheduleConfig(StrictConfigModel):
     window: NonEmptyString | None = None
     at: NonEmptyString | None = None
     day: MonthDay | NonEmptyString | None = None
-    persistent: bool
+    persistent: bool = True
 
 
 class HookConfig(StrictConfigModel):

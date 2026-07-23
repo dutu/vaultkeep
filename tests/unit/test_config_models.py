@@ -8,56 +8,10 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from ruamel.yaml import YAML
 
-from vaultkeep.config import JobConfig
+from vaultkeep.config import JobConfig, load_config
 
 EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.disabled"
-
-
-@pytest.fixture
-def valid_config() -> dict[str, Any]:
-    """Return a complete valid schema-v1 configuration mapping."""
-    return {
-        "config_version": 1,
-        "job": {"id": "app"},
-        "sources": [{"path": "/srv/app", "exclude": ["cache/"]}],
-        "exclude": ["*.tmp"],
-        "source_options": {
-            "follow_symlinks": False,
-            "cross_filesystems": False,
-            "ignore_missing": False,
-        },
-        "destination": {
-            "root": "/mnt/backups/app",
-            "name_template": "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}",
-            "require_mount": True,
-        },
-        "archive": {"format": "tar.zst", "compression_level": 6},
-        "encryption": {"mode": "none"},
-        "retention": {
-            "hourly": 24,
-            "daily": 7,
-            "weekly": 8,
-            "monthly": 12,
-            "yearly": 3,
-        },
-        "schedule": {
-            "enabled": False,
-            "interval": "daily",
-            "window": "01:00-05:00",
-            "persistent": True,
-        },
-        "hooks": {
-            "before_check": None,
-            "before_archive": None,
-            "after_archive": None,
-            "on_success": None,
-            "on_failure": None,
-            "on_unchanged": None,
-        },
-        "logging": {"level": "info", "include_command_output": False},
-    }
 
 
 def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> None:
@@ -69,11 +23,7 @@ def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> Non
 
 
 def test_disabled_example_matches_strict_models() -> None:
-    yaml = YAML(typ="safe", pure=True)
-    yaml.version = (1, 2)
-    yaml.allow_duplicate_keys = False
-
-    config = JobConfig.model_validate(yaml.load(EXAMPLE_CONFIG))
+    config = load_config(EXAMPLE_CONFIG)
 
     assert config.job.id == "example"
     assert config.schedule.enabled is False
@@ -139,3 +89,16 @@ def test_models_are_immutable(valid_config: dict[str, Any]) -> None:
 
     with pytest.raises(ValidationError, match="Instance is frozen"):
         config.job.id = "changed"
+
+
+def test_documented_defaults_are_applied(valid_config: dict[str, Any]) -> None:
+    candidate = deepcopy(valid_config)
+    candidate["source_options"] = {}
+    candidate["schedule"].pop("persistent")
+
+    config = JobConfig.model_validate(candidate)
+
+    assert config.source_options.follow_symlinks is False
+    assert config.source_options.cross_filesystems is False
+    assert config.source_options.ignore_missing is False
+    assert config.schedule.persistent is True

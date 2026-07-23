@@ -1,5 +1,6 @@
 """Configuration types."""
 
+from vaultkeep.config.loader import load_config
 from vaultkeep.config.models import (
     ArchiveConfig,
     DestinationConfig,
@@ -28,4 +29,5 @@ __all__ = [
     "ScheduleConfig",
     "SourceConfig",
     "SourceOptionsConfig",
+    "load_config",
 ]
