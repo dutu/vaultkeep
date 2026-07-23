@@ -125,3 +125,7 @@ class RetentionError(DestinationError):
 
 class PruneError(DestinationError):
     """A destination backup cannot be safely removed."""
+
+
+class HookError(VaultkeepError):
+    """A lifecycle hook cannot be validated or executed successfully."""

@@ -6,7 +6,13 @@ import sys
 from collections.abc import Sequence
 
 from vaultkeep.cli.parser import create_parser
-from vaultkeep.errors import ConfigurationError, DestinationError, StateError, VaultkeepError
+from vaultkeep.errors import (
+    ConfigurationError,
+    DestinationError,
+    HookError,
+    StateError,
+    VaultkeepError,
+)
 from vaultkeep.version import installed_version
 from vaultkeep.workflow import list_backups, prune_backups, run_backup, validate_job, verify_backups
 
@@ -43,6 +49,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except DestinationError as error:
         print(error, file=sys.stderr)
         return 5
+    except HookError as error:
+        print(error, file=sys.stderr)
+        return 11
     except VaultkeepError as error:
         print(error, file=sys.stderr)
         return 7

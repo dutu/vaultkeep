@@ -21,7 +21,7 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestones 1 through 6 implemented; hook execution, scheduling, and installer capabilities not implemented**.
+Document status: **v1 design approved; Milestones 1 through 7 implemented; scheduling and installer capabilities not implemented**.
 
 Specification revision: **2026-07-23**.
 
@@ -61,10 +61,10 @@ Future enhancements, excluded from v1:
 | Per-backup-directory destination and manifests | v1 | Implemented — workflow integration and CLI reporting remain part of later work |
 | Local state reconciliation and unchanged detection | v1 | Implemented — consumes validated destination records supplied by the later destination-manifest capability |
 | Count-based retention and dry-run pruning | v1 | Implemented — command exposure remains part of the manual CLI workflow |
-| Manual CLI and operational reporting | v1 | Implemented — lifecycle hooks remain part of the later hook capability |
+| Manual CLI and operational reporting | v1 | Implemented |
 | CIFS and NFS release validation | v1 | Not implemented |
 | Password-protected `.tar.7z` | v1 | Implemented |
-| Lifecycle hooks | v1 | Not implemented |
+| Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
 | Systemd scheduling | v1 | Not implemented |
 | Installer, atomic updates, rollback, and uninstallation | v1 | Not implemented |
@@ -2689,16 +2689,16 @@ Status: **Complete**.
 
 ### Milestone 7 — Lifecycle hooks
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] strict hook configuration models;
-- [ ] executable ownership, mode, path, and runtime validation;
-- [ ] direct subprocess execution with a fixed environment;
-- [ ] phase ordering and guaranteed `after_archive` attempts;
-- [ ] timeout and process-group termination;
-- [ ] bounded output capture and logging controls;
-- [ ] failure precedence, exit-code mapping, and state reporting;
-- [ ] unit and real-process integration tests.
+- [x] strict hook configuration models;
+- [x] executable ownership, mode, path, and runtime validation;
+- [x] direct subprocess execution with a fixed environment;
+- [x] phase ordering and guaranteed `after_archive` attempts;
+- [x] timeout and process-group termination;
+- [x] bounded output capture and logging controls;
+- [x] failure precedence, exit-code mapping, and state reporting;
+- [x] unit and real-process integration tests.
 
 ### Milestone 8 — Scheduling and systemd
 
