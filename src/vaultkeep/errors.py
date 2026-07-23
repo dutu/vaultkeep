@@ -105,3 +105,23 @@ class DestinationFinalizeError(DestinationError):
 
 class DestinationCommitDurabilityError(DestinationFinalizeError):
     """The backup was committed but the destination-directory flush failed."""
+
+
+class DestinationTemplateError(DestinationError):
+    """A destination naming template cannot produce a safe backup name."""
+
+
+class ManifestError(DestinationError):
+    """A backup manifest cannot be created or validated safely."""
+
+
+class DestinationDiscoveryError(DestinationError):
+    """The destination root cannot be inspected safely."""
+
+
+class RetentionError(DestinationError):
+    """A complete retention plan cannot be calculated."""
+
+
+class PruneError(DestinationError):
+    """A destination backup cannot be safely removed."""

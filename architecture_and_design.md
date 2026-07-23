@@ -21,11 +21,11 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestones 1 through 4 implemented; destination discovery, manifests, retention, workflow, hook execution, scheduling, and installer capabilities not implemented**.
+Document status: **v1 design approved; Milestones 1 through 5 implemented; workflow, hook execution, scheduling, and installer capabilities not implemented**.
 
 Specification revision: **2026-07-23**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, unit tests, real-tool Linux integration tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Destination-manifest discovery, operational commands, complete runtime validation, systemd units, release-environment integration tests, and the installer are not implemented.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, unit tests, real-tool Linux integration tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Operational commands, complete runtime validation, systemd units, release-environment integration tests, and the installer are not implemented.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -58,9 +58,9 @@ Future enhancements, excluded from v1:
 | Strict YAML 1.2 configuration | v1 | Implemented — runtime environment validation remains part of later workflows |
 | Source discovery, exclusions, and hashing | v1 | Implemented |
 | `.tar.zst` archive creation and verification | v1 | Implemented |
-| Per-backup-directory destination and manifests | v1 | Not implemented |
+| Per-backup-directory destination and manifests | v1 | Implemented — workflow integration and CLI reporting remain part of later work |
 | Local state reconciliation and unchanged detection | v1 | Implemented — consumes validated destination records supplied by the later destination-manifest capability |
-| Count-based retention and dry-run pruning | v1 | Not implemented |
+| Count-based retention and dry-run pruning | v1 | Implemented — command exposure remains part of the manual CLI workflow |
 | Manual CLI and operational reporting | v1 | Partially implemented — version reporting complete; operational commands not implemented |
 | CIFS and NFS release validation | v1 | Not implemented |
 | Password-protected `.tar.7z` | v1 | Implemented |
@@ -2668,15 +2668,15 @@ Status: **Complete**.
 
 ### Milestone 5 — Destination discovery and retention
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] naming templates;
-- [ ] manifests;
-- [ ] valid backup discovery;
-- [ ] count-based calendar-bucket retention;
-- [ ] cascading coarser-tier retention horizons;
-- [ ] dry-run prune;
-- [ ] safe deletion.
+- [x] naming templates;
+- [x] manifests;
+- [x] valid backup discovery;
+- [x] count-based calendar-bucket retention;
+- [x] cascading coarser-tier retention horizons;
+- [x] dry-run prune planning;
+- [x] safe deletion.
 
 ### Milestone 6 — Complete v1 workflow and CLI
 
