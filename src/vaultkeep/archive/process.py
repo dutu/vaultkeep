@@ -83,7 +83,8 @@ def run_command(
             _failure_message(
                 command,
                 result,
-                redact_diagnostic=sensitive_input or terminal_input is not None,
+                redact_diagnostic=sensitive_input,
+                redacted_values=(bytes(terminal_input),) if terminal_input is not None else (),
             )
         )
     return result
@@ -176,7 +177,10 @@ def run_pipeline(
             _failure_message(
                 producer_command,
                 producer_result,
-                redact_diagnostic=producer_input_sensitive or producer_terminal_input is not None,
+                redact_diagnostic=producer_input_sensitive,
+                redacted_values=(bytes(producer_terminal_input),)
+                if producer_terminal_input is not None
+                else (),
             )
         )
     if consumer_result.returncode != 0:
@@ -310,10 +314,15 @@ def _failure_message(
     result: CommandResult,
     *,
     redact_diagnostic: bool = False,
+    redacted_values: tuple[bytes, ...] = (),
 ) -> str:
     if redact_diagnostic:
         summary = "diagnostic output withheld because the command received secret input"
     else:
-        diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
+        diagnostic_bytes = result.stderr
+        for value in redacted_values:
+            diagnostic_bytes = diagnostic_bytes.replace(value, b"<redacted>")
+            diagnostic_bytes = diagnostic_bytes.replace(value.rstrip(b"\n"), b"<redacted>")
+        diagnostic = diagnostic_bytes.decode("utf-8", errors="replace").strip()
         summary = diagnostic or "no diagnostic output"
     return f"Archive tool {command[0]} exited with status {result.returncode}: {summary}"
