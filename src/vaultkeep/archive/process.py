@@ -222,7 +222,8 @@ class _SecretTerminal:
             import termios as imported_termios
 
             terminal_api: Any = imported_termios
-            master, slave = os.openpty()  # type: ignore[attr-defined]
+            open_pty: Any = vars(os)["openpty"]
+            master, slave = open_pty()
             settings = terminal_api.tcgetattr(slave)
             settings[3] &= ~terminal_api.ECHO
             terminal_api.tcsetattr(slave, terminal_api.TCSANOW, settings)
