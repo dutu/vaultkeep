@@ -2,7 +2,7 @@
 
 Vaultkeep is a backup application for Debian systems. It creates independent archive files from one or more files and directories, skips unchanged sources, applies calendar-based retention, and runs either manually or through managed systemd timers.
 
-> **Implementation status:** the v1 design is approved, but the application, installer, systemd units, and tests are not implemented yet. Commands in this guide describe the approved v1 user interface. Consult the capability table in [architecture_and_design.md](architecture_and_design.md#12-capability-status) for current implementation status.
+> **Implementation status:** Milestone 1 is complete. The installable Python package, version command, strict configuration models, dependency locks, unit tests, and continuous-integration quality gates are implemented. Backup commands, the installer, and systemd units are not implemented. Commands in this guide beyond `vaultkeep --version` describe the approved v1 user interface. Consult the capability table in [architecture_and_design.md](architecture_and_design.md#12-capability-status) for current implementation status.
 
 This file is the user guide. For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](architecture_and_design.md).
 

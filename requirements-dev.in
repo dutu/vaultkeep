@@ -1,0 +1,8 @@
+-r requirements.in
+
+editables
+mypy
+pip-tools
+pytest
+pytest-cov
+ruff

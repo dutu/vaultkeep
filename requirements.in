@@ -1,0 +1,6 @@
+# Runtime and build dependencies installed by the production installer.
+hatchling>=1.26,<2
+pathspec>=0.12.1,<1
+pydantic>=2.10,<3
+ruamel.yaml>=0.18.16,<0.19
+

@@ -21,11 +21,11 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; project foundation in progress; product capabilities not implemented**.
+Document status: **v1 design approved; Milestone 1 project foundation implemented; backup product capabilities not implemented**.
 
 Specification revision: **2026-07-23**.
 
-The repository currently contains this specification, the README user guide, and IDE metadata. It does not yet contain the Python package, project metadata, tests, examples, systemd units, or installer.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, strict schema-v1 configuration models, the `vaultkeep --version` command, unit tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Archive creation, operational commands, YAML loading and semantic validation, systemd units, integration tests, and the installer are not implemented.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -54,13 +54,14 @@ Future enhancements, excluded from v1:
 
 | Capability | Release classification | Implementation status |
 |---|---|---|
-| Strict YAML 1.2 configuration | v1 | Not implemented |
+| Package, PEP 440 version, and development quality gates | v1 | Implemented |
+| Strict YAML 1.2 configuration | v1 | Partially implemented — strict models and example-model test complete; YAML loading and semantic validation not implemented |
 | Source discovery, exclusions, and hashing | v1 | Not implemented |
 | `.tar.zst` archive creation and verification | v1 | Not implemented |
 | Per-backup-directory destination and manifests | v1 | Not implemented |
 | Local state reconciliation and unchanged detection | v1 | Not implemented |
 | Count-based retention and dry-run pruning | v1 | Not implemented |
-| Manual CLI and operational reporting | v1 | Not implemented |
+| Manual CLI and operational reporting | v1 | Partially implemented — version reporting complete; operational commands not implemented |
 | CIFS and NFS release validation | v1 | Not implemented |
 | Password-protected `.tar.7z` | v1 | Not implemented |
 | Lifecycle hooks | v1 | Not implemented |
@@ -2123,7 +2124,7 @@ The installer targets Debian Linux hosts with systemd and uses `apt`.
 
 The installer input is a trusted local source tree containing a complete Vaultkeep release. A GitHub repository clone checked out at a release tag is the normal input; an extracted source-release archive containing the same files is also valid. The installer never clones, fetches, pulls, or modifies the input source tree. It computes the source digest and copies the selected release into `/opt/vaultkeep`.
 
-The supported v1 operating-system matrix is Debian 12 `bookworm` and Debian 13 `trixie`, on architectures for which the required Debian packages are available. Every supported entry must pass the installer, systemd, archive, update, rollback, uninstall, and restore integration suites before release.
+The supported v1 operating-system matrix is Debian 12 `bookworm` and Debian 13 `trixie` on `amd64` and `arm64`. Every supported entry must pass the installer, systemd, archive, update, rollback, uninstall, and restore integration suites before release.
 
 Support for `dnf` and `yum` is excluded until a future platform-support milestone explicitly adds and tests those package managers.
 
@@ -2304,7 +2305,9 @@ V1 repository layout:
 ```text
 vaultkeep/
 ├── pyproject.toml
+├── requirements.in
 ├── requirements.lock
+├── requirements-dev.in
 ├── requirements-dev.lock
 ├── .gitignore
 ├── README.md
@@ -2608,21 +2611,21 @@ Future enhancements are introduced through a new configuration version, implemen
 
 ### Milestone 1 — Project foundation
 
-Status: **In progress**.
+Status: **Complete**.
 
 - [x] create repository;
 - [x] approve the v1 architecture and scope;
-- [ ] define `pyproject.toml`;
-- [ ] set the Python 3.11 baseline and runtime dependency ranges;
-- [ ] generate the hashed release dependency lock;
-- [ ] generate the development dependency lock;
-- [ ] add PEP 440 version;
-- [ ] implement `vaultkeep --version`;
-- [ ] establish package layout;
-- [ ] add the root `.gitignore`;
-- [ ] configure Ruff, strict mypy, pytest, and pytest-cov;
-- [ ] add Python 3.11 and 3.13 continuous-integration jobs;
-- [ ] add strict config models.
+- [x] define `pyproject.toml`;
+- [x] set the Python 3.11 baseline and runtime dependency ranges;
+- [x] generate the hashed release dependency lock;
+- [x] generate the development dependency lock;
+- [x] add PEP 440 version;
+- [x] implement `vaultkeep --version`;
+- [x] establish package layout;
+- [x] add the root `.gitignore`;
+- [x] configure Ruff, strict mypy, pytest, and pytest-cov;
+- [x] add Python 3.11 and 3.13 continuous-integration jobs;
+- [x] add strict config models.
 
 ### Milestone 2 — Validation and source discovery
 

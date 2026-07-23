@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vaultkeep"
+version = "0.1.0.dev0"
+description = "Independent archive backups for Debian systems"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "pathspec>=0.12.1,<1",
+    "pydantic>=2.10,<3",
+    "ruamel.yaml>=0.18.16,<0.19",
+]
+
+[project.urls]
+Homepage = "https://github.com/dutu/vaultkeep"
+Repository = "https://github.com/dutu/vaultkeep"
+Issues = "https://github.com/dutu/vaultkeep/issues"
+
+[project.scripts]
+vaultkeep = "vaultkeep.cli:main"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/examples",
+    "/systemd",
+    "/install.sh",
+    "/LICENSE",
+    "/README.md",
+    "/architecture_and_design.md",
+    "/requirements.lock",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vaultkeep"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "E",
+    "F",
+    "I",
+    "RUF",
+    "SIM",
+    "UP",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["vaultkeep"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=vaultkeep",
+    "--cov-branch",
+    "--cov-report=term-missing",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["vaultkeep"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

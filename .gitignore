@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+
+# Test, coverage, and analysis output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.pip-tools-cache/
+.pytest_cache/
+.ruff_cache/
+
+# Build output
+build/
+dist/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

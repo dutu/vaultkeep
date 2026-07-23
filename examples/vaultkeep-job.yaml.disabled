@@ -1,0 +1,123 @@
+# Vaultkeep job configuration.
+# Copy this file to /etc/vaultkeep/jobs/<job-id>.yaml and edit it.
+# The file name without .yaml must match job.id.
+
+config_version: 1
+
+job:
+  # Unique job identifier. Use letters, numbers, underscores, and hyphens.
+  id: example
+
+sources:
+  # Each source is a file or directory. Paths must be absolute.
+  - path: /path/to/source
+
+    # Exclusions apply only to this source.
+    # exclude:
+    #   - cache/
+    #   - "*.tmp"
+    #   - "**/node_modules/**"
+
+# Exclusions applied to all sources.
+# exclude:
+#   - "*.swp"
+#   - "**/.cache/**"
+
+source_options:
+  # Archive symlinks themselves instead of following their targets.
+  follow_symlinks: false
+
+  # Do not descend into another mounted filesystem below a source.
+  cross_filesystems: false
+
+  # Fail when a configured source is missing.
+  ignore_missing: false
+
+destination:
+  # Root directory for this job. It is a local, CIFS, or NFS filesystem path.
+  root: /mnt/backups/example
+
+  # Vaultkeep derives the directory, archive, checksum, and manifest names
+  # from this shared base. The backup ID is appended only to the directory.
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+
+  # Optional marker that must exist below destination.root.
+  # marker_file: ".vaultkeep-target"
+
+  # Require destination.root to be a mount point.
+  require_mount: true
+
+archive:
+  # Supported values: tar.zst, tar.7z.
+  format: tar.zst
+
+  # Compression level for the selected format.
+  # compression_level: 6
+
+encryption:
+  # Use none with tar.zst and password with tar.7z.
+  mode: none
+
+  # Required with tar.7z. The file must be root:root mode 0600.
+  # password_file: /etc/vaultkeep/secrets/example.passphrase
+
+retention:
+  # Keep the newest backup from each of the newest N eligible hourly buckets.
+  hourly: 24
+
+  # Keep the newest backup from each of the newest N eligible daily buckets.
+  daily: 7
+
+  # Keep the newest backup from each of the newest N eligible ISO-week buckets.
+  weekly: 8
+
+  # Keep the newest backup from each of the newest N eligible monthly buckets.
+  monthly: 12
+
+  # Keep the newest backup from each of the newest N yearly buckets.
+  yearly: 3
+
+schedule:
+  # The installed example never activates a timer.
+  enabled: false
+
+  # Supported values: hourly, daily, weekly, monthly.
+  interval: daily
+
+  # Exactly one of window or at is required.
+  window: "01:00-05:00"
+  # at: "03:30"
+
+  # Required for weekly schedules.
+  # day: sunday
+
+  # Required for monthly schedules; valid range: 1-28.
+  # day: 1
+
+  # Run one catch-up activation after downtime.
+  persistent: true
+
+hooks:
+  # Each phase is null or one direct argv-based command.
+  before_check: null
+  before_archive: null
+  after_archive: null
+  on_success: null
+  on_failure: null
+  on_unchanged: null
+
+  # Example hook:
+  # before_check:
+  #   command:
+  #     - /usr/local/sbin/prepare-app-backup
+  #     - --job
+  #     - example
+  #   timeout_seconds: 300
+
+logging:
+  # Supported values: error, warning, info, debug
+  level: info
+
+  # Include subprocess output in normal logs.
+  # include_command_output: false
+
