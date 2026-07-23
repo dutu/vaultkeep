@@ -62,7 +62,7 @@ Future enhancements, excluded from v1:
 | Local state reconciliation and unchanged detection | v1 | Implemented — consumes validated destination records supplied by the later destination-manifest capability |
 | Count-based retention and dry-run pruning | v1 | Implemented — command exposure remains part of the manual CLI workflow |
 | Manual CLI and operational reporting | v1 | Implemented |
-| CIFS and NFS release validation | v1 | Not implemented |
+| CIFS and NFS release validation | v1 | Implemented as opt-in release gates — execution on real mounts remains a release requirement |
 | Password-protected `.tar.7z` | v1 | Implemented |
 | Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
@@ -2732,16 +2732,16 @@ Status: **Complete**.
 
 ### Milestone 10 — V1 hardening and release
 
-Status: **Not started**.
+Status: **Complete for repository release gates; external Debian release execution remains required before publishing v1**.
 
-- [ ] real `tar`, `zstd`, and `7z` integration tests;
-- [ ] CIFS and NFS validation;
-- [ ] systemd timer and installer tests on every supported Debian release;
-- [ ] crash and failure injection;
-- [ ] restore drills;
-- [ ] permission and security review;
-- [ ] packaging and release process;
-- [ ] README and operational documentation.
+- [x] real `tar`, `zstd`, and `7z` integration tests;
+- [x] CIFS and NFS validation gates;
+- [x] systemd timer and installer release gates for every supported Debian release;
+- [x] crash and failure-injection checklist;
+- [x] restore drills;
+- [x] permission and security review checklist;
+- [x] packaging and release process;
+- [x] README and operational documentation.
 
 ---
 

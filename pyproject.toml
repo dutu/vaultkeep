@@ -31,6 +31,7 @@ include = [
     "/install.sh",
     "/LICENSE",
     "/README.md",
+    "/RELEASE.md",
     "/architecture_and_design.md",
     "/requirements.lock",
 ]
@@ -70,6 +71,9 @@ addopts = [
     "--cov-report=term-missing",
 ]
 testpaths = ["tests"]
+markers = [
+    "release_gate: tests that require an explicit release-validation environment",
+]
 
 [tool.coverage.run]
 branch = true
