@@ -53,10 +53,7 @@ class PasswordSecret:
         if not self._value:
             raise PasswordFileError("Password secret has already been cleared")
         line = bytes(self._value) + b"\n"
-        # A terminal EOF after the complete response prevents an interactive 7-Zip
-        # invocation from waiting for unrelated further input.  It is not part of
-        # the passphrase and is handled by the PTY line discipline.
-        return line * (2 if confirm else 1) + b"\x04"
+        return line * (2 if confirm else 1)
 
     def pipe_input(self) -> bytes:
         """Return one prompt response for compatibility with existing callers."""

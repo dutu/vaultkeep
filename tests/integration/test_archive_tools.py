@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from contextlib import suppress
 from copy import deepcopy
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -21,12 +22,23 @@ from vaultkeep.sources import SourceSnapshot, discover_sources
 
 TOOLS = ArchiveTools()
 REQUIRED_TOOLS = (TOOLS.tar, TOOLS.zstd, TOOLS.seven_zip)
-HAS_DEBIAN_TOOLS = sys.platform == "linux" and all(path.is_file() for path in REQUIRED_TOOLS)
+HAS_LINUX_TOOLS = sys.platform == "linux" and all(path.is_file() for path in REQUIRED_TOOLS)
 
 pytestmark = pytest.mark.skipif(
-    not HAS_DEBIAN_TOOLS,
-    reason="Real Debian archive tools are unavailable",
+    not HAS_LINUX_TOOLS,
+    reason="Real Linux archive tools are unavailable",
 )
+
+
+@cache
+def _is_debian() -> bool:
+    try:
+        return any(
+            line.strip() == "ID=debian"
+            for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines()
+        )
+    except OSError:
+        return False
 
 
 def _snapshot(
@@ -66,6 +78,7 @@ def test_real_tar_zstd_creation_and_verification(
     assert archive.stat().st_size > 0
 
 
+@pytest.mark.skipif(not _is_debian(), reason="Interactive 7-Zip integration is Debian-only")
 def test_real_header_encrypted_tar_7z_creation_and_verification(
     tmp_path: Path,
     valid_config: dict[str, Any],
