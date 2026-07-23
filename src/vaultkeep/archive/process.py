@@ -67,7 +67,9 @@ def run_command(
                     raise AssertionError("Terminal input disappeared")
                 terminal.close_slave()
                 terminal.write(bytes(terminal_input))
-                process.wait()
+                # communicate() drains a captured stdout pipe while waiting.  A plain
+                # wait() deadlocks when an interactive 7-Zip listing fills that pipe.
+                process.communicate()
                 terminal.close_master()
             else:
                 process.communicate(input=bytes(input_data) if input_data is not None else None)

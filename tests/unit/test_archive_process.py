@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -93,6 +94,22 @@ def test_pipeline_reports_consumer_failure() -> None:
 def test_command_rejects_mixed_pipe_and_terminal_input() -> None:
     with pytest.raises(ValueError, match="both pipe input and terminal input"):
         run_command(("/bin/true",), input_data=b"one", terminal_input=b"two")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="secure terminal input is POSIX-specific")
+def test_terminal_command_drains_captured_stdout() -> None:
+    result = run_command(
+        (
+            Path(sys.executable),
+            "-c",
+            "import sys; sys.stdin.readline(); sys.stdout.write('x' * 200000)",
+        ),
+        terminal_input=b"password\n",
+        capture_stdout=True,
+    )
+
+    assert result.returncode == 0
+    assert len(result.stdout) == 64 * 1024 + len(b"\n[output truncated]")
 
 
 def test_pipeline_rejects_mixed_pipe_and_terminal_input() -> None:
