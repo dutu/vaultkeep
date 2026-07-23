@@ -21,7 +21,7 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestones 1 through 5 implemented; workflow, hook execution, scheduling, and installer capabilities not implemented**.
+Document status: **v1 design approved; Milestones 1 through 6 implemented; hook execution, scheduling, and installer capabilities not implemented**.
 
 Specification revision: **2026-07-23**.
 
@@ -61,7 +61,7 @@ Future enhancements, excluded from v1:
 | Per-backup-directory destination and manifests | v1 | Implemented — workflow integration and CLI reporting remain part of later work |
 | Local state reconciliation and unchanged detection | v1 | Implemented — consumes validated destination records supplied by the later destination-manifest capability |
 | Count-based retention and dry-run pruning | v1 | Implemented — command exposure remains part of the manual CLI workflow |
-| Manual CLI and operational reporting | v1 | Partially implemented — version reporting complete; operational commands not implemented |
+| Manual CLI and operational reporting | v1 | Implemented — lifecycle hooks remain part of the later hook capability |
 | CIFS and NFS release validation | v1 | Not implemented |
 | Password-protected `.tar.7z` | v1 | Implemented |
 | Lifecycle hooks | v1 | Not implemented |
@@ -725,7 +725,7 @@ V1 verification:
 - SHA-256 calculation succeeds;
 - for `.tar.zst`, `zstd --test` validates the complete compressed stream;
 - for `.tar.zst`, TAR listing succeeds and every member path is relative, contains no `..` component, and is unique;
-- for `.tar.7z`, `7z test` reads the password through a pipe and validates the complete encrypted archive;
+- for `.tar.7z`, `7z test` reads the password through a no-echo pseudo-terminal and validates the complete encrypted archive;
 - for `.tar.7z`, listing without a password cannot reveal the encrypted inner member name;
 - for `.tar.7z`, `7z list` confirms exactly one inner member named `{job}.tar`;
 - for `.tar.7z`, `7z x -so` streams the inner TAR to `tar` without writing a second plaintext copy;
@@ -2486,8 +2486,8 @@ Encrypted-archive integration tests inspect `/proc/<pid>/cmdline` and the captur
 - Refuse finalization when the final path already exists.
 - Treat local state as reconstructable cache rather than proof that a destination backup exists.
 - Never log passwords or place them in command-line arguments, environment variables, manifests, checksums, or error messages.
-- Pass 7z passwords only through an anonymous child-process input pipe.
-- Disable core dumps before reading a password, pass only the intended pipe descriptor to 7-Zip, and close it immediately after use.
+- Pass 7z passwords only through a no-echo child-process pseudo-terminal.
+- Disable core dumps before reading a password, pass only the intended pseudo-terminal descriptor to 7-Zip, and close it immediately after use.
 - Treat in-process password-memory erasure as best effort; Python and external tools do not provide a verifiable guarantee that every temporary copy is overwritten.
 - Restrict password files and the local plaintext-TAR workspace exactly as defined in section 10.
 - Remove local plaintext TAR files before the destination commit point and report any cleanup failure.
@@ -2680,12 +2680,12 @@ Status: **Complete**.
 
 ### Milestone 6 — Complete v1 workflow and CLI
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] error mapping;
-- [ ] full run workflow;
-- [ ] `validate`, `run`, `list`, `verify`, and `prune`;
-- [ ] operational output and exit-code tests.
+- [x] error mapping;
+- [x] full run workflow;
+- [x] `validate`, `run`, `list`, `verify`, and `prune`;
+- [x] operational output and exit-code tests.
 
 ### Milestone 7 — Lifecycle hooks
 
