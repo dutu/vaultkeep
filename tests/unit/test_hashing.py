@@ -192,7 +192,7 @@ def test_change_after_discovery_is_rejected(tmp_path: Path, valid_config: dict[s
     source.write_text("first", encoding="utf-8")
     snapshot = discover_sources(_job(valid_config, source))
 
-    source.write_text("other", encoding="utf-8")
+    source.write_text("changed", encoding="utf-8")
 
     with pytest.raises(SourceChangedError, match="changed"):
         calculate_source_digest(snapshot)

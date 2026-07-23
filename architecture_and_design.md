@@ -67,7 +67,7 @@ Future enhancements, excluded from v1:
 | Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
 | Systemd scheduling | v1 | Implemented |
-| Installer, atomic updates, rollback, and uninstallation | v1 | Not implemented |
+| Installer, atomic updates, rollback, and uninstallation | v1 | Implemented — Debian release-environment validation remains part of v1 hardening |
 
 Every change that implements, removes, or reclassifies a capability must update this table in the same commit.
 
@@ -2715,20 +2715,20 @@ Status: **Complete**.
 
 ### Milestone 9 — Debian installer
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] Debian, root, systemd, and package preflight;
-- [ ] dependency installation and executable verification;
-- [ ] safe checkout synchronization;
-- [ ] explicit install and update modes with non-mutating dry-run plans;
-- [ ] complete versioned-release staging;
-- [ ] configuration, secret, state, and temporary directories;
-- [ ] inactive example configuration;
-- [ ] systemd template installation and verification;
-- [ ] atomic current-release switch and rollback;
-- [ ] strict installation ownership manifest;
-- [ ] uninstall dry-run, preservation, and purge modes;
-- [ ] post-install version, schema, timer, and daemon-reload validation.
+- [x] Debian, root, systemd, and package preflight;
+- [x] dependency installation and executable verification;
+- [x] safe checkout synchronization;
+- [x] explicit install and update modes with non-mutating dry-run plans;
+- [x] complete versioned-release staging;
+- [x] configuration, secret, state, and temporary directories;
+- [x] inactive example configuration;
+- [x] systemd template installation and verification;
+- [x] atomic current-release switch and rollback;
+- [x] strict installation ownership manifest;
+- [x] uninstall dry-run, preservation, and purge modes;
+- [x] post-install version, schema, timer, and daemon-reload validation.
 
 ### Milestone 10 — V1 hardening and release
 

@@ -241,6 +241,7 @@ def test_passphrase_removes_exactly_one_trailing_lf() -> None:
     assert passwords_module._validate_passphrase(b"  secret  \n") == b"  secret  "
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor stat semantics are required")
 def test_password_file_loader_uses_no_follow_and_returns_fingerprint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
