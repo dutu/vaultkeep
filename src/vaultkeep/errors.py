@@ -73,3 +73,35 @@ class StateError(VaultkeepError):
 
 class CredentialContinuityError(StateError):
     """Encrypted-backup credential continuity cannot be established."""
+
+
+class ArchiveError(VaultkeepError):
+    """Archive processing cannot complete safely."""
+
+
+class ArchiveCreationError(ArchiveError):
+    """An archive tool or archive write operation failed."""
+
+
+class ArchiveVerificationError(ArchiveError):
+    """A created archive does not satisfy the v1 integrity contract."""
+
+
+class PasswordFileError(ArchiveError):
+    """A password file or passphrase violates the v1 security contract."""
+
+
+class PlaintextCleanupError(ArchiveError):
+    """A private plaintext archive could not be removed before commit."""
+
+
+class DestinationError(VaultkeepError):
+    """Destination processing cannot complete safely."""
+
+
+class DestinationFinalizeError(DestinationError):
+    """A staging directory cannot be atomically committed without overwrite."""
+
+
+class DestinationCommitDurabilityError(DestinationFinalizeError):
+    """The backup was committed but the destination-directory flush failed."""

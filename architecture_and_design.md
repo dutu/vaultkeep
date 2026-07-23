@@ -21,11 +21,11 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestones 1 through 3 implemented; archive, destination, retention, workflow, hook execution, scheduling, and installer capabilities not implemented**.
+Document status: **v1 design approved; Milestones 1 through 4 implemented; destination discovery, manifests, retention, workflow, hook execution, scheduling, and installer capabilities not implemented**.
 
 Specification revision: **2026-07-23**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, unit tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Archive creation, destination-manifest discovery, operational commands, runtime validation, systemd units, release integration tests, and the installer are not implemented.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, unit tests, real-tool Linux integration tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Destination-manifest discovery, operational commands, complete runtime validation, systemd units, release-environment integration tests, and the installer are not implemented.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -57,13 +57,13 @@ Future enhancements, excluded from v1:
 | Package, PEP 440 version, and development quality gates | v1 | Implemented |
 | Strict YAML 1.2 configuration | v1 | Implemented — runtime environment validation remains part of later workflows |
 | Source discovery, exclusions, and hashing | v1 | Implemented |
-| `.tar.zst` archive creation and verification | v1 | Not implemented |
+| `.tar.zst` archive creation and verification | v1 | Implemented |
 | Per-backup-directory destination and manifests | v1 | Not implemented |
 | Local state reconciliation and unchanged detection | v1 | Implemented — consumes validated destination records supplied by the later destination-manifest capability |
 | Count-based retention and dry-run pruning | v1 | Not implemented |
 | Manual CLI and operational reporting | v1 | Partially implemented — version reporting complete; operational commands not implemented |
 | CIFS and NFS release validation | v1 | Not implemented |
-| Password-protected `.tar.7z` | v1 | Not implemented |
+| Password-protected `.tar.7z` | v1 | Implemented |
 | Lifecycle hooks | v1 | Not implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
 | Systemd scheduling | v1 | Not implemented |
@@ -862,6 +862,8 @@ The final directory rename is the backup commit point. Before this point, failur
 Temporary and final directories are on the same destination filesystem. Finalization must never overwrite an existing path. Each manifest contains a collision-resistant backup ID, and every final directory name includes that backup ID.
 
 After writing files, Vaultkeep flushes file data and directory metadata where the destination filesystem supports it. The documented durability guarantee for CIFS and NFS is limited to behavior verified by the integration-test matrix.
+
+The Milestone 4 archive builder accepts already allocated staging archive and checksum paths, produces and verifies those two artifacts, and leaves manifest creation to Milestone 5. The no-overwrite directory finalizer is implemented independently and commits a complete staging directory only after the caller has added the manifest.
 
 ---
 
@@ -2653,16 +2655,16 @@ Status: **Complete**.
 
 ### Milestone 4 — V1 archive creation
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] `.tar.zst`;
-- [ ] password-protected `.tar.7z` with one inner TAR;
-- [ ] password-file validation and stdin-only 7-Zip credential delivery;
-- [ ] credential-continuity enforcement and password-rotation rejection;
-- [ ] private local plaintext-TAR lifecycle and failure cleanup;
-- [ ] checksums;
-- [ ] real `tar`, `zstd`, and `7z` verification;
-- [ ] cleanup and atomic finalization.
+- [x] `.tar.zst`;
+- [x] password-protected `.tar.7z` with one inner TAR;
+- [x] password-file validation and stdin-only 7-Zip credential delivery;
+- [x] credential-continuity enforcement and password-rotation rejection;
+- [x] private local plaintext-TAR lifecycle and failure cleanup;
+- [x] checksums;
+- [x] real `tar`, `zstd`, and `7z` verification;
+- [x] cleanup and atomic finalization.
 
 ### Milestone 5 — Destination discovery and retention
 
