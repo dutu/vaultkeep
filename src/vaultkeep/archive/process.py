@@ -55,6 +55,7 @@ def run_command(
                 stdout=stdout_file if capture_stdout else subprocess.DEVNULL,
                 stderr=stderr_file,
                 cwd=cwd,
+                terminal_stdin=terminal is not None,
             )
         except BaseException:
             if terminal is not None:
@@ -115,6 +116,7 @@ def run_pipeline(
                 stdout=subprocess.PIPE,
                 stderr=producer_error,
                 cwd=producer_cwd,
+                terminal_stdin=terminal is not None,
             )
         except BaseException:
             if terminal is not None:
@@ -188,6 +190,7 @@ def _start_process(
     stdout: int | IO[bytes],
     stderr: IO[bytes],
     cwd: Path | None,
+    terminal_stdin: bool = False,
 ) -> subprocess.Popen[bytes]:
     if not command or not Path(command[0]).is_absolute():
         raise ArchiveCreationError("Archive tools must be invoked by absolute path")
@@ -201,10 +204,25 @@ def _start_process(
             env=_SAFE_ENVIRONMENT,
             shell=False,
             close_fds=True,
-            start_new_session=True,
+            start_new_session=not terminal_stdin,
+            preexec_fn=_make_controlling_terminal if terminal_stdin else None,
         )
     except OSError as error:
         raise ArchiveCreationError(f"Cannot start archive tool {command[0]}: {error}") from error
+
+
+def _make_controlling_terminal() -> None:
+    """Create a new session and make file descriptor zero its controlling terminal."""
+    if os.name != "posix":
+        return
+    import fcntl as imported_fcntl
+    import termios as imported_termios
+
+    set_session: Any = vars(os)["setsid"]
+    terminal_api: Any = imported_termios
+    ioctl: Any = vars(imported_fcntl)["ioctl"]
+    set_session()
+    ioctl(0, terminal_api.TIOCSCTTY, 0)
 
 
 @dataclass(slots=True)
