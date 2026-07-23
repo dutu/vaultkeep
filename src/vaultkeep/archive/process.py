@@ -65,9 +65,10 @@ def run_command(
             if terminal is not None:
                 if terminal_input is None:
                     raise AssertionError("Terminal input disappeared")
+                terminal.close_slave()
                 terminal.write(bytes(terminal_input))
-                terminal.close()
                 process.wait()
+                terminal.close_master()
             else:
                 process.communicate(input=bytes(input_data) if input_data is not None else None)
         except BaseException:
@@ -143,8 +144,8 @@ def run_pipeline(
             if terminal is not None:
                 if producer_terminal_input is None:
                     raise AssertionError("Producer terminal input disappeared")
+                terminal.close_slave()
                 terminal.write(bytes(producer_terminal_input))
-                terminal.close()
             elif producer.stdin is not None:
                 try:
                     if producer_input is not None:
@@ -154,6 +155,8 @@ def run_pipeline(
                     producer.stdin.close()
             producer.wait()
             consumer.wait()
+            if terminal is not None:
+                terminal.close_master()
         except OSError as error:
             _terminate_process(producer)
             _terminate_process(consumer)
@@ -264,9 +267,16 @@ class _SecretTerminal:
             ) from error
 
     def close(self) -> None:
-        for descriptor in (self.master, self.slave):
-            with suppress(OSError):
-                os.close(descriptor)
+        self.close_master()
+        self.close_slave()
+
+    def close_master(self) -> None:
+        with suppress(OSError):
+            os.close(self.master)
+
+    def close_slave(self) -> None:
+        with suppress(OSError):
+            os.close(self.slave)
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
