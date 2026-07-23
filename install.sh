@@ -609,14 +609,14 @@ install_or_update() {
 
 validate_manifest_for_uninstall() {
     [[ -f "$VK_MANIFEST" ]] || die "installation manifest not found: $VK_MANIFEST"
-    python3 - "$VK_MANIFEST" "$VK_PREFIX" "$VK_BIN_LINK" "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" <<'PY'
+    python3 - "$VK_MANIFEST" "$VK_PREFIX" "$VK_BIN_LINK" "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" "$VK_TIMER_REGISTRY" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 manifest = Path(sys.argv[1])
 prefix = Path(sys.argv[2])
-allowed = {Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5])}
+allowed = {Path(arg) for arg in sys.argv[2:]}
 data = json.loads(manifest.read_text(encoding="utf-8"))
 required = {
     "schema_version",
