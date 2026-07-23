@@ -1,4 +1,4 @@
-"""Format-independent MS4 archive build and verification workflow."""
+"""Format-independent archive build and verification workflow."""
 
 from __future__ import annotations
 

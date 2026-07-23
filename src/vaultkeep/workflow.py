@@ -1,8 +1,9 @@
-"""MS6 manual backup workflow and command-oriented validation."""
+"""Manual backup workflow and command-oriented validation."""
 
 from __future__ import annotations
 
 import socket
+import tempfile
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -94,7 +95,7 @@ def prune_backups(config_path: Path, *, dry_run: bool) -> CommandResult:
 
 
 def verify_backups(config_path: Path) -> CommandResult:
-    """Discovery already verifies sidecars; command exposes its structural result in MS6."""
+    """Discovery already verifies sidecars; command exposes its structural result."""
     config = load_validated_config(config_path)
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
     discovered = discover_backups(config)
@@ -335,8 +336,8 @@ def _validate_runtime(
     root = Path(config.destination.root)
     if not root.is_dir():
         raise DestinationError(f"Destination root is not an accessible directory: {root}")
-    if require_writable_destination and not root.exists():
-        raise DestinationError(f"Destination root is not writable: {root}")
+    if require_writable_destination:
+        _assert_writable_destination(root)
     if (
         config.destination.marker_file is not None
         and not (root / config.destination.marker_file).is_file()
@@ -346,6 +347,14 @@ def _validate_runtime(
         for source in config.sources:
             if not Path(source.path).exists() and not config.source_options.ignore_missing:
                 raise DestinationError(f"Configured source does not exist: {source.path}")
+
+
+def _assert_writable_destination(root: Path) -> None:
+    try:
+        with tempfile.TemporaryFile(prefix=".vaultkeep-write-test-", dir=root):
+            pass
+    except OSError as error:
+        raise DestinationError(f"Destination root is not writable: {root}") from error
 
 
 def _validate_configured_hooks(config: JobConfig) -> None:

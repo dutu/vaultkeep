@@ -1,4 +1,4 @@
-"""Tests for MS4 archive creation, verification, credentials, and checksums."""
+"""Tests for archive creation, verification, credentials, and checksums."""
 
 from __future__ import annotations
 

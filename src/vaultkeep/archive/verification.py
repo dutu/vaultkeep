@@ -146,7 +146,7 @@ def encrypted_backup_credential_verifier(
     *,
     tools: ArchiveTools,
 ) -> Callable[[BackupStateRecord], bool]:
-    """Adapt real 7z password testing to the MS3 state-reconciliation callback."""
+    """Adapt real 7z password testing to the state-reconciliation callback."""
 
     def verify(record: BackupStateRecord) -> bool:
         if not record.encrypted:

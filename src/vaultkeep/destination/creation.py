@@ -1,4 +1,4 @@
-"""The Milestone 5 bridge from archive artifacts to a committed backup directory."""
+"""Bridge archive artifacts to a committed backup directory."""
 
 from __future__ import annotations
 

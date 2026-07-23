@@ -21,15 +21,15 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestones 1 through 8 implemented; installer capability not implemented**.
+Document status: **v1 scope frozen; Milestones 1 through 10 implemented; external Debian release execution remains required before publishing v1**.
 
 Specification revision: **2026-07-23**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, unit tests, real-tool Linux integration tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. Operational commands, complete runtime validation, systemd units, release-environment integration tests, and the installer are not implemented.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
-Active v1 scope:
+Frozen v1 scope:
 
 - manual `validate`, `run`, `list`, `verify`, and `prune` commands;
 - unencrypted `.tar.zst` and password-protected `.tar.7z` archives;
@@ -50,17 +50,19 @@ Future enhancements, excluded from v1:
 - encrypted-backup password rotation within an existing job and destination namespace;
 - support for package managers or operating systems beyond Debian.
 
+The v1 scope is closed. Changes before the v1 release are limited to correctness fixes, test hardening, documentation consistency, release-gate execution, and operational polish that does not add user-visible capability.
+
 ## 1.2 Capability status
 
 | Capability | Release classification | Implementation status |
 |---|---|---|
 | Package, PEP 440 version, and development quality gates | v1 | Implemented |
-| Strict YAML 1.2 configuration | v1 | Implemented — runtime environment validation remains part of later workflows |
+| Strict YAML 1.2 configuration | v1 | Implemented |
 | Source discovery, exclusions, and hashing | v1 | Implemented |
 | `.tar.zst` archive creation and verification | v1 | Implemented |
-| Per-backup-directory destination and manifests | v1 | Implemented — workflow integration and CLI reporting remain part of later work |
-| Local state reconciliation and unchanged detection | v1 | Implemented — consumes validated destination records supplied by the later destination-manifest capability |
-| Count-based retention and dry-run pruning | v1 | Implemented — command exposure remains part of the manual CLI workflow |
+| Per-backup-directory destination and manifests | v1 | Implemented |
+| Local state reconciliation and unchanged detection | v1 | Implemented |
+| Count-based retention and dry-run pruning | v1 | Implemented |
 | Manual CLI and operational reporting | v1 | Implemented |
 | CIFS and NFS release validation | v1 | Implemented as opt-in release gates — execution on real mounts remains a release requirement |
 | Password-protected `.tar.7z` | v1 | Implemented |
@@ -863,7 +865,7 @@ Temporary and final directories are on the same destination filesystem. Finaliza
 
 After writing files, Vaultkeep flushes file data and directory metadata where the destination filesystem supports it. The documented durability guarantee for CIFS and NFS is limited to behavior verified by the integration-test matrix.
 
-The Milestone 4 archive builder accepts already allocated staging archive and checksum paths, produces and verifies those two artifacts, and leaves manifest creation to Milestone 5. The no-overwrite directory finalizer is implemented independently and commits a complete staging directory only after the caller has added the manifest.
+The archive builder accepts already allocated staging archive and checksum paths, produces and verifies those two artifacts, and leaves manifest creation to the destination commit layer. The no-overwrite directory finalizer is implemented independently and commits a complete staging directory only after the caller has added the manifest.
 
 ---
 
@@ -953,7 +955,7 @@ State absence never causes failure by itself. Independent safety failures still 
 
 Reconstruction never modifies a destination archive or manifest. The run reports that local state was reconstructed.
 
-The Milestone 3 reconstruction API consumes typed `BackupStateRecord` values containing facts from already validated destination manifests. Milestone 5 implements manifest parsing and destination discovery that produce those records. This boundary keeps local-state recovery independent from destination scanning and does not treat unvalidated JSON as a recovery source.
+The reconstruction API consumes typed `BackupStateRecord` values containing facts from already validated destination manifests. Manifest parsing and destination discovery produce those records. This boundary keeps local-state recovery independent from destination scanning and does not treat unvalidated JSON as a recovery source.
 
 ---
 
@@ -2130,7 +2132,7 @@ The installer input is a trusted local source tree containing a complete Vaultke
 
 The supported v1 operating-system matrix is Debian 12 `bookworm` and Debian 13 `trixie` on `amd64` and `arm64`. Every supported entry must pass the installer, systemd, archive, update, rollback, uninstall, and restore integration suites before release.
 
-Support for `dnf` and `yum` is excluded until a future platform-support milestone explicitly adds and tests those package managers.
+Support for `dnf` and `yum` is excluded until a future platform-support release explicitly adds and tests those package managers.
 
 ## 25.1 Installation paths
 
@@ -2611,7 +2613,7 @@ Future enhancements are introduced through a new configuration version, implemen
 
 ---
 
-## 31. Initial implementation milestones
+## 31. Completed implementation history
 
 ### Milestone 1 — Project foundation
 
