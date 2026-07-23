@@ -7,9 +7,10 @@ import signal
 import subprocess
 import tempfile
 from collections.abc import Collection, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from vaultkeep.errors import ArchiveCreationError
 
@@ -37,19 +38,37 @@ def run_command(
     capture_stdout: bool = False,
     allowed_returncodes: Collection[int] = (0,),
     sensitive_input: bool = False,
+    terminal_input: bytes | bytearray | memoryview | None = None,
 ) -> CommandResult:
     """Run one absolute-path tool without a shell or inherited environment."""
+    if input_data is not None and terminal_input is not None:
+        raise ValueError("A command cannot receive both pipe input and terminal input")
     command = tuple(os.fspath(argument) for argument in arguments)
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        process = _start_process(
-            command,
-            stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
-            stdout=stdout_file if capture_stdout else subprocess.DEVNULL,
-            stderr=stderr_file,
-            cwd=cwd,
-        )
+        terminal = _SecretTerminal.open() if terminal_input is not None else None
         try:
-            process.communicate(input=bytes(input_data) if input_data is not None else None)
+            process = _start_process(
+                command,
+                stdin=(terminal.slave if terminal is not None else subprocess.PIPE)
+                if (input_data is not None or terminal is not None)
+                else subprocess.DEVNULL,
+                stdout=stdout_file if capture_stdout else subprocess.DEVNULL,
+                stderr=stderr_file,
+                cwd=cwd,
+            )
+        except BaseException:
+            if terminal is not None:
+                terminal.close()
+            raise
+        try:
+            if terminal is not None:
+                if terminal_input is None:
+                    raise AssertionError("Terminal input disappeared")
+                terminal.write(bytes(terminal_input))
+                terminal.close()
+                process.wait()
+            else:
+                process.communicate(input=bytes(input_data) if input_data is not None else None)
         except BaseException:
             _terminate_process(process)
             raise
@@ -60,7 +79,11 @@ def run_command(
         )
     if result.returncode not in allowed_returncodes:
         raise ArchiveCreationError(
-            _failure_message(command, result, redact_diagnostic=sensitive_input)
+            _failure_message(
+                command,
+                result,
+                redact_diagnostic=sensitive_input or terminal_input is not None,
+            )
         )
     return result
 
@@ -74,18 +97,29 @@ def run_pipeline(
     consumer_cwd: Path | None = None,
     consumer_stdout: IO[bytes] | int | None = None,
     producer_input_sensitive: bool = False,
+    producer_terminal_input: bytes | bytearray | memoryview | None = None,
 ) -> None:
     """Run a two-process binary pipeline with bounded diagnostics."""
+    if producer_input is not None and producer_terminal_input is not None:
+        raise ValueError("A pipeline producer cannot receive both pipe input and terminal input")
     producer_command = tuple(os.fspath(argument) for argument in producer_arguments)
     consumer_command = tuple(os.fspath(argument) for argument in consumer_arguments)
     with tempfile.TemporaryFile() as producer_error, tempfile.TemporaryFile() as consumer_error:
-        producer = _start_process(
-            producer_command,
-            stdin=subprocess.PIPE if producer_input is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=producer_error,
-            cwd=producer_cwd,
-        )
+        terminal = _SecretTerminal.open() if producer_terminal_input is not None else None
+        try:
+            producer = _start_process(
+                producer_command,
+                stdin=(terminal.slave if terminal is not None else subprocess.PIPE)
+                if (producer_input is not None or terminal is not None)
+                else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=producer_error,
+                cwd=producer_cwd,
+            )
+        except BaseException:
+            if terminal is not None:
+                terminal.close()
+            raise
         if producer.stdout is None:
             _terminate_process(producer)
             raise ArchiveCreationError("Archive pipeline did not expose producer output")
@@ -103,7 +137,12 @@ def run_pipeline(
             raise
         producer.stdout.close()
         try:
-            if producer.stdin is not None:
+            if terminal is not None:
+                if producer_terminal_input is None:
+                    raise AssertionError("Producer terminal input disappeared")
+                terminal.write(bytes(producer_terminal_input))
+                terminal.close()
+            elif producer.stdin is not None:
                 try:
                     if producer_input is not None:
                         producer.stdin.write(bytes(producer_input))
@@ -135,7 +174,7 @@ def run_pipeline(
             _failure_message(
                 producer_command,
                 producer_result,
-                redact_diagnostic=producer_input_sensitive,
+                redact_diagnostic=producer_input_sensitive or producer_terminal_input is not None,
             )
         )
     if consumer_result.returncode != 0:
@@ -166,6 +205,45 @@ def _start_process(
         )
     except OSError as error:
         raise ArchiveCreationError(f"Cannot start archive tool {command[0]}: {error}") from error
+
+
+@dataclass(slots=True)
+class _SecretTerminal:
+    """A no-echo POSIX terminal for 7-Zip's password prompt."""
+
+    master: int
+    slave: int
+
+    @classmethod
+    def open(cls) -> _SecretTerminal:
+        if os.name != "posix":
+            raise ArchiveCreationError("Interactive archive passwords require Debian/POSIX")
+        try:
+            import termios as imported_termios
+
+            terminal_api: Any = imported_termios
+            master, slave = os.openpty()  # type: ignore[attr-defined]
+            settings = terminal_api.tcgetattr(slave)
+            settings[3] &= ~terminal_api.ECHO
+            terminal_api.tcsetattr(slave, terminal_api.TCSANOW, settings)
+            return cls(master, slave)
+        except OSError as error:
+            raise ArchiveCreationError(
+                f"Cannot create secure archive password terminal: {error}"
+            ) from error
+
+    def write(self, value: bytes) -> None:
+        try:
+            os.write(self.master, value)
+        except OSError as error:
+            raise ArchiveCreationError(
+                f"Cannot provide archive password to terminal: {error}"
+            ) from error
+
+    def close(self) -> None:
+        for descriptor in (self.master, self.slave):
+            with suppress(OSError):
+                os.close(descriptor)
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:

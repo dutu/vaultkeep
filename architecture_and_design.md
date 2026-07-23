@@ -2164,7 +2164,7 @@ The installer performs these operations:
 5. install `python3`, `python3-venv`, `tar`, `zstd`, `rsync`, `util-linux`, and `mount`;
 6. install Debian's `7zip` package and fail when it has no installable candidate;
 7. verify the resolved `python3`, `tar`, `zstd`, `7z`, `findmnt`, `rsync`, `systemctl`, and `systemd-analyze` executables;
-8. run a private temporary compatibility check that creates, tests, lists, and streams a header-encrypted archive while supplying a generated test password through standard input;
+8. run a private temporary compatibility check that creates, tests, lists, and streams a header-encrypted archive while supplying a generated test password through a no-echo pseudo-terminal;
 9. calculate the checkout version and source digest and enforce the selected `install` or `update` mode;
 10. synchronize the checkout into a unique staged release below `/opt/vaultkeep`;
 11. create the staged release's virtual environment, install the hashed dependency lock, and install the Vaultkeep Python package with dependency resolution disabled;
@@ -2659,7 +2659,7 @@ Status: **Complete**.
 
 - [x] `.tar.zst`;
 - [x] password-protected `.tar.7z` with one inner TAR;
-- [x] password-file validation and stdin-only 7-Zip credential delivery;
+- [x] password-file validation and no-echo pseudo-terminal 7-Zip credential delivery;
 - [x] credential-continuity enforcement and password-rotation rejection;
 - [x] private local plaintext-TAR lifecycle and failure cleanup;
 - [x] checksums;

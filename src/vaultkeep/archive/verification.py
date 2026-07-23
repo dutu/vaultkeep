@@ -59,12 +59,11 @@ def verify_tar_7z(
     """Verify encryption, outer membership, inner TAR stream, and source members."""
     _require_nonempty_archive(archive_path)
     inner_name = f"{job_id}.tar"
-    password_input = password.pipe_input()
+    password_input = password.terminal_input()
     try:
         run_command(
             (tools.seven_zip, "t", "-bd", "-sccUTF-8", "-p", "--", archive_path),
-            input_data=password_input,
-            sensitive_input=True,
+            terminal_input=password_input,
         )
         unauthenticated = run_command(
             (tools.seven_zip, "l", "-slt", "-ba", "-sccUTF-8", "--", archive_path),
@@ -87,9 +86,8 @@ def verify_tar_7z(
                 "--",
                 archive_path,
             ),
-            input_data=password_input,
+            terminal_input=password_input,
             capture_stdout=True,
-            sensitive_input=True,
         )
         if _seven_zip_member_paths(listing.stdout) != (inner_name,):
             raise ArchiveVerificationError(
@@ -114,9 +112,8 @@ def verify_tar_7z(
                     "--file=-",
                     "--quoting-style=escape",
                 ),
-                producer_input=password_input,
+                producer_terminal_input=password_input,
                 consumer_stdout=tar_listing,
-                producer_input_sensitive=True,
             )
             tar_listing.seek(0)
             members = parse_gnu_tar_listing(tar_listing.read())
@@ -137,8 +134,7 @@ def test_7z_password(
     try:
         run_command(
             (tools.seven_zip, "t", "-bd", "-sccUTF-8", "-p", "--", archive_path),
-            input_data=password.pipe_input(),
-            sensitive_input=True,
+            terminal_input=password.terminal_input(),
         )
     except ArchiveCreationError:
         return False

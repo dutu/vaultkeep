@@ -48,11 +48,16 @@ class PasswordSecret:
     def __repr__(self) -> str:
         return "PasswordSecret(<redacted>)"
 
-    def pipe_input(self) -> bytes:
-        """Create the one-line input expected by Debian's 7z prompt."""
+    def terminal_input(self, *, confirm: bool = False) -> bytes:
+        """Create one or two responses for Debian 7-Zip's terminal prompt."""
         if not self._value:
             raise PasswordFileError("Password secret has already been cleared")
-        return bytes(self._value) + b"\n"
+        line = bytes(self._value) + b"\n"
+        return line * (2 if confirm else 1)
+
+    def pipe_input(self) -> bytes:
+        """Return one prompt response for compatibility with existing callers."""
+        return self.terminal_input()
 
     def clear(self) -> None:
         """Overwrite the owned mutable buffer and release it."""

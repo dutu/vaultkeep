@@ -562,8 +562,7 @@ def test_7z_encryption_passes_password_only_through_stdin(
     rendered_arguments = "\0".join(os.fspath(value) for value in observed["arguments"])
     assert "private-value" not in rendered_arguments
     assert "-p" in observed["arguments"]
-    assert observed["options"]["input_data"] == b"private-value\n"
-    assert observed["options"]["sensitive_input"] is True
+    assert observed["options"]["terminal_input"] == b"private-value\nprivate-value\n"
 
 
 def test_tar_zstd_verification_checks_stream_and_exact_members(

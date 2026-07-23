@@ -33,11 +33,12 @@ def create_tar_zstd(
     )
     zstd_command = (
         tools.zstd,
-        "--quiet",
-        "--threads=0",
+        "-q",
+        "-T0",
         f"-{compression_level}",
-        "--output",
+        "-o",
         output_path,
+        "-",
     )
     try:
         run_pipeline(

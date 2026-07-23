@@ -146,9 +146,8 @@ def encrypt_inner_tar(
     try:
         run_command(
             command,
-            input_data=password.pipe_input(),
             cwd=inner_tar_path.parent,
-            sensitive_input=True,
+            terminal_input=password.terminal_input(confirm=True),
         )
         with output_path.open("rb+") as stream:
             status = os.fstat(stream.fileno())
