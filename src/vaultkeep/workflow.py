@@ -21,6 +21,7 @@ from vaultkeep.destination import (
 )
 from vaultkeep.errors import DestinationError
 from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_executable
+from vaultkeep.locking import JobLock, job_lock_path
 from vaultkeep.sources import (
     calculate_config_fingerprint,
     calculate_source_digest,
@@ -45,6 +46,7 @@ class WorkflowPaths:
 
     state_root: Path = Path("/var/lib/vaultkeep/jobs")
     local_temp_root: Path = Path("/var/lib/vaultkeep/tmp")
+    lock_root: Path = Path("/run/lock/vaultkeep")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +113,10 @@ def run_backup(config_path: Path, *, paths: WorkflowPaths | None = None) -> Comm
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
     _validate_configured_hooks(config)
     identity = job_identity_hash(config_path, config.job.id)
+    lock = JobLock(
+        job_lock_path(root=paths.lock_root, job_id=config.job.id, identity_hash=identity)
+    )
+    lock.acquire()
     state_path = job_state_path(config_path, config.job.id, state_root=paths.state_root)
     hook_outcomes: list[HookOutcomeState] = []
     reconciliation = None
@@ -320,6 +326,7 @@ def run_backup(config_path: Path, *, paths: WorkflowPaths | None = None) -> Comm
     finally:
         if loaded_password is not None:
             loaded_password.secret.clear()
+        lock.release()
 
 
 def _validate_runtime(

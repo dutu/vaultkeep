@@ -10,9 +10,12 @@ from vaultkeep.errors import (
     ConfigurationError,
     DestinationError,
     HookError,
+    LockError,
     StateError,
+    TimerError,
     VaultkeepError,
 )
+from vaultkeep.scheduling import TimerManager
 from vaultkeep.version import installed_version
 from vaultkeep.workflow import list_backups, prune_backups, run_backup, validate_job, verify_backups
 
@@ -27,8 +30,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(installed_version())
         return 0
 
-    if namespace.command is None or namespace.config is None:
-        parser.error("--config and a command are required")
+    if namespace.command is None:
+        parser.error("a command is required")
+    if namespace.command != "timers" and namespace.config is None:
+        parser.error("--config is required for this command")
     try:
         if namespace.command == "validate":
             result = validate_job(namespace.config, schema_only=namespace.schema_only)
@@ -38,8 +43,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, _ = list_backups(namespace.config)
         elif namespace.command == "verify":
             result = verify_backups(namespace.config)
-        else:
+        elif namespace.command == "prune":
             result = prune_backups(namespace.config, dry_run=namespace.dry_run)
+        else:
+            manager = TimerManager()
+            manager.require_environment()
+            if namespace.command == "timer":
+                if namespace.action == "install":
+                    manager.install(namespace.config)
+                elif namespace.action == "update":
+                    manager.update(namespace.config)
+                elif namespace.action == "status":
+                    print(manager.status(namespace.config))
+                elif namespace.action == "next":
+                    print(manager.next(namespace.config))
+                elif namespace.action == "disable":
+                    manager.disable(namespace.config)
+                else:
+                    manager.remove(namespace.config)
+                return 0
+            if namespace.action == "list":
+                print("\n".join(manager.list()))
+            elif namespace.action == "validate":
+                for item in manager.validate_all():
+                    print(item)
+            else:
+                print("\n".join(manager.sync(dry_run=namespace.dry_run)))
+            return 0
     except ConfigurationError as error:
         print(error, file=sys.stderr)
         return 3
@@ -52,6 +82,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except HookError as error:
         print(error, file=sys.stderr)
         return 11
+    except LockError as error:
+        print(error, file=sys.stderr)
+        return 10
+    except TimerError as error:
+        print(error, file=sys.stderr)
+        return 14
     except VaultkeepError as error:
         print(error, file=sys.stderr)
         return 7

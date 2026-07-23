@@ -21,7 +21,7 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 design approved; Milestones 1 through 7 implemented; scheduling and installer capabilities not implemented**.
+Document status: **v1 design approved; Milestones 1 through 8 implemented; installer capability not implemented**.
 
 Specification revision: **2026-07-23**.
 
@@ -66,7 +66,7 @@ Future enhancements, excluded from v1:
 | Password-protected `.tar.7z` | v1 | Implemented |
 | Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
-| Systemd scheduling | v1 | Not implemented |
+| Systemd scheduling | v1 | Implemented |
 | Installer, atomic updates, rollback, and uninstallation | v1 | Not implemented |
 
 Every change that implements, removes, or reclassifies a capability must update this table in the same commit.
@@ -2702,16 +2702,16 @@ Status: **Complete**.
 
 ### Milestone 8 — Scheduling and systemd
 
-Status: **Not started**.
+Status: **Complete**.
 
-- [ ] shared service and timer templates;
-- [ ] native hourly, daily, weekly, and monthly calendar rendering;
-- [ ] exact-time and deterministic-window scheduling;
-- [ ] persistent catch-up behavior;
-- [ ] timer lifecycle commands and ownership registry;
-- [ ] all-job list, sync, dry-run, and validation commands;
-- [ ] manual and scheduled workflow parity;
-- [ ] per-job concurrency lock.
+- [x] shared service and timer templates;
+- [x] native hourly, daily, weekly, and monthly calendar rendering;
+- [x] exact-time and deterministic-window scheduling;
+- [x] persistent catch-up behavior;
+- [x] timer lifecycle commands and ownership registry;
+- [x] all-job list, sync, dry-run, and validation commands;
+- [x] manual and scheduled workflow parity;
+- [x] per-job concurrency lock.
 
 ### Milestone 9 — Debian installer
 

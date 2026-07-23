@@ -1,0 +1,17 @@
+[Unit]
+Description=Vaultkeep backup job %i
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/vaultkeep/jobs/%i.yaml
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vaultkeep --config /etc/vaultkeep/jobs/%i.yaml run
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+LimitCORE=0
+KillMode=control-group
+TimeoutStopSec=5min

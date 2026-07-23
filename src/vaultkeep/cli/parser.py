@@ -24,4 +24,11 @@ def create_parser() -> argparse.ArgumentParser:
     commands.add_parser("verify")
     prune = commands.add_parser("prune")
     prune.add_argument("--dry-run", action="store_true")
+    timer = commands.add_parser("timer")
+    timer.add_argument(
+        "action", choices=("install", "update", "status", "next", "disable", "remove")
+    )
+    timers = commands.add_parser("timers")
+    timers.add_argument("action", choices=("list", "sync", "validate"))
+    timers.add_argument("--dry-run", action="store_true")
     return parser

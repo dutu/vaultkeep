@@ -129,3 +129,11 @@ class PruneError(DestinationError):
 
 class HookError(VaultkeepError):
     """A lifecycle hook cannot be validated or executed successfully."""
+
+
+class TimerError(VaultkeepError):
+    """Systemd timer management cannot complete safely."""
+
+
+class LockError(VaultkeepError):
+    """A second invocation attempted to run an already locked backup job."""
