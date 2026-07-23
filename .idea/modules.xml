@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/valutkeep.iml" filepath="$PROJECT_DIR$/.idea/valutkeep.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/vaultkeep.iml" filepath="$PROJECT_DIR$/.idea/vaultkeep.iml" />
     </modules>
   </component>
 </project>
