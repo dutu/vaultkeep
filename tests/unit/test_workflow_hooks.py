@@ -167,3 +167,36 @@ def test_archive_failure_keeps_primary_error_and_runs_cleanup_then_failure_hook(
 
     assert phases == ["before_check", "before_archive", "after_archive", "on_failure"]
     assert [outcome.phase for outcome in states[-1].last_run.hooks] == phases
+
+
+def test_before_archive_failure_runs_cleanup_then_failure_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    states = _patch_creation_workflow(monkeypatch, _config(valid_config), tmp_path)
+    phases: list[str] = []
+
+    def run_phase(
+        phase: str, config: JobConfig, path: Path, context: Any, outcomes: list[HookOutcomeState]
+    ) -> None:
+        del config, path, context
+        phases.append(phase)
+        outcomes.append(
+            HookOutcomeState(
+                phase=phase,
+                duration_seconds=0,
+                exit_code=1 if phase == "before_archive" else 0,
+                timed_out=False,
+                stdout_truncated=False,
+                stderr_truncated=False,
+            )
+        )
+        if phase == "before_archive":
+            raise HookError("quiesce failed")
+
+    monkeypatch.setattr(workflow, "_run_configured_hook", run_phase)
+
+    with pytest.raises(HookError, match="quiesce failed"):
+        workflow.run_backup(tmp_path / "app.yaml", paths=workflow.WorkflowPaths(tmp_path, tmp_path))
+
+    assert phases == ["before_check", "before_archive", "after_archive", "on_failure"]
+    assert [outcome.phase for outcome in states[-1].last_run.hooks] == phases
