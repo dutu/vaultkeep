@@ -2,8 +2,6 @@
 
 Vaultkeep is a backup application for Debian systems. It creates independent archive files from one or more files and directories, skips unchanged sources, applies calendar-based retention, and runs either manually or through managed systemd timers.
 
-> **Implementation status:** V1 scope is frozen. The installable Python package, configuration validation, source discovery, archive creation, immutable destination manifests, retention, guarded deletion, lifecycle hooks, systemd scheduling, manual `validate`, `run`, `list`, `verify`, and `prune` commands, the Debian installer, and repository release-gate checks are present. Before publishing v1, run the external Debian release gates in [RELEASE.md](RELEASE.md).
-
 This file is the user guide. For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](architecture_and_design.md).
 
 ## Table of contents
@@ -41,26 +39,26 @@ This file is the user guide. For configuration rules, data structures, security 
 
 ### What Vaultkeep does
 
-Each YAML configuration file defines one backup job. A job contains:
+Vaultkeep creates file-based backups and applies retention. You define backup jobs as YAML files. Each job can be run manually with the `vaultkeep` command or automatically through a managed systemd timer.
+
+A job specifies:
 
 - one or more source files or directories;
 - optional source exclusions;
 - one local, CIFS-mounted, or NFS-mounted destination;
 - an archive format;
 - a retention policy;
-- a manual or systemd-based schedule;
+- an optional systemd schedule;
 - optional lifecycle hooks.
 
-Vaultkeep supports:
+For each run, Vaultkeep validates the job, checks whether the selected sources changed, creates one independent backup directory when needed, verifies the archive, writes a manifest, and applies the configured retention policy. If nothing relevant changed, the run finishes as `unchanged` and does not create a new archive.
+
+Backups are ordinary archive files:
 
 - unencrypted `.tar.zst` archives;
-- password-protected `.tar.7z` archives containing one inner TAR;
-- content-based change detection;
-- one self-contained directory per backup;
-- SHA-256 archive checksums and backup manifests;
-- hourly, daily, weekly, monthly, and yearly retention;
-- persistent systemd timers with deterministic schedule spreading;
-- automatic recovery when the local state file is missing or unusable.
+- password-protected `.tar.7z` archives containing one inner TAR.
+
+Each backup is self-contained and includes the archive, a SHA-256 checksum, and a JSON manifest. Retention can keep hourly, daily, weekly, monthly, and yearly backups. Local state is only a cache; Vaultkeep can reconstruct it from destination manifests if the local state file is missing or unusable.
 
 Vaultkeep runs as root because jobs can read system files, access protected secrets, inspect mounts, and execute administrator-configured hooks.
 
