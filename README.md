@@ -6,6 +6,37 @@ Vaultkeep is a backup application for Debian systems. It creates independent arc
 
 This file is the user guide. For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](architecture_and_design.md).
 
+## Table of contents
+
+- [Overview](#overview)
+  - [What Vaultkeep does](#what-vaultkeep-does)
+  - [How a backup works](#how-a-backup-works)
+  - [Important boundaries](#important-boundaries)
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Install the application](#install-the-application)
+  - [Update the application](#update-the-application)
+  - [Uninstall the application](#uninstall-the-application)
+- [Usage](#usage)
+  - [Create a job configuration](#create-a-job-configuration)
+  - [Minimal job configuration](#minimal-job-configuration)
+  - [CLI reference](#cli-reference)
+  - [Check the installed version](#check-the-installed-version)
+  - [Validate a job configuration](#validate-a-job-configuration)
+  - [Update a job configuration](#update-a-job-configuration)
+  - [Run a job manually](#run-a-job-manually)
+  - [List job backups](#list-job-backups)
+  - [Verify job backups](#verify-job-backups)
+  - [Prune job backups](#prune-job-backups)
+  - [Configure a job timer](#configure-a-job-timer)
+  - [Manage all job timers](#manage-all-job-timers)
+  - [Password-protected backups](#password-protected-backups)
+  - [Lifecycle hooks](#lifecycle-hooks)
+  - [Restore an unencrypted backup](#restore-an-unencrypted-backup)
+  - [Restore an encrypted backup](#restore-an-encrypted-backup)
+  - [Logs and troubleshooting](#logs-and-troubleshooting)
+- [Design and implementation reference](#design-and-implementation-reference)
+
 ## Overview
 
 ### What Vaultkeep does
@@ -90,7 +121,7 @@ The installer installs:
 
 Legacy `p7zip-full` is not used.
 
-### Run the installer
+### Install the application
 
 Clone the repository and select the release to install:
 
@@ -152,7 +183,65 @@ Installation does not start a backup. The example remains disabled at:
 /etc/vaultkeep/jobs/example.yaml.disabled
 ```
 
-### Uninstall Vaultkeep
+After installing Vaultkeep, continue with [Create a job configuration](#create-a-job-configuration).
+
+### Update the application
+
+Fetch and select the newer release in the source checkout:
+
+```bash
+cd /path/to/vaultkeep
+git fetch --tags --prune
+git checkout <new-release-tag>
+```
+
+Preview the update from the refreshed checkout:
+
+```bash
+sudo ./install.sh update --dry-run
+```
+
+Apply it:
+
+```bash
+sudo ./install.sh update
+```
+
+The update mode:
+
+- requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;
+- stages the source and virtual environment as a complete versioned release;
+- validates the executable, example configuration, and systemd units;
+- atomically switches `/opt/vaultkeep/current` to the new release;
+- reloads systemd;
+- synchronizes existing timers;
+- preserves user jobs and secrets;
+- retains the complete preceding release for rollback.
+
+`install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. Reusing a version with different source content is rejected.
+
+Failed staging does not replace the active release. A failure after activation restores the preceding release, templates, timer registry, generated timer files, and enabled states.
+
+Confirm the installed version:
+
+```bash
+vaultkeep --version
+```
+
+Validate all jobs and inspect timer changes:
+
+```bash
+sudo vaultkeep timers validate
+sudo vaultkeep timers sync --dry-run
+```
+
+The installer already performs timer synchronization. Run the following manually only when applying later configuration changes:
+
+```bash
+sudo vaultkeep timers sync
+```
+
+### Uninstall the application
 
 Preview the complete uninstall plan:
 
@@ -176,15 +265,14 @@ sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
 
 `--purge` does not remove backup archives or hook executables. Installer-added Debian packages remain installed because other applications can use them.
 
-### Create a job
+## Usage
+
+### Create a job configuration
 
 Copy the disabled example and give it the intended job ID:
 
 ```bash
-sudo install \
-  --owner=root \
-  --group=root \
-  --mode=0640 \
+sudo cp \
   /etc/vaultkeep/jobs/example.yaml.disabled \
   /etc/vaultkeep/jobs/app.yaml
 ```
@@ -192,7 +280,7 @@ sudo install \
 Edit it:
 
 ```bash
-sudoedit /etc/vaultkeep/jobs/app.yaml
+sudo nano /etc/vaultkeep/jobs/app.yaml
 ```
 
 The filename stem and `job.id` must match. For this example:
@@ -204,7 +292,11 @@ job:
 
 Create the destination before validation. For mounted destinations, mount the share through the operating system and configure `require_mount: true`.
 
-### Minimal job example
+To run the job manually, see [Run a job manually](#run-a-job-manually).
+
+To run the job on a systemd schedule, see [Configure a job timer](#configure-a-job-timer).
+
+### Minimal job configuration
 
 ```yaml
 config_version: 1
@@ -265,23 +357,33 @@ logging:
   include_command_output: false
 ```
 
-### Validate the job
+### CLI reference
 
-Schema-only validation does not require mounted sources or destinations:
+`--config` is required for commands that operate on one job. It must appear before the command name.
 
-```bash
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate --schema-only
+```text
+vaultkeep [-h|--help]
+vaultkeep --version
+
+vaultkeep --config <job.yaml> validate [--schema-only]
+vaultkeep --config <job.yaml> run
+vaultkeep --config <job.yaml> list
+vaultkeep --config <job.yaml> verify
+vaultkeep --config <job.yaml> prune [--dry-run]
+
+vaultkeep --config <job.yaml> timer install
+vaultkeep --config <job.yaml> timer update
+vaultkeep --config <job.yaml> timer status
+vaultkeep --config <job.yaml> timer next
+vaultkeep --config <job.yaml> timer disable
+vaultkeep --config <job.yaml> timer remove
+
+vaultkeep timers list
+vaultkeep timers validate
+vaultkeep timers sync [--dry-run]
 ```
 
-Complete validation checks runtime paths, permissions, commands, hooks, mounts, secrets, and destination access:
-
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
-```
-
-Resolve every validation error before installing a timer or running a backup.
-
-## Usage
+Every command also supports `-h` or `--help` in its own position, for example `vaultkeep timer --help`.
 
 ### Check the installed version
 
@@ -291,7 +393,39 @@ vaultkeep --version
 
 The command prints only the installed version.
 
-### Run a backup manually
+### Validate a job configuration
+
+```bash
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate --schema-only
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+```
+
+Use schema-only validation for quick YAML structure checks. Use complete validation before running a backup or installing a timer.
+
+### Update a job configuration
+
+After changing a job configuration:
+
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+```
+
+For a schedule change:
+
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer update
+```
+
+Changes to sources, exclusions, destination identity, archive format, encryption mode, password-file path, or metadata policy force a new backup on the next run.
+
+Retention changes do not force a backup. Preview and apply the new policy explicitly:
+
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune --dry-run
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune
+```
+
+### Run a job manually
 
 ```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml run
@@ -304,7 +438,7 @@ Possible successful results:
 
 An unchanged run does not create an archive or apply retention.
 
-### List backups
+### List job backups
 
 ```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml list
@@ -312,7 +446,7 @@ sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml list
 
 `list` reports valid and malformed matching entries without reading complete archive contents or changing state.
 
-### Verify backups
+### Verify job backups
 
 ```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml verify
@@ -327,7 +461,7 @@ Verification checks:
 
 Encrypted verification reads the configured password file.
 
-### Preview and apply retention
+### Prune job backups
 
 Preview:
 
@@ -351,7 +485,7 @@ Each finer tier is limited by the horizon established by the next enabled coarse
 
 Retention runs automatically only after a new backup is finalized. Time passing or an unchanged run does not delete backups. Vaultkeep never automatically deletes unrelated, temporary, or malformed destination entries.
 
-### Configure scheduled backups
+### Configure a job timer
 
 Vaultkeep uses one systemd timer instance per job:
 
@@ -377,24 +511,32 @@ Install and start the timer:
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer install
 ```
 
-Timer commands:
+Update the timer after changing the job schedule:
 
 ```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer update
+```
+
+Inspect the timer:
+
+```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer status
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer next
+```
+
+Stop the timer without removing its Vaultkeep-managed systemd schedule file:
+
+```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer disable
+```
+
+Remove, or uninstall, the timer:
+
+```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer remove
 ```
 
-Commands covering every job:
-
-```bash
-sudo vaultkeep timers list
-sudo vaultkeep timers validate
-sudo vaultkeep timers sync --dry-run
-sudo vaultkeep timers sync
-```
+`timer remove` disables and stops the timer, removes the per-job systemd drop-in, reloads systemd, and unregisters the timer from Vaultkeep's timer ownership registry. It does not delete the job YAML file, local job state, or backup archives.
 
 Supported intervals:
 
@@ -441,22 +583,28 @@ schedule:
 
 Manual and scheduled runs execute the same backup workflow. A per-job lock prevents concurrent execution of the same job.
 
+### Manage all job timers
+
+Commands covering every job:
+
+```bash
+sudo vaultkeep timers list
+sudo vaultkeep timers validate
+sudo vaultkeep timers sync --dry-run
+sudo vaultkeep timers sync
+```
+
+`timers sync` creates or updates timers for jobs with `schedule.enabled: true` and disables timers for jobs with `schedule.enabled: false`. Use `--dry-run` to preview the actions.
+
 ### Password-protected backups
 
 Create a root-readable password file without placing the password in command history:
 
 ```bash
-sudo install \
-  --owner=root \
-  --group=root \
-  --mode=0600 \
-  /dev/null \
-  /etc/vaultkeep/secrets/app.passphrase
-
-sudoedit /etc/vaultkeep/secrets/app.passphrase
+sudo nano /etc/vaultkeep/secrets/app.passphrase
 ```
 
-The file contains one UTF-8 passphrase line.
+The installer creates `/etc/vaultkeep/secrets` as a root-only directory. The file contains one UTF-8 passphrase line.
 
 Change the archive settings:
 
@@ -480,7 +628,7 @@ V1 uses one password for a job and destination namespace. Password rotation requ
 
 ### Lifecycle hooks
 
-Hooks run as root and are trusted administrator code. A hook is executed directly without a shell:
+Hooks run as root and are trusted administrator code. Each hook phase accepts one hook object. The `command` field is one command expressed as an argument vector: the first item is the executable path, and the remaining items are arguments passed to that executable. It is split across YAML lines for readability; it is not several commands and it is not a shell script.
 
 ```yaml
 hooks:
@@ -498,6 +646,11 @@ hooks:
   on_unchanged: null
 ```
 
+The supported hook fields are:
+
+- `command`: required non-empty list of strings. `command[0]` must be an absolute executable path.
+- `timeout_seconds`: optional integer from 1 through 3600. The default is 300 seconds. If the hook does not finish before the timeout, Vaultkeep terminates the hook process group and treats the hook as failed.
+
 Available phases:
 
 - `before_check`: prepare dumps or source material before discovery;
@@ -506,6 +659,8 @@ Available phases:
 - `on_success`: notification after backup and retention succeed;
 - `on_failure`: notification after a workflow failure;
 - `on_unchanged`: notification after an unchanged run.
+
+Hook failures stop the current workflow phase. If `before_check` fails, source discovery does not start. If `before_archive` fails, archive creation does not start; Vaultkeep still attempts `after_archive` so partially applied quiescing can be released, then runs `on_failure`. If archive creation fails after `before_archive` succeeds, Vaultkeep also attempts `after_archive` and then runs `on_failure`.
 
 Hook executables and their paths must be root-owned and not writable by group or other users. Shell strings, pipelines, inherited environments, secret arguments, and multiple commands per phase are not supported. Use a securely managed wrapper executable for multi-step actions.
 
@@ -581,87 +736,6 @@ Local job state is stored below:
 ```
 
 If a job's `state.json` is missing or unusable, Vaultkeep reconstructs it automatically from valid destination manifests. Do not edit destination manifests to recreate local state.
-
-## Update
-
-### Update the application
-
-Fetch and select the newer release in the source checkout:
-
-```bash
-cd /path/to/vaultkeep
-git fetch --tags --prune
-git checkout <new-release-tag>
-```
-
-Preview the update from the refreshed checkout:
-
-```bash
-sudo ./install.sh update --dry-run
-```
-
-Apply it:
-
-```bash
-sudo ./install.sh update
-```
-
-The update mode:
-
-- requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;
-- stages the source and virtual environment as a complete versioned release;
-- validates the executable, example configuration, and systemd units;
-- atomically switches `/opt/vaultkeep/current` to the new release;
-- reloads systemd;
-- synchronizes existing timers;
-- preserves user jobs and secrets;
-- retains the complete preceding release for rollback.
-
-`install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. Reusing a version with different source content is rejected.
-
-Failed staging does not replace the active release. A failure after activation restores the preceding release, templates, timer registry, generated timer files, and enabled states.
-
-Confirm the installed version:
-
-```bash
-vaultkeep --version
-```
-
-Validate all jobs and inspect timer changes:
-
-```bash
-sudo vaultkeep timers validate
-sudo vaultkeep timers sync --dry-run
-```
-
-The installer already performs timer synchronization. Run the following manually only when applying later configuration changes:
-
-```bash
-sudo vaultkeep timers sync
-```
-
-### Update a job
-
-After changing a job configuration:
-
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
-```
-
-For a schedule change:
-
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer update
-```
-
-Changes to sources, exclusions, destination identity, archive format, encryption mode, password-file path, or metadata policy force a new backup on the next run.
-
-Retention changes do not force a backup. Preview and apply the new policy explicitly:
-
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune --dry-run
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune
-```
 
 ## Design and implementation reference
 
