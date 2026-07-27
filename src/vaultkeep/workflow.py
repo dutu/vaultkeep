@@ -5,13 +5,14 @@ from __future__ import annotations
 import socket
 import tempfile
 import uuid
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
 from vaultkeep.archive import ArchiveBuildRequest, build_archive, load_password_file
-from vaultkeep.config import JobConfig, load_config
+from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
 from vaultkeep.destination import (
     allocate_job_backup_paths,
     build_prune_plan,
@@ -61,44 +62,61 @@ class CommandResult:
     archive_path: Path | None = None
 
 
-def load_validated_config(config_path: Path) -> JobConfig:
+def load_validated_config(
+    config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+) -> JobConfig:
     """Load one configuration and run all non-environment validation."""
-    config = load_config(config_path)
-    validate_semantics(config, config_path=config_path)
+    parameters = dict(runtime_params or {})
+    config = resolve_runtime_config(load_config(config_path), parameters)
+    validate_semantics(config, config_path=config_path, runtime_params=parameters)
     return config
 
 
-def validate_job(config_path: Path, *, schema_only: bool = False) -> CommandResult:
+def validate_job(
+    config_path: Path,
+    *,
+    schema_only: bool = False,
+    runtime_params: Mapping[str, str] | None = None,
+) -> CommandResult:
     """Validate configuration, optionally including the runtime destination/source checks."""
-    config = load_validated_config(config_path)
+    config = load_validated_config(config_path, runtime_params=runtime_params)
     if not schema_only:
         _validate_runtime(config, require_sources=True, require_writable_destination=False)
     return CommandResult("validate", "valid")
 
 
-def list_backups(config_path: Path) -> tuple[CommandResult, tuple[object, ...]]:
+def list_backups(
+    config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+) -> tuple[CommandResult, tuple[object, ...]]:
     """Discover and report valid backups without requiring configured sources."""
-    config = load_validated_config(config_path)
+    parameters = dict(runtime_params or {})
+    config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
-    discovered = discover_backups(config)
+    discovered = discover_backups(config, runtime_params=parameters)
     return CommandResult("list", "listed", backups=len(discovered.backups)), discovered.backups
 
 
-def prune_backups(config_path: Path, *, dry_run: bool) -> CommandResult:
+def prune_backups(
+    config_path: Path, *, dry_run: bool, runtime_params: Mapping[str, str] | None = None
+) -> CommandResult:
     """Calculate or execute retention without touching configured sources."""
-    config = load_validated_config(config_path)
+    parameters = dict(runtime_params or {})
+    config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=False, require_writable_destination=not dry_run)
-    discovered = discover_backups(config)
+    discovered = discover_backups(config, runtime_params=parameters)
     plan = build_prune_plan(discovered, config.retention)
     removed = () if dry_run else execute_prune_plan(plan, discovered)
     return CommandResult("prune", "planned" if dry_run else "pruned", removed=len(removed))
 
 
-def verify_backups(config_path: Path) -> CommandResult:
+def verify_backups(
+    config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+) -> CommandResult:
     """Discovery already verifies sidecars; command exposes its structural result."""
-    config = load_validated_config(config_path)
+    parameters = dict(runtime_params or {})
+    config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
-    discovered = discover_backups(config)
+    discovered = discover_backups(config, runtime_params=parameters)
     if discovered.malformed:
         raise DestinationError(
             "Matching malformed destination entries prevent successful verification"
@@ -106,19 +124,27 @@ def verify_backups(config_path: Path) -> CommandResult:
     return CommandResult("verify", "verified", backups=len(discovered.backups))
 
 
-def run_backup(config_path: Path, *, paths: WorkflowPaths | None = None) -> CommandResult:
+def run_backup(
+    config_path: Path,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+    paths: WorkflowPaths | None = None,
+) -> CommandResult:
     """Execute change detection, archival, commit, state persistence, and retention."""
     if paths is None:
         paths = WorkflowPaths()
-    config = load_validated_config(config_path)
+    parameters = dict(runtime_params or {})
+    config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
     _validate_configured_hooks(config)
-    identity = job_identity_hash(config_path, config.job.id)
+    identity = job_identity_hash(config_path, config.job.id, runtime_params=parameters)
     lock = JobLock(
         job_lock_path(root=paths.lock_root, job_id=config.job.id, identity_hash=identity)
     )
     lock.acquire()
-    state_path = job_state_path(config_path, config.job.id, state_root=paths.state_root)
+    state_path = job_state_path(
+        config_path, config.job.id, runtime_params=parameters, state_root=paths.state_root
+    )
     hook_outcomes: list[HookOutcomeState] = []
     reconciliation = None
     latest_state: LocalState | None = None
@@ -136,8 +162,8 @@ def run_backup(config_path: Path, *, paths: WorkflowPaths | None = None) -> Comm
         )
         snapshot = discover_sources(config)
         source_digest = calculate_source_digest(snapshot)
-        config_fingerprint = calculate_config_fingerprint(config)
-        discovered = discover_backups(config)
+        config_fingerprint = calculate_config_fingerprint(config, runtime_params=parameters)
+        discovered = discover_backups(config, runtime_params=parameters)
         loaded_password = (
             load_password_file(Path(config.encryption.password_file))
             if config.encryption.password_file
@@ -203,6 +229,7 @@ def run_backup(config_path: Path, *, paths: WorkflowPaths | None = None) -> Comm
             created_at=now,
             source_digest=source_digest,
             archive_format=config.archive.format,
+            runtime_params=parameters,
         )
         create_staging_directory(allocated)
         hook_context = HookContext(
@@ -254,7 +281,7 @@ def run_backup(config_path: Path, *, paths: WorkflowPaths | None = None) -> Comm
             created_at=now,
             config_fingerprint=config_fingerprint,
         )
-        committed = discover_backups(config)
+        committed = discover_backups(config, runtime_params=parameters)
         record = next(
             record for record in committed.state_records if record.backup_id == manifest.backup_id
         )

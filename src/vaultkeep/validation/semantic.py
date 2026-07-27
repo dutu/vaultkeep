@@ -5,10 +5,12 @@ from __future__ import annotations
 import posixpath
 import re
 import string
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from vaultkeep.config.models import JobConfig
+from vaultkeep.config.runtime import PARAMETER_NAME
 from vaultkeep.errors import ConfigurationError, IssuePathPart, ValidationIssue
 from vaultkeep.sources.exclusions import InvalidExclusionPattern, compile_exclusions
 
@@ -23,12 +25,17 @@ _TIME_PATTERN = re.compile(r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)$")
 _SOURCE_HASH_FORMAT = re.compile(r"^\.[1-9]\d*$")
 
 
-def validate_semantics(config: JobConfig, *, config_path: Path | None = None) -> None:
+def validate_semantics(
+    config: JobConfig,
+    *,
+    config_path: Path | None = None,
+    runtime_params: Mapping[str, str] | None = None,
+) -> None:
     """Collect and raise all independently detectable semantic errors."""
     issues: list[ValidationIssue] = []
     _validate_paths(config, issues)
     _validate_exclusions(config, issues)
-    _validate_template(config, issues)
+    _validate_template(config, issues, runtime_params=runtime_params or {})
     _validate_archive(config, issues)
     _validate_retention(config, issues)
     _validate_schedule(config, issues)
@@ -176,7 +183,12 @@ def _validate_exclusions(config: JobConfig, issues: list[ValidationIssue]) -> No
                 )
 
 
-def _validate_template(config: JobConfig, issues: list[ValidationIssue]) -> None:
+def _validate_template(
+    config: JobConfig,
+    issues: list[ValidationIssue],
+    *,
+    runtime_params: Mapping[str, str],
+) -> None:
     template = config.destination.name_template
     path = ("destination", "name_template")
 
@@ -202,14 +214,22 @@ def _validate_template(config: JobConfig, issues: list[ValidationIssue]) -> None
                 "template_backup_id",
             )
             continue
-        if field_name not in _SUPPORTED_TEMPLATE_FIELDS:
+        if field_name not in _SUPPORTED_TEMPLATE_FIELDS and field_name not in runtime_params:
             has_invalid_field = True
-            _issue(
-                issues,
-                path,
-                f"Unknown placeholder: {{{field_name}}}.",
-                "template_placeholder",
-            )
+            if PARAMETER_NAME.fullmatch(field_name) is None:
+                _issue(
+                    issues,
+                    path,
+                    f"Unknown placeholder: {{{field_name}}}.",
+                    "template_placeholder",
+                )
+            else:
+                _issue(
+                    issues,
+                    path,
+                    f"Missing runtime parameter: {field_name}.",
+                    "param_missing",
+                )
             continue
         if conversion is not None:
             has_invalid_field = True
@@ -226,6 +246,14 @@ def _validate_template(config: JobConfig, issues: list[ValidationIssue]) -> None
                 path,
                 f"Nested fields are not supported for {{{field_name}}}.",
                 "template_nested",
+            )
+        elif field_name in runtime_params and format_spec:
+            has_invalid_field = True
+            _issue(
+                issues,
+                path,
+                f"Format specifiers are not supported for runtime parameter {{{field_name}}}.",
+                "template_format",
             )
         elif field_name == "source_hash":
             if format_spec and _SOURCE_HASH_FORMAT.fullmatch(format_spec) is None:
@@ -260,6 +288,7 @@ def _validate_template(config: JobConfig, issues: list[ValidationIssue]) -> None
             timestamp_utc=sample_time,
             source_hash="a" * 64,
             format=config.archive.format,
+            **runtime_params,
         )
     except (KeyError, ValueError) as error:
         _issue(issues, path, f"Template cannot be rendered: {error}", "template_render")
@@ -337,6 +366,16 @@ def _validate_retention(config: JobConfig, issues: list[ValidationIssue]) -> Non
 
 def _validate_schedule(config: JobConfig, issues: list[ValidationIssue]) -> None:
     schedule = config.schedule
+    if not schedule.enabled:
+        return
+    if schedule.interval is None:
+        _issue(
+            issues,
+            ("schedule", "interval"),
+            "Enabled schedules require interval.",
+            "schedule_interval",
+        )
+        return
     if (schedule.at is None) == (schedule.window is None):
         _issue(
             issues,

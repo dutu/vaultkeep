@@ -537,7 +537,7 @@ Digest format version 1 uses SHA-256. Every field is framed as a two-byte big-en
 
 The same immutable `SourceSnapshot` entry list drives hashing and archive creation. Archive tools must not independently recurse through source directories.
 
-Vaultkeep also calculates a backup-relevant configuration fingerprint. It includes source paths, exclusions, source options, destination identity, archive format, encryption mode, password-file path, and metadata policy. It excludes password contents, logging, retention counts, hooks, and scheduling. A changed fingerprint forces a new backup even when the source digest is unchanged.
+Vaultkeep also calculates a backup-relevant configuration fingerprint. It includes source paths, exclusions, source options, destination identity, explicit runtime parameters, archive format, encryption mode, password-file path, and metadata policy. It excludes password contents, logging, retention counts, hooks, and scheduling. A changed fingerprint forces a new backup even when the source digest is unchanged.
 
 Configuration fingerprint format version 1 uses canonical, key-sorted JSON and SHA-256. Destination identity includes the root, naming template, marker path, and mount requirement. Archive identity includes the format and compression level. The fixed metadata-policy identifier records that mode, numeric user ID, and numeric group ID participate in source hashing.
 
@@ -767,7 +767,7 @@ Example result:
 
 Unrelated entries must be ignored.
 
-Vaultkeep renders `destination.name_template` once for each new backup and calls the result the **backup base name**. It derives every final name:
+Vaultkeep renders `destination.name_template` once for each new backup and calls the result the **backup base name**. The backup base name is the common artifact stem before Vaultkeep appends the backup ID to the directory name. It derives every final name:
 
 ```text
 directory: <backup-base-name>-<backup_id>
@@ -803,11 +803,25 @@ Source-hash fields support precision-based truncation:
 {source_hash:.12}
 ```
 
+`destination.root` and `destination.name_template` may also reference explicit runtime parameters supplied with repeatable `--param KEY=VALUE` command-line options. Runtime parameters are intended for non-secret selectors such as repository names:
+
+```yaml
+destination:
+  root: /mnt/backups/{repo}
+  name_template: "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+```
+
+```bash
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a run
+```
+
+Every runtime placeholder used by the destination configuration must be supplied. Extra unused runtime parameters are rejected. Runtime parameters must not use built-in placeholder names or `backup_id`, and they must not use format specifiers.
+
 ## 11.3 Template constraints
 
 Templates must:
 
-- use only supported placeholders;
+- use only built-in placeholders and supplied runtime-parameter placeholders;
 - produce a non-empty name;
 - not contain `/`;
 - not contain `..`;
@@ -1236,12 +1250,12 @@ Check cross-field relationships:
 
 - one or more sources are configured;
 - source paths are absolute;
-- destination root is absolute;
+- rendered destination root is absolute;
 - destination is not inside a source;
 - sources do not overlap;
 - `name_template` is present;
 - effective naming includes a timestamp;
-- template placeholders are supported;
+- template placeholders are built-in placeholders or supplied runtime parameters;
 - `name_template` does not contain `{backup_id}`;
 - `tar.zst` requires `encryption.mode: none` and forbids `password_file`;
 - `tar.7z` requires `encryption.mode: password` and an absolute `password_file`;
@@ -1249,9 +1263,9 @@ Check cross-field relationships:
 - at least one retention tier is greater than zero;
 - the `schedule` section is present for every job;
 - `schedule.enabled` is a boolean;
-- the schedule interval is hourly, daily, weekly, or monthly;
-- exactly one of `schedule.at` and `schedule.window` is set;
-- schedule weekday and month-day fields match the selected interval;
+- when `schedule.enabled` is true, the schedule interval is hourly, daily, weekly, or monthly;
+- when `schedule.enabled` is true, exactly one of `schedule.at` and `schedule.window` is set;
+- when `schedule.enabled` is true, schedule weekday and month-day fields match the selected interval;
 - each configured hook is null or contains only `command` and `timeout_seconds`;
 - each hook command is a non-empty list of strings whose first element is absolute;
 - hook command elements contain no null characters;
@@ -1359,26 +1373,28 @@ Output:
 Main commands:
 
 ```bash
-vaultkeep --config job.yaml run
-vaultkeep --config job.yaml validate
-vaultkeep --config job.yaml validate --schema-only
-vaultkeep --config job.yaml list
-vaultkeep --config job.yaml verify
-vaultkeep --config job.yaml prune
-vaultkeep --config job.yaml prune --dry-run
+vaultkeep --config job.yaml [--param KEY=VALUE ...] run
+vaultkeep --config job.yaml [--param KEY=VALUE ...] validate
+vaultkeep --config job.yaml [--param KEY=VALUE ...] validate --schema-only
+vaultkeep --config job.yaml [--param KEY=VALUE ...] list
+vaultkeep --config job.yaml [--param KEY=VALUE ...] verify
+vaultkeep --config job.yaml [--param KEY=VALUE ...] prune
+vaultkeep --config job.yaml [--param KEY=VALUE ...] prune --dry-run
 ```
+
+Any command that accepts `--config` also accepts repeatable `--param KEY=VALUE`. `--param` is rejected for commands that do not operate on one explicit configuration, such as `timers`.
 
 `--version` and `validate --schema-only` run without root privileges. Runtime validation, `run`, `list`, `verify`, `prune`, and every timer command require effective user ID `0` in the installed v1 product. Tests use explicit temporary path overrides and do not weaken this production check.
 
 Timer commands:
 
 ```bash
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer install
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer update
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer status
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer next
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer disable
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer remove
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer install
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer update
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer status
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer next
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer disable
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer remove
 ```
 
 Bulk timer commands:
@@ -1517,9 +1533,16 @@ schedule:
 
 `at` and `window` are mutually exclusive.
 
-Exactly one of `at` or `window` is required. `persistent` defaults to `true`.
+When `schedule.enabled` is `true`, `interval` is required and exactly one of `at` or `window` is required. `persistent` defaults to `true`.
 
-The `schedule` section is required even for manual-only jobs. `enabled: false` prevents timer installation and causes `timers sync` to disable an existing instance without discarding its generated schedule.
+The `schedule` section is required even for manual-only jobs. When `enabled: false`, the minimal valid block is:
+
+```yaml
+schedule:
+  enabled: false
+```
+
+When `enabled: false`, other schedule fields are optional and are not required for manual `run`, `list`, `verify`, or `prune`. `enabled: false` prevents timer installation and causes `timers sync` to disable an existing unparameterized instance.
 
 For daily, weekly, and monthly intervals, `at` and window endpoints use local `HH:MM` wall-clock time. V1 windows must end later than they start on the same day; windows crossing midnight are invalid.
 
@@ -1548,7 +1571,7 @@ For `window`, systemd chooses a stable execution offset based on:
 machine ID + system-manager user ID + timer unit name
 ```
 
-The timer unit name contains the normalized job ID. Vaultkeep maps the window start to `OnCalendar=`, its duration to `RandomizedDelaySec=`, and enables `FixedRandomDelay=yes`.
+For unparameterized jobs, the timer unit name contains the normalized job ID. For parameterized jobs, the timer unit name contains the job ID, a sanitized parameter summary, and a stable hash derived from the canonical configuration path, job ID, and sorted runtime parameters. Vaultkeep maps the window start to `OnCalendar=`, its duration to `RandomizedDelaySec=`, and enables `FixedRandomDelay=yes`.
 
 Properties:
 
@@ -1604,11 +1627,12 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 
 1. validate the configuration;
 2. calculate the timer schedule;
-3. create the per-instance drop-in;
-4. reload systemd;
-5. enable and start the timer;
-6. verify the timer;
-7. show the next run.
+3. create the per-instance timer drop-in;
+4. for parameterized jobs, create a per-instance service override containing the exact `vaultkeep --config ... --param ... run` command and matching `ConditionPathExists`;
+5. reload systemd;
+6. enable and start the timer;
+7. verify the timer;
+8. show the next run.
 
 `timer install` and `timer update` require `schedule.enabled: true` and refuse to enable an invalid or incomplete job.
 
@@ -1652,7 +1676,7 @@ Vaultkeep maintains an ownership registry:
 
 The registry is root-owned, mode `0600`, schema-versioned, and updated atomically. It records the exact generated path and unit name for every managed instance.
 
-Timer commands require a configuration file directly below the managed jobs directory. Its filename stem must equal `job.id`; this creates the exact mapping from `vaultkeep@<job>.timer` to `/etc/vaultkeep/jobs/<job>.yaml`.
+Timer commands require a configuration file directly below the managed jobs directory. Its filename stem must equal `job.id`. Unparameterized jobs map directly from `vaultkeep@<job>.timer` to `/etc/vaultkeep/jobs/<job>.yaml`. Parameterized jobs use a derived instance name and a generated service override that points back to the same configuration file plus the exact runtime parameters.
 
 ---
 

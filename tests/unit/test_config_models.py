@@ -22,6 +22,17 @@ def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> Non
     assert config.archive.compression_level == 6
 
 
+def test_disabled_schedule_fields_are_optional(valid_config: dict[str, Any]) -> None:
+    candidate = deepcopy(valid_config)
+    candidate["schedule"] = {"enabled": False}
+
+    config = JobConfig.model_validate(candidate)
+
+    assert config.schedule.enabled is False
+    assert config.schedule.interval is None
+    assert config.schedule.persistent is True
+
+
 def test_disabled_example_matches_strict_models() -> None:
     config = load_config(EXAMPLE_CONFIG)
 

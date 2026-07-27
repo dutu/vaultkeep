@@ -8,10 +8,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vaultkeep.config import JobConfig, load_config
+from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
 from vaultkeep.errors import TimerError
 from vaultkeep.validation import validate_semantics
 
@@ -94,6 +95,10 @@ class TimerPaths:
 def render_schedule(config: JobConfig) -> RenderedSchedule:
     """Render the validated local-time systemd calendar schedule for a job."""
     schedule = config.schedule
+    if not schedule.enabled:
+        raise TimerError("Schedule is disabled")
+    if schedule.interval is None:
+        raise TimerError("Enabled schedules require interval")
     if schedule.at is not None:
         time_value = schedule.at
     elif schedule.window is not None:
@@ -145,55 +150,79 @@ class TimerManager:
         if match is None or int(match.group(1)) < 247:
             raise TimerError("Timer management requires systemd version 247 or newer")
 
-    def install(self, config_path: Path) -> RenderedSchedule:
-        config = self._load_managed(config_path, require_enabled=True)
+    def install(
+        self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    ) -> RenderedSchedule:
+        parameters = dict(runtime_params or {})
+        config = self._load_managed(config_path, require_enabled=True, runtime_params=parameters)
         rendered = render_schedule(config)
-        self._write_drop_in(config.job.id, rendered)
+        instance = self._instance_id(config_path, config.job.id, parameters)
+        self._write_timer_drop_in(instance, rendered)
+        self._write_service_drop_in(config_path, instance, parameters)
         self._daemon_reload()
-        self._systemctl("enable", "--now", self._unit(config.job.id))
-        self._register(config.job.id)
+        self._systemctl("enable", "--now", self._unit(instance))
+        self._register(instance)
         return rendered
 
-    def update(self, config_path: Path) -> RenderedSchedule:
-        config = self._load_managed(config_path, require_enabled=True)
+    def update(
+        self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    ) -> RenderedSchedule:
+        parameters = dict(runtime_params or {})
+        config = self._load_managed(config_path, require_enabled=True, runtime_params=parameters)
         rendered = render_schedule(config)
-        enabled = self._is_enabled(config.job.id)
-        self._write_drop_in(config.job.id, rendered)
+        instance = self._instance_id(config_path, config.job.id, parameters)
+        enabled = self._is_enabled(instance)
+        self._write_timer_drop_in(instance, rendered)
+        self._write_service_drop_in(config_path, instance, parameters)
         self._daemon_reload()
         if enabled:
-            self._systemctl("restart", self._unit(config.job.id))
-        self._register(config.job.id)
+            self._systemctl("restart", self._unit(instance))
+        self._register(instance)
         return rendered
 
-    def disable(self, config_path: Path) -> None:
-        config = self._load_managed(config_path, require_enabled=False)
-        self._systemctl("disable", "--now", self._unit(config.job.id), check=False)
-        self._systemctl("clean", "--what=state", self._unit(config.job.id), check=False)
+    def disable(
+        self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    ) -> None:
+        parameters = dict(runtime_params or {})
+        config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
+        instance = self._instance_id(config_path, config.job.id, parameters)
+        self._systemctl("disable", "--now", self._unit(instance), check=False)
+        self._systemctl("clean", "--what=state", self._unit(instance), check=False)
 
-    def remove(self, config_path: Path) -> None:
-        config = self._load_managed(config_path, require_enabled=False)
-        self.disable(config_path)
-        drop_in = self._drop_in_path(config.job.id)
-        if drop_in.exists():
-            drop_in.unlink()
-            drop_in.parent.rmdir()
+    def remove(self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None) -> None:
+        parameters = dict(runtime_params or {})
+        config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
+        instance = self._instance_id(config_path, config.job.id, parameters)
+        self.disable(config_path, runtime_params=parameters)
+        for drop_in in (self._timer_drop_in_path(instance), self._service_drop_in_path(instance)):
+            if drop_in.exists():
+                drop_in.unlink()
+                drop_in.parent.rmdir()
         self._daemon_reload()
-        self._unregister(config.job.id)
+        self._unregister(instance)
 
-    def next(self, config_path: Path) -> str:
-        config = self._load_managed(config_path, require_enabled=False)
-        if not self._drop_in_path(config.job.id).is_file():
-            raise TimerError(f"Timer is not installed: {self._unit(config.job.id)}")
+    def next(self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None) -> str:
+        parameters = dict(runtime_params or {})
+        config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
+        instance = self._instance_id(config_path, config.job.id, parameters)
+        if not self._timer_drop_in_path(instance).is_file():
+            raise TimerError(f"Timer is not installed: {self._unit(instance)}")
         return self._systemctl(
-            "show", "--property=NextElapseUSecRealtime", "--value", self._unit(config.job.id)
+            "show", "--property=NextElapseUSecRealtime", "--value", self._unit(instance)
         ).strip()
 
-    def status(self, config_path: Path) -> str:
-        config = self._load_managed(config_path, require_enabled=False)
-        return self._systemctl("status", self._unit(config.job.id), check=False)
+    def status(self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None) -> str:
+        parameters = dict(runtime_params or {})
+        config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
+        instance = self._instance_id(config_path, config.job.id, parameters)
+        return self._systemctl("status", self._unit(instance), check=False)
 
-    def validate(self, config_path: Path) -> RenderedSchedule:
-        config = self._load_managed(config_path, require_enabled=False)
+    def validate(
+        self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    ) -> RenderedSchedule:
+        config = self._load_managed(
+            config_path, require_enabled=False, runtime_params=runtime_params
+        )
         rendered = render_schedule(config)
         self._run(("systemd-analyze", "calendar", rendered.on_calendar))
         return rendered
@@ -202,7 +231,7 @@ class TimerManager:
         planned: list[str] = []
         for config_path in sorted(self.paths.jobs_root.glob("*.yaml")):
             config = self._load_managed(config_path, require_enabled=False)
-            action = "update" if self._drop_in_path(config.job.id).exists() else "create"
+            action = "update" if self._timer_drop_in_path(config.job.id).exists() else "create"
             if not config.schedule.enabled:
                 action = "disable"
             planned.append(f"{action} {config.job.id}")
@@ -217,7 +246,7 @@ class TimerManager:
         result: list[str] = []
         for config_path in sorted(self.paths.jobs_root.glob("*.yaml")):
             config = self._load_managed(config_path, require_enabled=False)
-            installed = self._drop_in_path(config.job.id).is_file()
+            installed = self._timer_drop_in_path(config.job.id).is_file()
             result.append(
                 f"{config.job.id}: enabled={config.schedule.enabled} installed={installed}"
             )
@@ -229,34 +258,72 @@ class TimerManager:
         self._registry()
         for config_path in sorted(self.paths.jobs_root.glob("*.yaml")):
             config = self._load_managed(config_path, require_enabled=False)
+            if not config.schedule.enabled:
+                validated.append(f"valid disabled {config.job.id}")
+                continue
             rendered = render_schedule(config)
             self._run(("systemd-analyze", "calendar", rendered.on_calendar))
             validated.append(f"valid {config.job.id}: {rendered.on_calendar}")
         return tuple(validated)
 
-    def _load_managed(self, config_path: Path, *, require_enabled: bool) -> JobConfig:
+    def _load_managed(
+        self,
+        config_path: Path,
+        *,
+        require_enabled: bool,
+        runtime_params: Mapping[str, str] | None = None,
+    ) -> JobConfig:
         resolved = config_path.resolve()
         jobs_root = self.paths.jobs_root.resolve()
         if resolved.parent != jobs_root or resolved.suffix != ".yaml":
             raise TimerError(f"Timer configuration must be directly below {jobs_root}: {resolved}")
-        config = load_config(resolved)
-        validate_semantics(config, config_path=resolved)
+        parameters = dict(runtime_params or {})
+        config = resolve_runtime_config(load_config(resolved), parameters)
+        validate_semantics(config, config_path=resolved, runtime_params=parameters)
         if config.job.id != resolved.stem:
             raise TimerError("Timer configuration filename must match job.id")
         if require_enabled and not config.schedule.enabled:
             raise TimerError("Timer installation requires schedule.enabled: true")
         return config
 
-    def _unit(self, job_id: str) -> str:
-        return f"vaultkeep@{job_id}.timer"
+    def _unit(self, instance: str) -> str:
+        return f"vaultkeep@{instance}.timer"
 
-    def _drop_in_path(self, job_id: str) -> Path:
-        return self.paths.units_root / f"vaultkeep@{job_id}.timer.d" / "schedule.conf"
+    def _timer_drop_in_path(self, instance: str) -> Path:
+        return self.paths.units_root / f"vaultkeep@{instance}.timer.d" / "schedule.conf"
 
-    def _write_drop_in(self, job_id: str, rendered: RenderedSchedule) -> None:
-        destination = self._drop_in_path(job_id)
+    def _service_drop_in_path(self, instance: str) -> Path:
+        return self.paths.units_root / f"vaultkeep@{instance}.service.d" / "override.conf"
+
+    def _write_timer_drop_in(self, instance: str, rendered: RenderedSchedule) -> None:
+        destination = self._timer_drop_in_path(instance)
         destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         _atomic_write(destination, rendered.drop_in(), mode=0o644)
+
+    def _write_service_drop_in(
+        self, config_path: Path, instance: str, runtime_params: Mapping[str, str]
+    ) -> None:
+        destination = self._service_drop_in_path(instance)
+        if not runtime_params:
+            if destination.exists():
+                destination.unlink()
+                destination.parent.rmdir()
+            return
+        resolved = config_path.resolve()
+        arguments = ["/usr/local/bin/vaultkeep", "--config", str(resolved)]
+        for key, value in sorted(runtime_params.items()):
+            arguments.extend(("--param", f"{key}={value}"))
+        arguments.append("run")
+        content = (
+            "[Unit]\n"
+            "ConditionPathExists=\n"
+            f"ConditionPathExists={resolved}\n\n"
+            "[Service]\n"
+            "ExecStart=\n"
+            f"ExecStart={' '.join(arguments)}\n"
+        )
+        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        _atomic_write(destination, content, mode=0o644)
 
     def _registry(self) -> dict[str, str]:
         if not self.paths.registry_path.exists():
@@ -267,20 +334,48 @@ class TimerManager:
         except (OSError, KeyError, TypeError, ValueError) as error:
             raise TimerError(f"Invalid timer ownership registry: {error}") from error
 
-    def _register(self, job_id: str) -> None:
+    def _register(self, instance: str) -> None:
         registry = self._registry()
-        registry[job_id] = str(self._drop_in_path(job_id))
+        registry[instance] = str(self._timer_drop_in_path(instance))
         self.paths.registry_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         _write_registry(self.paths.registry_path, registry)
 
-    def _unregister(self, job_id: str) -> None:
+    def _unregister(self, instance: str) -> None:
         registry = self._registry()
-        registry.pop(job_id, None)
+        registry.pop(instance, None)
         self.paths.registry_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         _write_registry(self.paths.registry_path, registry)
 
-    def _is_enabled(self, job_id: str) -> bool:
-        return self._systemctl("is-enabled", self._unit(job_id), check=False).strip() == "enabled"
+    def _is_enabled(self, instance: str) -> bool:
+        return self._systemctl("is-enabled", self._unit(instance), check=False).strip() == "enabled"
+
+    def _instance_id(
+        self, config_path: Path, job_id: str, runtime_params: Mapping[str, str]
+    ) -> str:
+        if not runtime_params:
+            return job_id
+        payload = json.dumps(
+            {
+                "config": str(config_path.resolve()),
+                "job": job_id,
+                "params": dict(sorted(runtime_params.items())),
+            },
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        import hashlib
+
+        suffix = hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
+        summary_parts = [
+            f"{_sanitize_instance_part(key)}-{_sanitize_instance_part(value)}"
+            for key, value in sorted(runtime_params.items())
+        ]
+        summary = "--".join(summary_parts)
+        if len(summary) > 80:
+            summary = summary[:80].rstrip("-")
+        return f"{job_id}--{summary}--{suffix}"
 
     def _daemon_reload(self) -> None:
         self._systemctl("daemon-reload")
@@ -316,3 +411,8 @@ def _atomic_write(path: Path, content: str, *, mode: int) -> None:
 
 def _write_registry(path: Path, instances: dict[str, str]) -> None:
     _atomic_write(path, json.dumps({"version": 1, "instances": instances}) + "\n", mode=0o600)
+
+
+def _sanitize_instance_part(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-")
+    return sanitized or "value"

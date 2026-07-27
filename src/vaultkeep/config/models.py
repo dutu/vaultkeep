@@ -81,7 +81,7 @@ class ScheduleConfig(StrictConfigModel):
     """Systemd schedule settings."""
 
     enabled: bool
-    interval: Literal["hourly", "daily", "weekly", "monthly"]
+    interval: Literal["hourly", "daily", "weekly", "monthly"] | None = None
     window: NonEmptyString | None = None
     at: NonEmptyString | None = None
     day: MonthDay | NonEmptyString | None = None

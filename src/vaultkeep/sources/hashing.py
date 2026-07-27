@@ -69,6 +69,7 @@ def calculate_source_digest(
 def calculate_config_fingerprint(
     config: JobConfig,
     *,
+    runtime_params: Mapping[str, str] | None = None,
     format_version: int = CONFIG_FINGERPRINT_FORMAT_VERSION,
 ) -> str:
     """Hash only configuration that changes backup identity or content."""
@@ -98,6 +99,7 @@ def calculate_config_fingerprint(
             "marker_file": config.destination.marker_file,
             "require_mount": config.destination.require_mount,
         },
+        "runtime_params": dict(sorted((runtime_params or {}).items())),
         "archive": {
             "format": config.archive.format,
             "compression_level": config.archive.compression_level,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import stat
 import string
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,11 +65,16 @@ class DiscoveryResult:
         return tuple(backup.state_record for backup in self.backups)
 
 
-def discover_backups(config: JobConfig) -> DiscoveryResult:
+def discover_backups(
+    config: JobConfig, *, runtime_params: Mapping[str, str] | None = None
+) -> DiscoveryResult:
     """Return valid configured-job backups and matching malformed entries."""
     root = Path(config.destination.root)
     matcher = _directory_matcher(
-        config.destination.name_template, config.job.id, config.archive.format
+        config.destination.name_template,
+        config.job.id,
+        config.archive.format,
+        runtime_params=runtime_params,
     )
     try:
         children = tuple(root.iterdir())
@@ -152,9 +158,16 @@ def _require_exact_artifacts(directory: Path, expected: set[str]) -> None:
         )
 
 
-def _directory_matcher(template: str, job_id: str, archive_format: str) -> re.Pattern[str]:
+def _directory_matcher(
+    template: str,
+    job_id: str,
+    archive_format: str,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+) -> re.Pattern[str]:
     """Build a conservative matcher for the configured name template and ID suffix."""
     fragments: list[str] = []
+    parameters = dict(runtime_params or {})
     try:
         parsed = tuple(_FORMATTER.parse(template))
     except ValueError as error:
@@ -165,7 +178,13 @@ def _directory_matcher(template: str, job_id: str, archive_format: str) -> re.Pa
             continue
         if conversion is not None:
             raise DestinationDiscoveryError("Destination template conversions are not supported")
-        if field == "job":
+        if field in parameters:
+            if format_spec:
+                raise DestinationDiscoveryError(
+                    f"Runtime destination template field {field!r} cannot use a format specifier"
+                )
+            fragments.append(re.escape(parameters[field]))
+        elif field == "job":
             fragments.append(re.escape(job_id))
         elif field == "format":
             fragments.append(re.escape(archive_format))

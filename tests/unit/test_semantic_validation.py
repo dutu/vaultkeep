@@ -17,9 +17,11 @@ def _config(candidate: dict[str, Any]) -> JobConfig:
     return JobConfig.model_validate(candidate)
 
 
-def _issue_codes(config: JobConfig, *, path: Path | None = None) -> set[str]:
+def _issue_codes(
+    config: JobConfig, *, path: Path | None = None, runtime_params: dict[str, str] | None = None
+) -> set[str]:
     with pytest.raises(ConfigurationError) as captured:
-        validate_semantics(config, config_path=path)
+        validate_semantics(config, config_path=path, runtime_params=runtime_params)
     return {issue.code for issue in captured.value.issues}
 
 
@@ -64,7 +66,7 @@ def test_marker_file_must_remain_below_destination(
     ("template", "expected_code"),
     [
         ("backup-{job}", "template_timestamp"),
-        ("backup-{date}-{timestamp_utc}", "template_placeholder"),
+        ("backup-{date}-{timestamp_utc}", "param_missing"),
         ("backup-{backup_id}-{timestamp_utc}", "template_backup_id"),
         ("backup/{timestamp_utc}", "template_separator"),
         ("backup-..-{timestamp_utc}", "template_parent"),
@@ -81,6 +83,15 @@ def test_invalid_naming_templates_are_rejected(
     candidate["destination"]["name_template"] = template
 
     assert expected_code in _issue_codes(_config(candidate))
+
+
+def test_runtime_parameter_placeholders_are_accepted_when_supplied(
+    valid_config: dict[str, Any],
+) -> None:
+    candidate = deepcopy(valid_config)
+    candidate["destination"]["name_template"] = "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+
+    validate_semantics(_config(candidate), runtime_params={"repo": "nas-a"})
 
 
 def test_tar_zst_forbids_password_encryption(valid_config: dict[str, Any]) -> None:
@@ -167,6 +178,10 @@ def test_retention_requires_an_enabled_tier(valid_config: dict[str, Any]) -> Non
             {"enabled": True, "interval": "daily", "day": 1, "at": "03:30"},
             "schedule_day",
         ),
+        (
+            {"enabled": True, "at": "03:30"},
+            "schedule_interval",
+        ),
     ],
 )
 def test_invalid_schedules_are_rejected(
@@ -205,6 +220,13 @@ def test_valid_schedule_variants_pass(
 ) -> None:
     candidate = deepcopy(valid_config)
     candidate["schedule"] = schedule
+
+    validate_semantics(_config(candidate))
+
+
+def test_disabled_schedule_requires_only_enabled(valid_config: dict[str, Any]) -> None:
+    candidate = deepcopy(valid_config)
+    candidate["schedule"] = {"enabled": False}
 
     validate_semantics(_config(candidate))
 

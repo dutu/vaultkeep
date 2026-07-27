@@ -15,6 +15,7 @@ from vaultkeep.config.models import (
     SourceConfig,
     SourceOptionsConfig,
 )
+from vaultkeep.config.runtime import parse_runtime_parameters, resolve_runtime_config
 
 __all__ = [
     "ArchiveConfig",
@@ -30,4 +31,6 @@ __all__ = [
     "SourceConfig",
     "SourceOptionsConfig",
     "load_config",
+    "parse_runtime_parameters",
+    "resolve_runtime_config",
 ]

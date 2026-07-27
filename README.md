@@ -339,9 +339,6 @@ retention:
 
 schedule:
   enabled: false
-  interval: daily
-  window: "01:00-05:00"
-  persistent: true
 
 hooks:
   before_check: null
@@ -358,7 +355,7 @@ logging:
 
 ### Destination name templates
 
-`destination.name_template` controls the backup base name used for each new backup. Vaultkeep renders the template once after source change detection and derives the final artifact names from that rendered base name:
+`destination.name_template` controls the backup base name used for each new backup. The backup base name is the rendered template value before Vaultkeep appends the backup ID. Vaultkeep renders the template once after source change detection and derives the final artifact names from that rendered base name:
 
 ```text
 directory: <backup-base-name>-<backup_id>
@@ -394,9 +391,33 @@ destination:
   name_template: "backup-{job}-{hostname}-{timestamp_utc:%Y%m%dT%H%M%SZ}-{source_hash:.12}"
 ```
 
-Template output must be a single safe path name below `destination.root`: it cannot be empty, contain `/`, contain `\`, contain `..`, contain null or control characters, or escape the destination root. Template conversions such as `{job!r}`, nested fields, unknown placeholders, and unsupported format specifiers are rejected.
+Template output must be a single safe path name below `destination.root`: it cannot be empty, contain `/`, contain `\`, contain `..`, contain null or control characters, or escape the destination root. Template conversions such as `{job!r}`, nested fields, missing runtime parameters, and unsupported format specifiers are rejected.
 
 Do not include `{backup_id}` in `destination.name_template`. Vaultkeep generates a lowercase 32-character backup ID and appends it only to the final directory name. Hook `command` values are not templates and do not expand `{job}`-style placeholders.
+
+### Runtime template parameters
+
+Shared job configurations can use explicit runtime parameters in `destination.root` and `destination.name_template`.
+
+Example:
+
+```yaml
+destination:
+  root: /mnt/backups/{repo}
+  name_template: "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+```
+
+Run it with:
+
+```bash
+vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a run
+```
+
+Any placeholder in `destination.root` must be supplied with `--param`. Any placeholder in `destination.name_template` that is not one of the built-in fields above must also be supplied with `--param`. Extra unused parameters are rejected.
+
+Runtime parameter names must match `[A-Za-z_][A-Za-z0-9_]*` and cannot use built-in names such as `job`, `timestamp_utc`, `source_hash`, or `backup_id`. Runtime parameter values are intended for non-secret selectors such as repository names; they may contain only letters, digits, `.`, `_`, `:`, `@`, `+`, and `-`.
+
+Runtime parameter values are part of the effective backup identity. Different parameter values use different destination namespaces, configuration fingerprints, local state files, locks, and timer instances.
 
 ### CLI reference
 
@@ -406,18 +427,18 @@ Do not include `{backup_id}` in `destination.name_template`. Vaultkeep generates
 vaultkeep [-h|--help]
 vaultkeep --version
 
-vaultkeep --config <job.yaml> validate [--schema-only]
-vaultkeep --config <job.yaml> run
-vaultkeep --config <job.yaml> list
-vaultkeep --config <job.yaml> verify
-vaultkeep --config <job.yaml> prune [--dry-run]
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] run
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] list
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] verify
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
 
-vaultkeep --config <job.yaml> timer install
-vaultkeep --config <job.yaml> timer update
-vaultkeep --config <job.yaml> timer status
-vaultkeep --config <job.yaml> timer next
-vaultkeep --config <job.yaml> timer disable
-vaultkeep --config <job.yaml> timer remove
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer install
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer update
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer status
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer next
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer disable
+vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer remove
 
 vaultkeep timers list
 vaultkeep timers validate
@@ -536,6 +557,16 @@ Vaultkeep uses one systemd timer instance per job:
 → vaultkeep@app.service
 ```
 
+Parameterized jobs derive the timer instance from the job ID and sorted runtime parameters:
+
+```text
+/etc/vaultkeep/jobs/app.yaml + --param repo=nas-a
+→ vaultkeep@app--repo-nas-a--<hash>.timer
+→ vaultkeep@app--repo-nas-a--<hash>.service
+```
+
+The generated service override stores the exact `vaultkeep --config ... --param ... run` command, so manual and scheduled runs use the same effective configuration.
+
 Enable scheduling in the job:
 
 ```yaml
@@ -546,10 +577,25 @@ schedule:
   persistent: true
 ```
 
+For manual-only jobs, the required schedule block can be minimal:
+
+```yaml
+schedule:
+  enabled: false
+```
+
 Install and start the timer:
 
 ```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer install
+```
+
+For a parameterized job, pass the same parameters to every timer command:
+
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a timer install
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a timer status
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a timer remove
 ```
 
 Update the timer after changing the job schedule:

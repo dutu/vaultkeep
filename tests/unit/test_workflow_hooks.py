@@ -56,17 +56,17 @@ def _patch_creation_workflow(
         archive_path=tmp_path / "stage" / "archive.tar.zst",
         checksum_path=tmp_path / "stage" / "archive.tar.zst.sha256",
     )
-    monkeypatch.setattr(workflow, "load_validated_config", lambda path: config)
+    monkeypatch.setattr(workflow, "load_validated_config", lambda *args, **kwargs: config)
     monkeypatch.setattr(workflow, "_validate_runtime", lambda *args, **kwargs: None)
     monkeypatch.setattr(workflow, "_validate_configured_hooks", lambda value: None)
-    monkeypatch.setattr(workflow, "job_identity_hash", lambda *args: "a" * 16)
+    monkeypatch.setattr(workflow, "job_identity_hash", lambda *args, **kwargs: "a" * 16)
     monkeypatch.setattr(workflow, "job_state_path", lambda *args, **kwargs: tmp_path / "state.json")
     monkeypatch.setattr(workflow, "discover_sources", lambda value: object())
     monkeypatch.setattr(workflow, "calculate_source_digest", lambda value: "sha256:" + "a" * 64)
     monkeypatch.setattr(
-        workflow, "calculate_config_fingerprint", lambda value: "sha256:" + "b" * 64
+        workflow, "calculate_config_fingerprint", lambda *args, **kwargs: "sha256:" + "b" * 64
     )
-    monkeypatch.setattr(workflow, "discover_backups", lambda value: next(discovered))
+    monkeypatch.setattr(workflow, "discover_backups", lambda *args, **kwargs: next(discovered))
     monkeypatch.setattr(
         workflow,
         "reconcile_local_state",

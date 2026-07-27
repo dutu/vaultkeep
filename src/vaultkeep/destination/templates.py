@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import string
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,12 +39,14 @@ def render_backup_base_name(
     created_at: datetime,
     source_digest: str,
     archive_format: str,
+    runtime_params: Mapping[str, str] | None = None,
 ) -> str:
     """Render and validate the safe common base for all backup artifacts."""
     if created_at.tzinfo is None:
         raise DestinationTemplateError("Backup creation timestamp must be timezone-aware")
     source_hash = _source_hash(source_digest)
     values = {
+        **dict(runtime_params or {}),
         "job": job_id,
         "hostname": hostname,
         "timestamp": created_at,
@@ -57,13 +60,17 @@ def render_backup_base_name(
         raise DestinationTemplateError(f"Invalid destination name template: {error}") from error
     if not any(field in {"timestamp", "timestamp_utc"} for _, field, _, _ in fields):
         raise DestinationTemplateError("Destination name template must include a timestamp field")
-    for _, field, _, conversion in fields:
+    for _, field, format_spec, conversion in fields:
         if field is None:
             continue
         if field not in values:
             raise DestinationTemplateError(f"Unsupported destination template field: {field}")
         if conversion is not None:
             raise DestinationTemplateError("Destination template conversions are not supported")
+        if runtime_params is not None and field in runtime_params and format_spec:
+            raise DestinationTemplateError(
+                f"Destination template runtime field {field!r} cannot use a format specifier"
+            )
     try:
         rendered = template.format(**values)
     except (KeyError, ValueError) as error:
@@ -83,6 +90,7 @@ def allocate_job_backup_paths(
     created_at: datetime,
     source_digest: str,
     archive_format: str,
+    runtime_params: Mapping[str, str] | None = None,
 ) -> BackupPaths:
     """Allocate all artifact paths for a job without creating filesystem entries."""
     _validate_backup_id(backup_id)
@@ -96,6 +104,7 @@ def allocate_job_backup_paths(
         created_at=created_at,
         source_digest=source_digest,
         archive_format=archive_format,
+        runtime_params=runtime_params,
     )
     final_directory = root / f"{base_name}-{backup_id}"
     staging_directory = root / f".partial-vaultkeep-{job_id}-{backup_id}"

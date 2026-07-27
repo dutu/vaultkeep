@@ -82,10 +82,44 @@ def test_install_writes_owned_drop_in_and_registry(
     assert ("systemctl", "enable", "--now", "vaultkeep@app.timer") in commands
 
 
+def test_parameterized_install_derives_instance_and_writes_service_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    valid_config["schedule"]["enabled"] = True
+    valid_config["destination"]["root"] = "/mnt/backups/{repo}"
+    valid_config["destination"][
+        "name_template"
+    ] = "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    config_path = jobs / "app.yaml"
+    YAML(typ="safe").dump(valid_config, config_path)
+    paths = TimerPaths(jobs, tmp_path / "units", tmp_path / "state" / "instances.json")
+    manager = TimerManager(paths)
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(manager, "_run", lambda command, check=True: commands.append(command) or "")
+
+    manager.install(config_path, runtime_params={"repo": "nas-a"})
+
+    timer_drop_ins = tuple(paths.units_root.glob("vaultkeep@app--repo-nas-a--*.timer.d"))
+    service_drop_ins = tuple(paths.units_root.glob("vaultkeep@app--repo-nas-a--*.service.d"))
+    assert len(timer_drop_ins) == 1
+    assert len(service_drop_ins) == 1
+    override = (service_drop_ins[0] / "override.conf").read_text(encoding="utf-8")
+    assert f"ConditionPathExists={config_path.resolve()}" in override
+    assert f"--config {config_path.resolve()} --param repo=nas-a run" in override
+    enabled_units = [
+        command[-1] for command in commands if command[:3] == ("systemctl", "enable", "--now")
+    ]
+    assert len(enabled_units) == 1
+    assert enabled_units[0].startswith("vaultkeep@app--repo-nas-a--")
+    assert enabled_units[0].endswith(".timer")
+
+
 def test_sync_dry_run_does_not_write_for_disabled_job(
     tmp_path: Path, valid_config: dict[str, Any]
 ) -> None:
-    valid_config["schedule"]["enabled"] = False
+    valid_config["schedule"] = {"enabled": False}
     jobs = tmp_path / "jobs"
     jobs.mkdir()
     config_path = jobs / "app.yaml"
@@ -97,3 +131,16 @@ def test_sync_dry_run_does_not_write_for_disabled_job(
     assert plan == ("disable app",)
     assert not paths.units_root.exists()
     assert not paths.registry_path.exists()
+
+
+def test_validate_all_accepts_disabled_minimal_schedule(
+    tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    valid_config["schedule"] = {"enabled": False}
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    config_path = jobs / "app.yaml"
+    YAML(typ="safe").dump(valid_config, config_path)
+    paths = TimerPaths(jobs, tmp_path / "units", tmp_path / "state" / "instances.json")
+
+    assert TimerManager(paths).validate_all() == ("valid disabled app",)
