@@ -18,6 +18,7 @@ This file is the user guide. For configuration rules, data structures, security 
 - [Usage](#usage)
   - [Create a job configuration](#create-a-job-configuration)
   - [Minimal job configuration](#minimal-job-configuration)
+  - [Destination name templates](#destination-name-templates)
   - [CLI reference](#cli-reference)
   - [Check the installed version](#check-the-installed-version)
   - [Validate a job configuration](#validate-a-job-configuration)
@@ -354,6 +355,48 @@ logging:
   level: info
   include_command_output: false
 ```
+
+### Destination name templates
+
+`destination.name_template` controls the backup base name used for each new backup. Vaultkeep renders the template once after source change detection and derives the final artifact names from that rendered base name:
+
+```text
+directory: <backup-base-name>-<backup_id>
+archive:   <backup-base-name>.<archive-format>
+checksum:  <backup-base-name>.<archive-format>.sha256
+manifest:  <backup-base-name>.json
+```
+
+The supported placeholders are exactly:
+
+| Placeholder | Meaning | Formatting |
+|---|---|---|
+| `{job}` | The configured `job.id`. | No format specifiers. |
+| `{hostname}` | The machine hostname returned by the operating system for the run. | No format specifiers. |
+| `{timestamp}` | The backup creation timestamp in the machine's local timezone. | Supports Python `strftime` datetime formatting. |
+| `{timestamp_utc}` | The same backup creation timestamp converted to UTC. | Supports Python `strftime` datetime formatting. |
+| `{source_hash}` | The 64-character lowercase SHA-256 source digest, without the `sha256:` prefix. | May be truncated with precision syntax, for example `{source_hash:.12}`. |
+| `{format}` | The selected archive format, either `tar.zst` or `tar.7z`. | No format specifiers. |
+
+At least one of `{timestamp}` or `{timestamp_utc}` is required. Use doubled braces to include a literal brace in the output, for example `{{` or `}}`.
+
+Recommended timestamp form:
+
+```yaml
+destination:
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+```
+
+Example with hostname and a shortened source hash:
+
+```yaml
+destination:
+  name_template: "backup-{job}-{hostname}-{timestamp_utc:%Y%m%dT%H%M%SZ}-{source_hash:.12}"
+```
+
+Template output must be a single safe path name below `destination.root`: it cannot be empty, contain `/`, contain `\`, contain `..`, contain null or control characters, or escape the destination root. Template conversions such as `{job!r}`, nested fields, unknown placeholders, and unsupported format specifiers are rejected.
+
+Do not include `{backup_id}` in `destination.name_template`. Vaultkeep generates a lowercase 32-character backup ID and appends it only to the final directory name. Hook `command` values are not templates and do not expand `{job}`-style placeholders.
 
 ### CLI reference
 
