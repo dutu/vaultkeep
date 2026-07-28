@@ -119,7 +119,10 @@ def test_install_dry_run_allows_same_version_reinstall(tmp_path: Path) -> None:
         check=True,
     )
 
-    assert "existing version differs from candidate; reinstalling from current checkout" in result.stdout
+    assert (
+        "existing version differs from candidate; reinstalling from current checkout"
+        in result.stdout
+    )
     assert f"PLAN replace existing release: {release}" in result.stdout
     assert not (tmp_path / "etc").exists()
     assert not (tmp_path / "var").exists()
