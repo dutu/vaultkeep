@@ -250,13 +250,12 @@ The update mode:
 - validates the executable, example configuration, and systemd units;
 - atomically switches `/opt/vaultkeep/current` to the new release;
 - reloads systemd;
-- synchronizes existing timers;
 - preserves user jobs and secrets;
 - retains the complete preceding release for rollback.
 
 `install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. Reusing a version with different source content is rejected.
 
-Failed staging does not replace the active release. A failure after activation restores the preceding release, templates, timer registry, generated timer files, and enabled states.
+Failed staging does not replace the active release. A failure after activation restores the preceding release, templates, and timer registry.
 
 Confirm the installed version:
 
@@ -271,7 +270,7 @@ sudo vaultkeep timers validate
 sudo vaultkeep timers sync --dry-run
 ```
 
-The installer already performs timer synchronization. Run the following manually only when applying later configuration changes:
+The installer does not enable or start timers. Apply timer changes explicitly:
 
 ```bash
 sudo vaultkeep timers sync

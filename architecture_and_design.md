@@ -2192,7 +2192,7 @@ The installer performs these operations:
 5. install `python3`, `python3-venv`, `tar`, `zstd`, `rsync`, `util-linux`, and `mount`;
 6. install Debian's `7zip` package and fail when it has no installable candidate;
 7. verify the resolved `python3`, `tar`, `zstd`, `7z`, `findmnt`, `rsync`, `systemctl`, and `systemd-analyze` executables;
-8. run a private temporary compatibility check that creates, tests, lists, and streams a header-encrypted archive while supplying a generated test password through a no-echo pseudo-terminal;
+8. run a private temporary compatibility check that creates and tests a header-encrypted archive using a fixed non-secret installer test password;
 9. calculate the checkout version and source digest and enforce the selected `install` or `update` mode;
 10. synchronize the checkout into a unique staged release below `/opt/vaultkeep`;
 11. create the staged release's virtual environment, install the hashed dependency lock, and install the Vaultkeep Python package with dependency resolution disabled;
@@ -2208,11 +2208,9 @@ The installer performs these operations:
 21. create or verify `/usr/local/bin/vaultkeep`;
 22. atomically write `/opt/vaultkeep/install-manifest.json`;
 23. run `systemctl daemon-reload`;
-24. run `vaultkeep timers sync` for existing managed jobs;
-25. verify generated timers, restore their enabled and active states, and report their next activations;
-26. report the installed version and retained rollback version.
+24. report the installed version and retained rollback version.
 
-It does not run an actual backup automatically during installation or update.
+It does not enable timers, start timers, or run an actual backup automatically during installation or update. Timer changes require an explicit `vaultkeep timers sync`.
 
 The source synchronization uses `rsync --archive --delete` against the exact source directory inside a newly created transaction staging directory below `/opt/vaultkeep`. It excludes `.git`, `.idea`, `.venv`, caches, build output, and runtime secrets. The installer verifies that the checkout and resolved staging target are absolute, the target is a newly created root-owned directory, and the target remains below `/opt/vaultkeep` before using deletion.
 
@@ -2281,11 +2279,11 @@ The installer creates a complete release for every installed application version
 
 Staging uses a unique root-owned directory below `/opt/vaultkeep` that cannot equal an active or retained release path. Each release's deployment metadata contains the application version and synchronized-source digest.
 
-The `current` symlink switches only after dependency installation, package installation, staged-executable version verification, example validation, staged-unit verification, and confirmation that no Vaultkeep backup service is active. Before changing unit files or `current`, update mode stops every active Vaultkeep timer while recording its enabled state. It restores timer states only after daemon reload, timer synchronization, and verification succeed. `/usr/local/bin/vaultkeep` remains a stable symlink through `current` and does not change during a normal update.
+The `current` symlink switches only after dependency installation, package installation, staged-executable version verification, example validation, staged-unit verification, and confirmation that no Vaultkeep backup service is active. The installer does not change timer enabled or active state; users apply timer changes explicitly with `vaultkeep timers sync`. `/usr/local/bin/vaultkeep` remains a stable symlink through `current` and does not change during a normal update.
 
 The complete previously active release remains available for rollback. Failed staging never modifies `current`. The installer retains the active release and one preceding release; removal of older releases occurs only after resolving their exact paths below `/opt/vaultkeep/releases`.
 
-Before replacing installed templates or switching `current`, the installer records the exact preceding targets and template contents. A failed update restores the preceding release symlink, templates, timer registry, generated drop-ins, and enabled states, removes the exact candidate release created by that transaction, runs `systemctl daemon-reload`, verifies the restored timers, and exits non-zero. A first installation with no preceding version removes only the files it created during that failed transaction.
+Before replacing installed templates or switching `current`, the installer records the exact preceding targets and template contents. A failed update restores the preceding release symlink, templates, and timer registry, removes the exact candidate release created by that transaction, runs `systemctl daemon-reload`, and exits non-zero. A first installation with no preceding version removes only the files it created during that failed transaction.
 
 ## 25.6 Config preservation
 

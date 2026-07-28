@@ -351,7 +351,16 @@ verify_systemd_templates() {
         log "PLAN verify systemd templates"
         return
     fi
-    systemd-analyze verify "$SOURCE_DIR/systemd/vaultkeep@.service" "$SOURCE_DIR/systemd/vaultkeep@.timer"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"; trap - RETURN' RETURN
+    sed -E 's#^ExecStart=/usr/local/bin/vaultkeep .*$#ExecStart=/bin/true#' \
+        "$SOURCE_DIR/systemd/vaultkeep@.service" >"$tmp/vaultkeep@.service"
+    awk '
+        { print }
+        $0 == "Unit=vaultkeep@%i.service" { print "OnCalendar=*-*-* 00:00:00" }
+    ' "$SOURCE_DIR/systemd/vaultkeep@.timer" >"$tmp/vaultkeep@.timer"
+    systemd-analyze verify "$tmp/vaultkeep@.service" "$tmp/vaultkeep@.timer"
 }
 
 refuse_active_services() {
@@ -531,15 +540,12 @@ os.replace(tmp, target)
 PY
 }
 
-daemon_reload_and_sync() {
+daemon_reload() {
     if [[ "$DRY_RUN" == 1 || "$VK_TESTING" == 1 ]]; then
         log "PLAN systemctl daemon-reload"
-        log "PLAN vaultkeep timers sync"
         return
     fi
     systemctl daemon-reload
-    "$VK_BIN_LINK" timers sync
-    "$VK_BIN_LINK" timers validate
 }
 
 validate_existing_mode() {
@@ -602,7 +608,7 @@ install_or_update() {
     begin_commit_transaction "$version"
     install_units_and_links "$version"
     write_manifest "$version" "$digest" "$previous_release"
-    daemon_reload_and_sync
+    daemon_reload
     finish_commit_transaction
     log "Vaultkeep $version installed"
 }

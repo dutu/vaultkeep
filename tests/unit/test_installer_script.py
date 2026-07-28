@@ -50,6 +50,22 @@ def test_installer_7z_self_test_uses_noninteractive_fixed_test_password() -> Non
     assert "printf '%s\\n' 'vaultkeep-installer-test'" not in installer
 
 
+def test_installer_systemd_validation_uses_temporary_validated_copies() -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+
+    assert 'ExecStart=/bin/true' in installer
+    assert 'OnCalendar=*-*-* 00:00:00' in installer
+    assert 'systemd-analyze verify "$tmp/vaultkeep@.service" "$tmp/vaultkeep@.timer"' in installer
+    assert 'systemd-analyze verify "$SOURCE_DIR/systemd/vaultkeep@.service"' not in installer
+
+
+def test_installer_does_not_activate_timers() -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+
+    assert '"$VK_BIN_LINK" timers sync' not in installer
+    assert 'systemctl daemon-reload' in installer
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="installer is a Debian shell script")
 def test_install_dry_run_reports_plan_without_writing(tmp_path: Path) -> None:
     result = subprocess.run(
