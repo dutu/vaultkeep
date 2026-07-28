@@ -175,10 +175,10 @@ check_7z_compatibility() {
     trap 'rm -rf "$tmp"; trap - RETURN' RETURN
     printf 'vaultkeep installer check\n' >"$tmp/payload.txt"
     tar -C "$tmp" -cf "$tmp/payload.tar" payload.txt
-    printf '%s\n%s\n' 'vaultkeep-installer-test' 'vaultkeep-installer-test' |
-        7z a -t7z -mhe=on -sccUTF-8 -bd -p "$tmp/payload.tar.7z" "$tmp/payload.tar" >/dev/null
-    printf '%s\n' 'vaultkeep-installer-test' |
-        7z t -bd -p "$tmp/payload.tar.7z" >/dev/null
+    7z a -t7z -mhe=on -sccUTF-8 -bd -pvaultkeep-installer-test \
+        -- "$tmp/payload.tar.7z" "$tmp/payload.tar" >/dev/null
+    7z t -bd -sccUTF-8 -pvaultkeep-installer-test \
+        -- "$tmp/payload.tar.7z" >/dev/null
 }
 
 candidate_version() {

@@ -42,6 +42,14 @@ def test_installer_has_valid_bash_syntax() -> None:
     subprocess.run([_bash(), "-n", str(INSTALLER)], cwd=ROOT, check=True)
 
 
+def test_installer_7z_self_test_uses_noninteractive_fixed_test_password() -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+
+    assert "-pvaultkeep-installer-test" in installer
+    assert "printf '%s\\n%s\\n' 'vaultkeep-installer-test'" not in installer
+    assert "printf '%s\\n' 'vaultkeep-installer-test'" not in installer
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="installer is a Debian shell script")
 def test_install_dry_run_reports_plan_without_writing(tmp_path: Path) -> None:
     result = subprocess.run(
