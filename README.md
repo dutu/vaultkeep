@@ -9,6 +9,7 @@ This file is the user guide. For configuration rules, data structures, security 
 - [Overview](#overview)
   - [What Vaultkeep does](#what-vaultkeep-does)
   - [How a backup works](#how-a-backup-works)
+  - [Operating modes](#operating-modes)
   - [Important boundaries](#important-boundaries)
 - [Installation](#installation)
   - [Prerequisites](#prerequisites)
@@ -42,6 +43,11 @@ This file is the user guide. For configuration rules, data structures, security 
 
 Vaultkeep creates file-based backups and applies retention. You define backup jobs as YAML files. Each job can be run manually with the `vaultkeep` command or automatically through a managed systemd timer.
 
+Vaultkeep has two operating modes:
+
+- root mode, for system backups managed by an administrator;
+- user mode, for per-user backups that do not require sudo after Vaultkeep and its Debian package dependencies have been installed by root.
+
 A job specifies:
 
 - one or more source files or directories;
@@ -61,7 +67,38 @@ Backups are ordinary archive files:
 
 Each backup is self-contained and includes the archive, a SHA-256 checksum, and a JSON manifest. Retention can keep hourly, daily, weekly, monthly, and yearly backups. Local state is only a cache; Vaultkeep can reconstruct it from destination manifests if the local state file is missing or unusable.
 
-Vaultkeep runs as root because jobs can read system files, access protected secrets, inspect mounts, and execute administrator-configured hooks.
+Root-mode jobs run as root because they can read system files, access protected secrets, inspect mounts, and execute administrator-configured hooks. User-mode jobs run as the calling user and can only access files, destinations, secrets, and hooks available to that user.
+
+### Operating modes
+
+Root mode and user mode are independent workflows using the same centrally installed `vaultkeep` command.
+
+Root mode:
+
+- uses jobs below `/etc/vaultkeep/jobs`;
+- uses local state below `/var/lib/vaultkeep`;
+- uses system timers below `/etc/systemd/system`;
+- runs scheduled jobs as root;
+- requires `sudo` for installation, job management, timer management, and real backup operations.
+
+User mode:
+
+- uses jobs below `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs`;
+- uses local state below `${XDG_STATE_HOME:-~/.local/state}/vaultkeep`;
+- uses temporary files below `${XDG_CACHE_HOME:-~/.cache}/vaultkeep`;
+- uses locks below `$XDG_RUNTIME_DIR/vaultkeep/locks`, or `${XDG_CACHE_HOME:-~/.cache}/vaultkeep/locks` when `XDG_RUNTIME_DIR` is unavailable;
+- uses systemd user timers below `${XDG_CONFIG_HOME:-~/.config}/systemd/user`;
+- runs jobs as the calling user with `vaultkeep --user`;
+- does not require sudo for job configuration, manual execution, or user timer management.
+
+The two modes do not share job configuration, timer units, timer registries, state files, or locks. A machine can have root-mode jobs installed and scheduled while one or more users independently maintain user-mode jobs.
+
+Root must still install Vaultkeep and the required Debian packages. User mode assumes the centrally installed `/usr/local/bin/vaultkeep` command and archive tools such as `tar`, `zstd`, and `7z` already exist.
+
+Mode-specific guides:
+
+- [Root mode guide](docs/root-mode.md)
+- [User mode guide](docs/user-mode.md)
 
 ### How a backup works
 
@@ -427,25 +464,27 @@ Runtime parameter values are part of the effective backup identity. Different pa
 vaultkeep [-h|--help]
 vaultkeep --version
 
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] run
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] list
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] verify
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] run
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
 
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer install
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer update
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer status
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer next
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer disable
-vaultkeep --config <job.yaml> [--param KEY=VALUE ...] timer remove
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer install
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer update
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer status
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer next
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer disable
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer remove
 
-vaultkeep timers list
-vaultkeep timers validate
-vaultkeep timers sync [--dry-run]
+vaultkeep [--user] timers list
+vaultkeep [--user] timers validate
+vaultkeep [--user] timers sync [--dry-run]
 ```
 
 Every command also supports `-h` or `--help` in its own position, for example `vaultkeep timer --help`.
+
+Use `--user` for per-user job configuration, per-user state, and systemd user timers. Omit it for the root/system mode described in the main examples below.
 
 ### Check the installed version
 

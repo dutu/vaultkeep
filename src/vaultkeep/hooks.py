@@ -47,28 +47,71 @@ class HookExecution:
     stderr: bytes
 
 
-def validate_hook_executable(command: tuple[str, ...] | list[str]) -> Path:
-    """Resolve one root-owned, non-writable executable and its parent path."""
+def validate_hook_executable(
+    command: tuple[str, ...] | list[str],
+    *,
+    owner_uid: int = 0,
+    owner_gid: int | None = 0,
+    allow_root_owned: bool = False,
+) -> Path:
+    """Resolve one securely owned, non-writable executable and its parent path."""
     if not command or not Path(command[0]).is_absolute():
         raise HookError("Hook executable path must be absolute")
     configured = Path(command[0])
-    _validate_path_chain(configured)
+    _validate_path_chain(
+        configured,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+        allow_root_owned=allow_root_owned,
+    )
     try:
         resolved = configured.resolve(strict=True)
         status = resolved.stat()
     except OSError as error:
         raise HookError(f"Cannot resolve hook executable {configured}: {error}") from error
-    _validate_path_chain(resolved)
+    _validate_path_chain(
+        resolved,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+        allow_root_owned=allow_root_owned,
+    )
     if not stat.S_ISREG(status.st_mode) or not os.access(resolved, os.X_OK):
         raise HookError(f"Hook executable is not a regular executable file: {resolved}")
-    _validate_secure_status(status, resolved)
-    _validate_shebang(resolved)
+    _validate_secure_status(
+        status,
+        resolved,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+        allow_root_owned=allow_root_owned,
+    )
+    _validate_shebang(
+        resolved,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+        allow_root_owned=allow_root_owned,
+    )
     return resolved
 
 
-def run_hook(phase: HookPhase, hook: HookConfig, context: HookContext) -> HookExecution:
+def run_hook(
+    phase: HookPhase,
+    hook: HookConfig,
+    context: HookContext,
+    *,
+    owner_uid: int = 0,
+    owner_gid: int | None = 0,
+    allow_root_owned: bool = False,
+) -> HookExecution:
     """Execute one trusted hook directly with fixed environment and bounded output."""
-    executable = validate_hook_executable(hook.command)
+    if owner_uid == 0 and owner_gid == 0 and not allow_root_owned:
+        executable = validate_hook_executable(hook.command)
+    else:
+        executable = validate_hook_executable(
+            hook.command,
+            owner_uid=owner_uid,
+            owner_gid=owner_gid,
+            allow_root_owned=allow_root_owned,
+        )
     environment = _hook_environment(phase, context)
     started = time.monotonic()
     try:
@@ -132,22 +175,52 @@ def _hook_environment(phase: str, context: HookContext) -> dict[str, str]:
     }
 
 
-def _validate_path_chain(path: Path) -> None:
+def _validate_path_chain(
+    path: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int | None,
+    allow_root_owned: bool,
+) -> None:
     for parent in (path.parent, *path.parent.parents):
         try:
-            _validate_secure_status(parent.lstat(), parent)
+            _validate_secure_status(
+                parent.lstat(),
+                parent,
+                owner_uid=owner_uid,
+                owner_gid=owner_gid,
+                allow_root_owned=allow_root_owned,
+            )
         except OSError as error:
             raise HookError(f"Cannot inspect hook path component {parent}: {error}") from error
 
 
-def _validate_secure_status(status: os.stat_result, path: Path) -> None:
-    if status.st_uid != 0 or status.st_gid != 0:
-        raise HookError(f"Hook path must be owned by root:root: {path}")
+def _validate_secure_status(
+    status: os.stat_result,
+    path: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int | None,
+    allow_root_owned: bool,
+) -> None:
+    owner_matches = status.st_uid == owner_uid and (
+        owner_gid is None or status.st_gid == owner_gid
+    )
+    root_matches = allow_root_owned and status.st_uid == 0
+    if not owner_matches and not root_matches:
+        owner = _owner_label(owner_uid, owner_gid)
+        raise HookError(f"Hook path must be owned by {owner}: {path}")
     if stat.S_IMODE(status.st_mode) & 0o022:
         raise HookError(f"Hook path must not be writable by group or other users: {path}")
 
 
-def _validate_shebang(path: Path) -> None:
+def _validate_shebang(
+    path: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int | None,
+    allow_root_owned: bool,
+) -> None:
     try:
         with path.open("rb") as executable:
             first_line = executable.readline(4096)
@@ -161,11 +234,28 @@ def _validate_shebang(path: Path) -> None:
     interpreter_path = Path(interpreter)
     if not interpreter_path.is_absolute():
         raise HookError("Hook shebang interpreter path must be absolute")
-    _validate_path_chain(interpreter_path)
+    _validate_path_chain(
+        interpreter_path,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+        allow_root_owned=allow_root_owned,
+    )
     try:
-        _validate_secure_status(interpreter_path.stat(), interpreter_path)
+        _validate_secure_status(
+            interpreter_path.stat(),
+            interpreter_path,
+            owner_uid=owner_uid,
+            owner_gid=owner_gid,
+            allow_root_owned=allow_root_owned,
+        )
     except OSError as error:
         raise HookError(f"Cannot inspect hook interpreter {interpreter_path}: {error}") from error
+
+
+def _owner_label(owner_uid: int, owner_gid: int | None) -> str:
+    if owner_uid == 0 and owner_gid == 0:
+        return "root:root"
+    return f"{owner_uid}:{owner_gid}" if owner_gid is not None else str(owner_uid)
 
 
 def _terminate_group(process: subprocess.Popen[bytes]) -> None:

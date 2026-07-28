@@ -144,3 +144,30 @@ def test_validate_all_accepts_disabled_minimal_schedule(
     paths = TimerPaths(jobs, tmp_path / "units", tmp_path / "state" / "instances.json")
 
     assert TimerManager(paths).validate_all() == ("valid disabled app",)
+
+
+def test_user_timer_install_writes_full_user_units(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    valid_config["schedule"]["enabled"] = True
+    jobs = tmp_path / "config" / "vaultkeep" / "jobs"
+    jobs.mkdir(parents=True)
+    config_path = jobs / "app.yaml"
+    YAML(typ="safe").dump(valid_config, config_path)
+    paths = TimerPaths(
+        jobs,
+        tmp_path / "config" / "systemd" / "user",
+        tmp_path / "state" / "vaultkeep" / "instances.json",
+    )
+    manager = TimerManager(paths, user_mode=True)
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(manager, "_run", lambda command, check=True: commands.append(command) or "")
+
+    manager.install(config_path)
+
+    service = paths.units_root / "vaultkeep@app.service"
+    timer = paths.units_root / "vaultkeep@app.timer"
+    assert "--user --config" in service.read_text(encoding="utf-8")
+    assert "User=root" not in service.read_text(encoding="utf-8")
+    assert "OnCalendar=*-*-* 01:00:00" in timer.read_text(encoding="utf-8")
+    assert ("systemctl", "--user", "enable", "--now", "vaultkeep@app.timer") in commands

@@ -48,7 +48,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 namespace.config, schema_only=namespace.schema_only, runtime_params=runtime_params
             )
         elif namespace.command == "run":
-            result = run_backup(namespace.config, runtime_params=runtime_params)
+            result = run_backup(
+                namespace.config,
+                runtime_params=runtime_params,
+                user_mode=namespace.user_mode,
+            )
         elif namespace.command == "list":
             result, _ = list_backups(namespace.config, runtime_params=runtime_params)
         elif namespace.command == "verify":
@@ -58,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 namespace.config, dry_run=namespace.dry_run, runtime_params=runtime_params
             )
         else:
-            manager = TimerManager()
+            manager = TimerManager(user_mode=namespace.user_mode)
             manager.require_environment()
             if namespace.command == "timer":
                 if namespace.action == "install":

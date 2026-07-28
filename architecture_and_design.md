@@ -1373,44 +1373,46 @@ Output:
 Main commands:
 
 ```bash
-vaultkeep --config job.yaml [--param KEY=VALUE ...] run
-vaultkeep --config job.yaml [--param KEY=VALUE ...] validate
-vaultkeep --config job.yaml [--param KEY=VALUE ...] validate --schema-only
-vaultkeep --config job.yaml [--param KEY=VALUE ...] list
-vaultkeep --config job.yaml [--param KEY=VALUE ...] verify
-vaultkeep --config job.yaml [--param KEY=VALUE ...] prune
-vaultkeep --config job.yaml [--param KEY=VALUE ...] prune --dry-run
+vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] run
+vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] validate
+vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] validate --schema-only
+vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] list
+vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] verify
+vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] prune
+vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] prune --dry-run
 ```
 
 Any command that accepts `--config` also accepts repeatable `--param KEY=VALUE`. `--param` is rejected for commands that do not operate on one explicit configuration, such as `timers`.
 
-`--version` and `validate --schema-only` run without root privileges. Runtime validation, `run`, `list`, `verify`, `prune`, and every timer command require effective user ID `0` in the installed v1 product. Tests use explicit temporary path overrides and do not weaken this production check.
+`--version` and `validate --schema-only` run without root privileges. In root mode, runtime validation, `run`, `list`, `verify`, `prune`, and every timer command require effective user ID `0` in the installed v1 product. In user mode, those operational commands run as the calling user with `--user`, use per-user state, temporary, lock, configuration, and systemd user-timer locations, and are limited to files and destinations available to that user. Tests use explicit temporary path overrides and do not weaken the root-mode production check.
 
 Timer commands:
 
 ```bash
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer install
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer update
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer status
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer next
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer disable
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml [--param KEY=VALUE ...] timer remove
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer install
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer update
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer status
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer next
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer disable
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer remove
 ```
 
 Bulk timer commands:
 
 ```bash
-vaultkeep timers list
-vaultkeep timers sync
-vaultkeep timers sync --dry-run
-vaultkeep timers validate
+vaultkeep [--user] timers list
+vaultkeep [--user] timers sync
+vaultkeep [--user] timers sync --dry-run
+vaultkeep [--user] timers validate
 ```
 
-The jobs directory defaults to:
+The root-mode jobs directory defaults to:
 
 ```text
 /etc/vaultkeep/jobs
 ```
+
+The user-mode jobs directory defaults to `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs`.
 
 The CLI provides a jobs-directory override for testing and nonstandard installations.
 

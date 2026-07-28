@@ -34,6 +34,8 @@ class ArchiveBuildRequest:
     job_identity_hash: str
     backup_id: str
     local_temp_root: Path = Path("/var/lib/vaultkeep/tmp")
+    private_owner_uid: int = 0
+    private_owner_gid: int | None = 0
     tools: ArchiveTools = ArchiveTools()
 
 

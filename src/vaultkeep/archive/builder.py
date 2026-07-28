@@ -62,7 +62,14 @@ def build_archive(
                 job_identity_hash=request.job_identity_hash,
                 backup_id=request.backup_id,
             )
-            prepare_private_workspace(inner_tar)
+            if request.private_owner_uid == 0 and request.private_owner_gid == 0:
+                prepare_private_workspace(inner_tar)
+            else:
+                prepare_private_workspace(
+                    inner_tar,
+                    owner_uid=request.private_owner_uid,
+                    owner_gid=request.private_owner_gid,
+                )
             create_private_inner_tar(request.snapshot, inner_tar, tools=request.tools)
             source_digest = source_digest_calculator(request.snapshot)
             _require_source_consistency(request.expected_source_digest, source_digest)

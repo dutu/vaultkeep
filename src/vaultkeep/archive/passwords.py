@@ -76,14 +76,19 @@ class LoadedPassword:
     fingerprint: CredentialFingerprint
 
 
-def load_password_file(path: Path) -> LoadedPassword:
-    """Validate and read one root-owned Debian password file without following links."""
+def load_password_file(
+    path: Path,
+    *,
+    owner_uid: int = 0,
+    owner_gid: int | None = 0,
+) -> LoadedPassword:
+    """Validate and read one securely owned Debian password file without following links."""
     if os.name != "posix":
         raise PasswordFileError("Password files are supported only on Debian/POSIX systems")
     if not path.is_absolute():
         raise PasswordFileError("Password file path must be absolute")
     _disable_core_dumps()
-    initial = _validate_password_path(path)
+    initial = _validate_password_path(path, owner_uid=owner_uid, owner_gid=owner_gid)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -127,15 +132,23 @@ def _disable_core_dumps() -> None:
         ) from error
 
 
-def _validate_password_path(path: Path) -> os.stat_result:
+def _validate_password_path(
+    path: Path,
+    *,
+    owner_uid: int = 0,
+    owner_gid: int | None = 0,
+) -> os.stat_result:
     try:
         status = path.lstat()
     except OSError as error:
         raise PasswordFileError(f"Cannot inspect password file {path}: {error}") from error
     if not stat.S_ISREG(status.st_mode):
         raise PasswordFileError("Password file must be a regular file, not a symbolic link")
-    if status.st_uid != 0 or status.st_gid != 0:
-        raise PasswordFileError("Password file must be owned by root:root")
+    wrong_uid = status.st_uid != owner_uid
+    wrong_gid = owner_gid is not None and status.st_gid != owner_gid
+    if wrong_uid or wrong_gid:
+        owner = _owner_label(owner_uid, owner_gid)
+        raise PasswordFileError(f"Password file must be owned by {owner}")
     if stat.S_IMODE(status.st_mode) != 0o600:
         raise PasswordFileError("Password file mode must be exactly 0600")
 
@@ -157,6 +170,12 @@ def _validate_password_path(path: Path) -> os.stat_result:
             break
         parent = parent.parent
     return status
+
+
+def _owner_label(owner_uid: int, owner_gid: int | None) -> str:
+    if owner_uid == 0 and owner_gid == 0:
+        return "root:root"
+    return f"{owner_uid}:{owner_gid}" if owner_gid is not None else str(owner_uid)
 
 
 def _require_same_file(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import tempfile
 import uuid
@@ -10,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import TypedDict
 
 from vaultkeep.archive import ArchiveBuildRequest, build_archive, load_password_file
 from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
@@ -51,6 +53,19 @@ class WorkflowPaths:
     lock_root: Path = Path("/run/lock/vaultkeep")
 
 
+def user_workflow_paths() -> WorkflowPaths:
+    """Return per-user state, temp, and lock paths for non-root executions."""
+    state_base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    cache_base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    runtime_base = os.environ.get("XDG_RUNTIME_DIR")
+    lock_base = Path(runtime_base) if runtime_base else cache_base
+    return WorkflowPaths(
+        state_root=state_base / "vaultkeep" / "jobs",
+        local_temp_root=cache_base / "vaultkeep" / "tmp",
+        lock_root=lock_base / "vaultkeep" / "locks",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CommandResult:
     """Stable facts returned by a manual command without presentation concerns."""
@@ -60,6 +75,12 @@ class CommandResult:
     backups: int = 0
     removed: int = 0
     archive_path: Path | None = None
+
+
+class _HookRunKwargs(TypedDict, total=False):
+    owner_uid: int
+    owner_gid: int | None
+    allow_root_owned: bool
 
 
 def load_validated_config(
@@ -129,14 +150,26 @@ def run_backup(
     *,
     runtime_params: Mapping[str, str] | None = None,
     paths: WorkflowPaths | None = None,
+    user_mode: bool = False,
 ) -> CommandResult:
     """Execute change detection, archival, commit, state persistence, and retention."""
     if paths is None:
-        paths = WorkflowPaths()
+        paths = user_workflow_paths() if user_mode else WorkflowPaths()
+    owner_uid, owner_gid = _runtime_owner(user_mode)
+    if user_mode:
+        _prepare_user_paths(paths)
+    hook_kwargs: _HookRunKwargs = (
+        {"owner_uid": owner_uid, "owner_gid": owner_gid, "allow_root_owned": True}
+        if user_mode
+        else {}
+    )
     parameters = dict(runtime_params or {})
     config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
-    _validate_configured_hooks(config)
+    if user_mode:
+        _validate_configured_hooks(config, user_mode=True)
+    else:
+        _validate_configured_hooks(config)
     identity = job_identity_hash(config_path, config.job.id, runtime_params=parameters)
     lock = JobLock(
         job_lock_path(root=paths.lock_root, job_id=config.job.id, identity_hash=identity)
@@ -159,13 +192,18 @@ def run_backup(
             config_path,
             HookContext(config.job.id, config_path),
             hook_outcomes,
+            **hook_kwargs,
         )
         snapshot = discover_sources(config)
         source_digest = calculate_source_digest(snapshot)
         config_fingerprint = calculate_config_fingerprint(config, runtime_params=parameters)
         discovered = discover_backups(config, runtime_params=parameters)
         loaded_password = (
-            load_password_file(Path(config.encryption.password_file))
+            load_password_file(
+                Path(config.encryption.password_file),
+                owner_uid=owner_uid,
+                owner_gid=owner_gid,
+            )
             if config.encryption.password_file
             else None
         )
@@ -201,6 +239,7 @@ def run_backup(
                     version=installed_version(),
                 ),
                 hook_outcomes,
+                **hook_kwargs,
             )
             terminal_hook_failed = False
             from vaultkeep.state.atomic import write_local_state
@@ -245,7 +284,14 @@ def run_backup(
         failure_context = hook_context
         after_archive_attempted = False
         try:
-            _run_configured_hook("before_archive", config, config_path, hook_context, hook_outcomes)
+            _run_configured_hook(
+                "before_archive",
+                config,
+                config_path,
+                hook_context,
+                hook_outcomes,
+                **hook_kwargs,
+            )
             artifact = build_archive(
                 ArchiveBuildRequest(
                     snapshot=snapshot,
@@ -258,6 +304,8 @@ def run_backup(
                     job_identity_hash=identity,
                     backup_id=backup_id,
                     local_temp_root=paths.local_temp_root,
+                    private_owner_uid=owner_uid,
+                    private_owner_gid=owner_gid,
                 ),
                 password=loaded_password.secret if loaded_password else None,
             )
@@ -265,13 +313,25 @@ def run_backup(
             try:
                 after_archive_attempted = True
                 _run_configured_hook(
-                    "after_archive", config, config_path, hook_context, hook_outcomes
+                    "after_archive",
+                    config,
+                    config_path,
+                    hook_context,
+                    hook_outcomes,
+                    **hook_kwargs,
                 )
             except BaseException:
                 pass
             raise
         if not after_archive_attempted:
-            _run_configured_hook("after_archive", config, config_path, hook_context, hook_outcomes)
+            _run_configured_hook(
+                "after_archive",
+                config,
+                config_path,
+                hook_context,
+                hook_outcomes,
+                **hook_kwargs,
+            )
         manifest = commit_archive_artifact(
             allocated,
             artifact,
@@ -309,6 +369,7 @@ def run_backup(
             config_path,
             replace(hook_context, result="created"),
             hook_outcomes,
+            **hook_kwargs,
         )
         terminal_hook_failed = False
         latest_state = state_after_created(
@@ -335,7 +396,12 @@ def run_backup(
         if not terminal_hook_failed:
             with suppress(BaseException):
                 _run_configured_hook(
-                    "on_failure", config, config_path, failure_context, hook_outcomes
+                    "on_failure",
+                    config,
+                    config_path,
+                    failure_context,
+                    hook_outcomes,
+                    **hook_kwargs,
                 )
         if latest_state is not None:
             from vaultkeep.state.atomic import write_local_state
@@ -384,7 +450,23 @@ def _assert_writable_destination(root: Path) -> None:
         raise DestinationError(f"Destination root is not writable: {root}") from error
 
 
-def _validate_configured_hooks(config: JobConfig) -> None:
+def _runtime_owner(user_mode: bool) -> tuple[int, int | None]:
+    if user_mode:
+        geteuid = getattr(os, "geteuid", None)
+        if callable(geteuid):
+            return int(geteuid()), None
+    return 0, 0
+
+
+def _prepare_user_paths(paths: WorkflowPaths) -> None:
+    for path in (paths.state_root, paths.local_temp_root, paths.lock_root):
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name == "posix":
+            os.chmod(path, 0o700)
+
+
+def _validate_configured_hooks(config: JobConfig, *, user_mode: bool = False) -> None:
+    owner_uid, owner_gid = _runtime_owner(user_mode)
     for phase in (
         "before_check",
         "before_archive",
@@ -395,7 +477,12 @@ def _validate_configured_hooks(config: JobConfig) -> None:
     ):
         hook = getattr(config.hooks, phase)
         if hook is not None:
-            validate_hook_executable(hook.command)
+            validate_hook_executable(
+                hook.command,
+                owner_uid=owner_uid,
+                owner_gid=owner_gid,
+                allow_root_owned=user_mode,
+            )
 
 
 def _run_configured_hook(
@@ -404,10 +491,20 @@ def _run_configured_hook(
     config_path: Path,
     context: HookContext,
     outcomes: list[HookOutcomeState],
+    owner_uid: int = 0,
+    owner_gid: int | None = 0,
+    allow_root_owned: bool = False,
 ) -> None:
     del config_path
     hook = getattr(config.hooks, phase)
     if hook is not None:
-        execution = run_hook(phase, hook, context)
+        execution = run_hook(
+            phase,
+            hook,
+            context,
+            owner_uid=owner_uid,
+            owner_gid=owner_gid,
+            allow_root_owned=allow_root_owned,
+        )
         outcomes.append(execution.outcome)
         require_success(execution)

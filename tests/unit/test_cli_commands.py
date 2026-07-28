@@ -60,3 +60,18 @@ def test_runtime_validation_probes_destination_writability(
             require_sources=False,
             require_writable_destination=True,
         )
+
+
+def test_user_workflow_paths_use_xdg_locations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+
+    paths = workflow.user_workflow_paths()
+
+    assert paths.state_root == tmp_path / "state" / "vaultkeep" / "jobs"
+    assert paths.local_temp_root == tmp_path / "cache" / "vaultkeep" / "tmp"
+    assert paths.lock_root == tmp_path / "runtime" / "vaultkeep" / "locks"

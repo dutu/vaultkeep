@@ -41,14 +41,19 @@ def private_inner_tar_path(
     return temp_root / f"{job_id}-{job_identity_hash}" / backup_id / f"{job_id}.tar"
 
 
-def prepare_private_workspace(inner_tar_path: Path) -> None:
-    """Create and validate the root-owned 0700 private workspace."""
+def prepare_private_workspace(
+    inner_tar_path: Path,
+    *,
+    owner_uid: int = 0,
+    owner_gid: int | None = 0,
+) -> None:
+    """Create and validate the mode-0700 private workspace for the expected owner."""
     if os.name != "posix":
         raise ArchiveCreationError("Password-protected archives require Debian/POSIX")
     job_directory = inner_tar_path.parent.parent
     backup_directory = inner_tar_path.parent
-    _validate_private_directory(job_directory.parent)
-    _create_or_validate_directory(job_directory)
+    _validate_private_directory(job_directory.parent, owner_uid=owner_uid, owner_gid=owner_gid)
+    _create_or_validate_directory(job_directory, owner_uid=owner_uid, owner_gid=owner_gid)
     try:
         backup_directory.mkdir(mode=0o700)
     except FileExistsError as error:
@@ -59,7 +64,7 @@ def prepare_private_workspace(inner_tar_path: Path) -> None:
         raise ArchiveCreationError(
             f"Cannot create private backup workspace {backup_directory}: {error}"
         ) from error
-    _validate_private_directory(backup_directory)
+    _validate_private_directory(backup_directory, owner_uid=owner_uid, owner_gid=owner_gid)
 
 
 def estimate_inner_tar_size(snapshot: SourceSnapshot) -> int:
@@ -186,25 +191,44 @@ def cleanup_private_inner_tar(inner_tar_path: Path) -> None:
         ) from error
 
 
-def _create_or_validate_directory(path: Path) -> None:
+def _create_or_validate_directory(
+    path: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int | None,
+) -> None:
     try:
         path.mkdir(mode=0o700)
     except FileExistsError:
         pass
     except OSError as error:
         raise ArchiveCreationError(f"Cannot create private directory {path}: {error}") from error
-    _validate_private_directory(path)
+    _validate_private_directory(path, owner_uid=owner_uid, owner_gid=owner_gid)
 
 
-def _validate_private_directory(path: Path) -> None:
+def _validate_private_directory(
+    path: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int | None,
+) -> None:
     try:
         status = path.lstat()
     except OSError as error:
         raise ArchiveCreationError(f"Cannot inspect private directory {path}: {error}") from error
     if not stat.S_ISDIR(status.st_mode):
         raise ArchiveCreationError(f"Private path is not a directory: {path}")
-    if status.st_uid != 0 or status.st_gid != 0 or stat.S_IMODE(status.st_mode) != 0o700:
-        raise ArchiveCreationError(f"Private directory must be root:root mode 0700: {path}")
+    wrong_uid = status.st_uid != owner_uid
+    wrong_gid = owner_gid is not None and status.st_gid != owner_gid
+    if wrong_uid or wrong_gid or stat.S_IMODE(status.st_mode) != 0o700:
+        owner = _owner_label(owner_uid, owner_gid)
+        raise ArchiveCreationError(f"Private directory must be owned by {owner} mode 0700: {path}")
+
+
+def _owner_label(owner_uid: int, owner_gid: int | None) -> str:
+    if owner_uid == 0 and owner_gid == 0:
+        return "root:root"
+    return f"{owner_uid}:{owner_gid}" if owner_gid is not None else str(owner_uid)
 
 
 def _round_tar_block(size: int) -> int:

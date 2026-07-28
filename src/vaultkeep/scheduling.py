@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -92,6 +93,17 @@ class TimerPaths:
     registry_path: Path = Path("/var/lib/vaultkeep/systemd-instances.json")
 
 
+def user_timer_paths() -> TimerPaths:
+    """Return per-user job, unit, and registry paths for systemd user timers."""
+    config_base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    state_base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return TimerPaths(
+        jobs_root=config_base / "vaultkeep" / "jobs",
+        units_root=config_base / "systemd" / "user",
+        registry_path=state_base / "vaultkeep" / "systemd-instances.json",
+    )
+
+
 def render_schedule(config: JobConfig) -> RenderedSchedule:
     """Render the validated local-time systemd calendar schedule for a job."""
     schedule = config.schedule
@@ -133,19 +145,26 @@ def _minutes(value: str) -> int:
 class TimerManager:
     """Manage only Vaultkeep-owned systemd timer instance drop-ins."""
 
-    def __init__(self, paths: TimerPaths | None = None) -> None:
-        self.paths = paths or TimerPaths()
+    def __init__(self, paths: TimerPaths | None = None, *, user_mode: bool = False) -> None:
+        self.user_mode = user_mode
+        self.paths = paths or (user_timer_paths() if user_mode else TimerPaths())
 
     def require_environment(self) -> None:
         """Require the root-owned systemd environment promised by the v1 CLI."""
-        geteuid = getattr(os, "geteuid", None)
-        if not callable(geteuid) or geteuid() != 0:
-            raise TimerError("Timer management requires root")
+        if not self.user_mode:
+            geteuid = getattr(os, "geteuid", None)
+            if not callable(geteuid) or geteuid() != 0:
+                raise TimerError("Timer management requires root")
         if not Path("/run/systemd/system").is_dir():
             raise TimerError("Timer management requires systemd as the active system manager")
         if shutil.which("systemctl") is None or shutil.which("systemd-analyze") is None:
             raise TimerError("Timer management requires systemctl and systemd-analyze")
-        version = self._run(("systemctl", "--version"))
+        command = (
+            ("systemctl", "--user", "--version")
+            if self.user_mode
+            else ("systemctl", "--version")
+        )
+        version = self._run(command)
         match = _SYSTEMD_VERSION.search(version)
         if match is None or int(match.group(1)) < 247:
             raise TimerError("Timer management requires systemd version 247 or newer")
@@ -194,10 +213,21 @@ class TimerManager:
         config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
         instance = self._instance_id(config_path, config.job.id, parameters)
         self.disable(config_path, runtime_params=parameters)
-        for drop_in in (self._timer_drop_in_path(instance), self._service_drop_in_path(instance)):
-            if drop_in.exists():
-                drop_in.unlink()
-                drop_in.parent.rmdir()
+        if self.user_mode:
+            for unit_file in (
+                self._timer_drop_in_path(instance),
+                self._service_drop_in_path(instance),
+            ):
+                if unit_file.exists():
+                    unit_file.unlink()
+        else:
+            for drop_in in (
+                self._timer_drop_in_path(instance),
+                self._service_drop_in_path(instance),
+            ):
+                if drop_in.exists():
+                    drop_in.unlink()
+                    drop_in.parent.rmdir()
         self._daemon_reload()
         self._unregister(instance)
 
@@ -290,37 +320,78 @@ class TimerManager:
         return f"vaultkeep@{instance}.timer"
 
     def _timer_drop_in_path(self, instance: str) -> Path:
+        if self.user_mode:
+            return self.paths.units_root / f"vaultkeep@{instance}.timer"
         return self.paths.units_root / f"vaultkeep@{instance}.timer.d" / "schedule.conf"
 
     def _service_drop_in_path(self, instance: str) -> Path:
+        if self.user_mode:
+            return self.paths.units_root / f"vaultkeep@{instance}.service"
         return self.paths.units_root / f"vaultkeep@{instance}.service.d" / "override.conf"
 
     def _write_timer_drop_in(self, instance: str, rendered: RenderedSchedule) -> None:
         destination = self._timer_drop_in_path(instance)
         destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        _atomic_write(destination, rendered.drop_in(), mode=0o644)
+        if self.user_mode:
+            content = (
+                "[Unit]\n"
+                f"Description=Vaultkeep user backup timer {instance}\n\n"
+                "[Timer]\n"
+                f"Unit=vaultkeep@{instance}.service\n"
+                f"OnCalendar={rendered.on_calendar}\n"
+                f"RandomizedDelaySec={rendered.randomized_delay_seconds}s\n"
+                f"FixedRandomDelay={'yes' if rendered.fixed_random_delay else 'no'}\n"
+                "AccuracySec=1us\n"
+                f"Persistent={'true' if rendered.persistent else 'false'}\n\n"
+                "[Install]\n"
+                "WantedBy=timers.target\n"
+            )
+        else:
+            content = rendered.drop_in()
+        _atomic_write(destination, content, mode=0o644)
 
     def _write_service_drop_in(
         self, config_path: Path, instance: str, runtime_params: Mapping[str, str]
     ) -> None:
         destination = self._service_drop_in_path(instance)
+        resolved = config_path.resolve()
+        arguments = ["/usr/local/bin/vaultkeep"]
+        if self.user_mode:
+            arguments.append("--user")
+        arguments.extend(("--config", str(resolved)))
+        for key, value in sorted(runtime_params.items()):
+            arguments.extend(("--param", f"{key}={value}"))
+        arguments.append("run")
+        command = shlex.join(arguments) if self.user_mode else " ".join(arguments)
+        if self.user_mode:
+            content = (
+                "[Unit]\n"
+                f"Description=Vaultkeep user backup job {instance}\n"
+                f"ConditionPathExists={resolved}\n\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                f"ExecStart={command}\n"
+                "UMask=0077\n"
+                "PrivateTmp=true\n"
+                "LimitCORE=0\n"
+                "KillMode=control-group\n"
+                "TimeoutStopSec=5min\n"
+            )
+            destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            _atomic_write(destination, content, mode=0o644)
+            return
         if not runtime_params:
             if destination.exists():
                 destination.unlink()
                 destination.parent.rmdir()
             return
-        resolved = config_path.resolve()
-        arguments = ["/usr/local/bin/vaultkeep", "--config", str(resolved)]
-        for key, value in sorted(runtime_params.items()):
-            arguments.extend(("--param", f"{key}={value}"))
-        arguments.append("run")
         content = (
             "[Unit]\n"
             "ConditionPathExists=\n"
             f"ConditionPathExists={resolved}\n\n"
             "[Service]\n"
             "ExecStart=\n"
-            f"ExecStart={' '.join(arguments)}\n"
+            f"ExecStart={command}\n"
         )
         destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         _atomic_write(destination, content, mode=0o644)
@@ -381,7 +452,8 @@ class TimerManager:
         self._systemctl("daemon-reload")
 
     def _systemctl(self, *arguments: str, check: bool = True) -> str:
-        return self._run(("systemctl", *arguments), check=check)
+        prefix = ("systemctl", "--user") if self.user_mode else ("systemctl",)
+        return self._run((*prefix, *arguments), check=check)
 
     def _run(self, command: tuple[str, ...], *, check: bool = True) -> str:
         try:
