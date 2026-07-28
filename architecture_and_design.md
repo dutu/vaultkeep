@@ -25,7 +25,7 @@ Document status: **v1 scope frozen; Milestones 1 through 10 implemented; externa
 
 Specification revision: **2026-07-23**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, a disabled example configuration, and Python 3.11/3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, inactive `.example` configuration templates, and Python 3.11/3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -2001,19 +2001,19 @@ The example is safe by default:
 
 - it must not point to sensitive real sources;
 - it contains no future-enhancement fields;
-- it is stored as a disabled example;
+- it is stored with the inactive `.example` extension;
 - it passes schema-only validation.
 
 Repository file:
 
 ```text
-examples/vaultkeep-job.yaml.disabled
+examples/vaultkeep-job.yaml.example
 ```
 
 Installed path:
 
 ```text
-/etc/vaultkeep/jobs/example.yaml.disabled
+/etc/vaultkeep/jobs/vaultkeep-job.yaml.example
 ```
 
 Example:
@@ -2200,7 +2200,7 @@ The installer performs these operations:
 10. synchronize the checkout into a unique staged release below `/opt/vaultkeep`;
 11. create the staged release's virtual environment, install the hashed dependency lock, and install the Vaultkeep Python package with dependency resolution disabled;
 12. create configuration, secrets, state, temporary, and registry locations with the required ownership and permissions;
-13. install the disabled example configuration without activating it or overwriting an existing example;
+13. install every `examples/*.example` file into the jobs directory, overwriting existing packaged `.example` files without activating them;
 14. validate the staged service template and a synthetic timer instance composed from the staged timer template and a generated validation drop-in with `systemd-analyze verify`;
 15. run the staged executable with `--version`;
 16. validate the inactive example with the staged executable and `validate --schema-only`;
@@ -2223,7 +2223,7 @@ The installer creates directories with these minimum restrictions:
 /etc/vaultkeep                 root:root 0755
 /etc/vaultkeep/jobs            root:root 0750
 /etc/vaultkeep/secrets         root:root 0700
-/etc/vaultkeep/jobs/example.yaml.disabled root:root 0640
+/etc/vaultkeep/jobs/*.example     root:root 0640
 /var/lib/vaultkeep             root:root 0750
 /var/lib/vaultkeep/jobs        root:root 0750
 /var/lib/vaultkeep/tmp         root:root 0700
@@ -2290,9 +2290,9 @@ Before replacing installed templates or switching `current`, the installer recor
 
 ## 25.6 Config preservation
 
-The installer must never overwrite existing job configurations or secrets.
+The installer must never overwrite existing `.yaml` job configurations or secrets.
 
-Updated examples are installed under a versioned or `.new` name.
+Updated packaged `.example` files are overwritten during install and update.
 
 It must not silently rewrite user configuration.
 
@@ -2358,7 +2358,7 @@ vaultkeep/
 │   ├── integration/
 │   └── fixtures/
 ├── examples/
-│   └── vaultkeep-job.yaml.disabled
+│   └── vaultkeep-job.yaml.example
 ├── systemd/
 │   ├── vaultkeep@.service
 │   └── vaultkeep@.timer
@@ -2752,7 +2752,7 @@ Status: **Complete**.
 - [x] explicit install and update modes with non-mutating dry-run plans;
 - [x] complete versioned-release staging;
 - [x] configuration, secret, state, and temporary directories;
-- [x] inactive example configuration;
+- [x] inactive `.example` configuration templates;
 - [x] systemd template installation and verification;
 - [x] atomic current-release switch and rollback;
 - [x] strict installation ownership manifest;

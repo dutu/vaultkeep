@@ -66,6 +66,14 @@ def test_installer_does_not_activate_timers() -> None:
     assert "systemctl daemon-reload" in installer
 
 
+def test_installer_installs_all_example_templates_with_overwrite_policy() -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+
+    assert '"$SOURCE_DIR"/examples/*.example' in installer
+    assert '"$VK_JOBS/${example##*/}"' in installer
+    assert "preserve existing example" not in installer
+
+
 def test_installer_manifest_does_not_hash_directories() -> None:
     installer = INSTALLER.read_text(encoding="utf-8")
 

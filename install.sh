@@ -245,8 +245,14 @@ PY
 ensure_checkout() {
     [[ -f "$SOURCE_DIR/pyproject.toml" ]] || die "pyproject.toml not found in checkout: $SOURCE_DIR"
     [[ -f "$SOURCE_DIR/requirements.lock" ]] || die "requirements.lock not found in checkout"
-    [[ -f "$SOURCE_DIR/examples/vaultkeep-job.yaml.disabled" ]] ||
-        die "disabled example configuration not found"
+    local found_example=0
+    local example
+    for example in "$SOURCE_DIR"/examples/*.example; do
+        [[ -f "$example" ]] || continue
+        found_example=1
+        break
+    done
+    [[ "$found_example" == 1 ]] || die "example configuration files not found"
     [[ -f "$SOURCE_DIR/systemd/vaultkeep@.service" ]] ||
         die "service template not found"
     [[ -f "$SOURCE_DIR/systemd/vaultkeep@.timer" ]] ||
@@ -280,14 +286,16 @@ prepare_directories() {
     fi
 }
 
-install_example() {
-    local destination="$VK_JOBS/example.yaml.disabled"
-    if [[ -e "$destination" ]]; then
-        log "preserve existing example: $destination"
-        return
-    fi
-    run install -o root -g root -m 0640 \
-        "$SOURCE_DIR/examples/vaultkeep-job.yaml.disabled" "$destination"
+install_examples() {
+    local installed=0
+    local example destination
+    for example in "$SOURCE_DIR"/examples/*.example; do
+        [[ -f "$example" ]] || continue
+        destination="$VK_JOBS/${example##*/}"
+        run install -o root -g root -m 0640 "$example" "$destination"
+        installed=1
+    done
+    [[ "$installed" == 1 ]] || die "example configuration files not found"
 }
 
 stage_release() {
@@ -320,8 +328,11 @@ stage_release() {
     "$stage/venv/bin/python" -m pip install --require-hashes -r "$stage/src/requirements.lock"
     "$stage/venv/bin/python" -m pip install --no-build-isolation --no-deps "$stage/src"
     "$stage/venv/bin/vaultkeep" --version | grep -Fx "$version" >/dev/null
-    "$stage/venv/bin/vaultkeep" --config "$stage/src/examples/vaultkeep-job.yaml.disabled" \
-        validate --schema-only >/dev/null
+    local example
+    for example in "$stage/src"/examples/*.example; do
+        [[ -f "$example" ]] || continue
+        "$stage/venv/bin/vaultkeep" --config "$example" validate --schema-only >/dev/null
+    done
     python3 - "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR" <<'PY'
 import json
 import sys
@@ -642,7 +653,7 @@ install_or_update() {
     verify_executables
     check_7z_compatibility
     prepare_directories
-    install_example
+    install_examples
     verify_systemd_templates
     if [[ "$mode_result" != 10 ]]; then
         local replace_existing=0

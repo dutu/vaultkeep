@@ -49,7 +49,16 @@ mkdir -p ~/.config/vaultkeep/jobs
 mkdir -p ~/.local/share/backups/app
 ```
 
-Create `~/.config/vaultkeep/jobs/app.yaml`:
+Optionally start from a packaged example, then edit `job.id`, sources, destination, and retention:
+
+```bash
+cp /opt/vaultkeep/current/src/examples/vaultkeep-job.yaml.example \
+  ~/.config/vaultkeep/jobs/app.yaml
+```
+
+The root-mode copies under `/etc/vaultkeep/jobs/*.example` are administrator-owned. User-mode jobs normally copy from `/opt/vaultkeep/current/src/examples`.
+
+Or create `~/.config/vaultkeep/jobs/app.yaml` manually:
 
 ```yaml
 config_version: 1

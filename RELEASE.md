@@ -266,7 +266,7 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
   - `/usr/local/bin/vaultkeep` points to the active release executable.
   - `/etc/systemd/system/vaultkeep@.service` and
     `/etc/systemd/system/vaultkeep@.timer` exist.
-  - `/etc/vaultkeep/jobs/example.yaml.disabled` exists and remains inactive.
+  - `/etc/vaultkeep/jobs/vaultkeep-job.yaml.example` exists and remains inactive.
 
 - [ ] Verify installed command and timers.
 
@@ -650,7 +650,7 @@ Acceptable result:
       "requirements.lock",
       "systemd/vaultkeep@.service",
       "systemd/vaultkeep@.timer",
-      "examples/vaultkeep-job.yaml.disabled",
+      "examples/vaultkeep-job.yaml.example",
       "README.md",
       "RELEASE.md",
       "architecture_and_design.md",

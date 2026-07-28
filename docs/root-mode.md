@@ -45,11 +45,11 @@ The root installation provides the shared `/usr/local/bin/vaultkeep` command tha
 
 ## Create a root-mode job
 
-Copy the disabled example:
+Copy an installed example to a real job file:
 
 ```bash
 sudo cp \
-  /etc/vaultkeep/jobs/example.yaml.disabled \
+  /etc/vaultkeep/jobs/vaultkeep-job.yaml.example \
   /etc/vaultkeep/jobs/app.yaml
 ```
 

@@ -185,7 +185,7 @@ The installer:
 - atomically activates that release through `/opt/vaultkeep/current`;
 - creates `/usr/local/bin/vaultkeep`;
 - creates configuration, secrets, state, and temporary directories;
-- installs an inactive example job;
+- installs inactive `.example` job templates;
 - installs and validates the shared systemd service and timer templates;
 - validates existing jobs and synchronizes their timers;
 - runs `vaultkeep --version`.
@@ -214,11 +214,13 @@ Debian keeps the remaining files in standard purpose-specific locations:
 
 The ownership manifest allows the installer to identify its files without scanning the system or guessing from filenames.
 
-Installation does not start a backup. The example remains disabled at:
+Installation does not start a backup. Example files are copied to the root-mode jobs directory with the `.example` extension, so they are not active jobs:
 
 ```text
-/etc/vaultkeep/jobs/example.yaml.disabled
+/etc/vaultkeep/jobs/*.example
 ```
+
+The installer copies every `examples/*.example` file from the release. Updates overwrite existing `.example` files so packaged examples stay current. User-created `.yaml` job files are not overwritten.
 
 After installing Vaultkeep, continue with the workflow for the intended mode:
 
@@ -266,7 +268,7 @@ The update mode:
 
 - requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;
 - stages the source and virtual environment as a complete versioned release;
-- validates the executable, example configuration, and systemd units;
+- validates the executable, example configurations, and systemd units;
 - atomically switches `/opt/vaultkeep/current` to the new release;
 - reloads systemd;
 - preserves user jobs and secrets;

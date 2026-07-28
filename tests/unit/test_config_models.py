@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from vaultkeep.config import JobConfig, load_config
 
-EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.disabled"
+EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.example"
 
 
 def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> None:

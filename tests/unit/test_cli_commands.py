@@ -12,7 +12,7 @@ from vaultkeep.cli.commands import main
 from vaultkeep.config import JobConfig
 from vaultkeep.errors import DestinationError
 
-EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.disabled"
+EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.example"
 
 
 def test_version_does_not_require_a_command(capsys: Any) -> None:
