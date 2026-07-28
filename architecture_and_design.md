@@ -2242,9 +2242,9 @@ sudo ./install.sh update
 sudo ./install.sh update --dry-run
 ```
 
-`install` creates the first deployment. When the same version and source digest are already active, it performs an idempotent verification and reconciliation. An existing different deployment causes `install` to fail with an instruction to use `update`.
+`install` creates the first deployment. When the same version and source digest are already active, it performs an idempotent verification and reconciliation. When the same version is already active with a different source digest, it stages the checkout as a complete replacement for that version's installed release directory and replaces the release in a rollback-protected transaction. An existing deployment with a different version causes `install` to fail with an instruction to use `update` for a new release.
 
-`update` requires a valid existing installation manifest. It installs the checkout from which the script is executed and never performs an implicit network fetch. A candidate version newer than the active version creates a new release. An exact version-and-source-digest match performs idempotent verification without a release switch. The same version with a different source digest, an older version, and every other non-upgrade combination are rejected.
+`update` requires a valid existing installation manifest. It installs the checkout from which the script is executed and never performs an implicit network fetch. A candidate version newer than the active version creates a new release. An exact version-and-source-digest match performs idempotent verification without a release switch. The same version with a different source digest is rejected as not being an update and is handled by `install`; an older version and every other non-upgrade combination are rejected.
 
 `install --dry-run` and `update --dry-run` perform non-mutating preflight, validate the checkout and any existing ownership metadata, and print the dependency, release, symlink, unit, timer, and cleanup plan.
 

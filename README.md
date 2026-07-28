@@ -177,7 +177,7 @@ sudo ./install.sh install
 
 The first command previews dependencies and every planned filesystem and systemd change. The second command applies the installation.
 
-`/path/to/vaultkeep` is only the administrator's source checkout. It is not an installed application directory and can be removed after installation. Vaultkeep copies the selected source into the active versioned release below `/opt/vaultkeep`. A later update can use the same refreshed checkout or another trusted checkout of the newer release.
+`/path/to/vaultkeep` is only the administrator's source checkout. It is not an installed application directory and can be removed after installation. Vaultkeep copies the selected source into the active versioned release below `/opt/vaultkeep`. A later same-version reinstall can use the same refreshed checkout. A later version update can use the same checkout or another trusted checkout of the newer release.
 
 The installer:
 
@@ -225,6 +225,21 @@ After installing Vaultkeep, continue with the workflow for the intended mode:
 - [Root mode guide](docs/root-mode.md), for administrator-managed system backups.
 - [User mode guide](docs/user-mode.md), for per-user backups using `vaultkeep --user`.
 
+### Reinstall the same application version
+
+During development, or when rebuilding the same release version from a refreshed checkout, run `install` again:
+
+```bash
+cd /path/to/vaultkeep
+git pull
+sudo ./install.sh install --dry-run
+sudo ./install.sh install
+```
+
+If the installed version matches the checkout version but the source content changed, `install` stages the checkout as a complete replacement for the existing release directory, validates it, and replaces `/opt/vaultkeep/releases/<version>` in a rollback-protected transaction. Existing jobs, secrets, state, timer registry, and backup destinations are preserved.
+
+If the installed version is different from the checkout version, `install` stops. Use `update` for a newer release version.
+
 ### Update the application
 
 Fetch and select the newer release in the source checkout:
@@ -257,7 +272,7 @@ The update mode:
 - preserves user jobs and secrets;
 - retains the complete preceding release for rollback.
 
-`install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. Reusing a version with different source content is rejected.
+`install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. The same version with different source content is not an update; use `install` to refresh the installed code or bump the project version before running `update`.
 
 Failed staging does not replace the active release. A failure after activation restores the preceding release, templates, and timer registry.
 

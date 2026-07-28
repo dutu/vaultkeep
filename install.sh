@@ -33,6 +33,9 @@ PREVIOUS_CURRENT_TARGET=""
 PREVIOUS_BIN_TARGET=""
 CANDIDATE_RELEASE_PATH=""
 CANDIDATE_RELEASE_CREATED=0
+STAGED_REPLACEMENT_RELEASE=""
+REPLACED_RELEASE_PATH=""
+REPLACED_RELEASE_BACKUP=""
 
 usage() {
     cat <<'EOF'
@@ -288,11 +291,14 @@ install_example() {
 }
 
 stage_release() {
-    local version=$1 digest=$2
+    local version=$1 digest=$2 replace_existing=${3:-0}
     local stage="$VK_STAGING/$version-$$"
     local release="$VK_RELEASES/$version"
     if [[ "$DRY_RUN" == 1 ]]; then
         log "PLAN stage release below $stage"
+        if [[ "$replace_existing" == 1 ]]; then
+            log "PLAN replace existing release: $release"
+        fi
         return
     fi
     [[ ! -e "$stage" ]] || die "staging path already exists: $stage"
@@ -338,10 +344,36 @@ Path(sys.argv[1]).write_text(
 PY
     chown -R root:root "$stage"
     if [[ -e "$release" ]]; then
+        if [[ "$replace_existing" == 1 ]]; then
+            STAGED_REPLACEMENT_RELEASE="$stage"
+            CANDIDATE_RELEASE_PATH="$release"
+            return
+        fi
         rm -rf "$stage"
         die "release already exists: $release"
     fi
     mv "$stage" "$release"
+    CANDIDATE_RELEASE_PATH="$release"
+    CANDIDATE_RELEASE_CREATED=1
+}
+
+replace_release_from_staging() {
+    local version=$1
+    local release="$VK_RELEASES/$version"
+    if [[ -z "$STAGED_REPLACEMENT_RELEASE" ]]; then
+        return
+    fi
+    if [[ "$DRY_RUN" == 1 ]]; then
+        log "PLAN replace existing release: $release"
+        return
+    fi
+    [[ -d "$release" ]] || die "release to replace does not exist: $release"
+    [[ -d "$STAGED_REPLACEMENT_RELEASE" ]] ||
+        die "staged replacement release does not exist: $STAGED_REPLACEMENT_RELEASE"
+    REPLACED_RELEASE_PATH="$release"
+    REPLACED_RELEASE_BACKUP="$ROLLBACK_TMP/replaced-release"
+    mv "$release" "$REPLACED_RELEASE_BACKUP"
+    mv "$STAGED_REPLACEMENT_RELEASE" "$release"
     CANDIDATE_RELEASE_PATH="$release"
     CANDIDATE_RELEASE_CREATED=1
 }
@@ -448,6 +480,10 @@ rollback_commit() {
         restore_or_remove_file "$ROLLBACK_TMP/timer-registry" "$VK_TIMER_REGISTRY"
         if [[ "$CANDIDATE_RELEASE_CREATED" == 1 && "$CANDIDATE_RELEASE_PATH" == "$VK_RELEASES/"* ]]; then
             rm -rf "$CANDIDATE_RELEASE_PATH"
+        fi
+        if [[ -n "$REPLACED_RELEASE_BACKUP" && -d "$REPLACED_RELEASE_BACKUP" ]]; then
+            rm -rf "$REPLACED_RELEASE_PATH"
+            mv "$REPLACED_RELEASE_BACKUP" "$REPLACED_RELEASE_PATH"
         fi
         if [[ "$VK_TESTING" != 1 ]]; then
             systemctl daemon-reload >/dev/null 2>&1 || true
@@ -559,14 +595,18 @@ validate_existing_mode() {
                 log "existing installation matches candidate; reconciling installed files"
                 return 10
             fi
-            die "existing deployment found; use update"
+            if [[ "$active_version" == "$version" ]]; then
+                log "existing version differs from candidate; reinstalling from current checkout"
+                return 11
+            fi
+            die "existing deployment version $active_version found; use update for a new release"
         fi
         if [[ "$active_version" == "$version" && "$active_digest" == "$digest" ]]; then
             log "installed version and source digest already match; reconciling installed files"
             return 10
         fi
         if [[ "$active_version" == "$version" ]]; then
-            die "same version with different source digest is not a valid update"
+            die "same version with different source digest is not an update; use install to refresh the installed code"
         fi
         version_is_newer "$version" "$active_version" ||
             die "candidate version $version is not newer than installed version $active_version"
@@ -590,10 +630,13 @@ install_or_update() {
         mode_result=0
     else
         mode_result=$?
-        [[ "$mode_result" == 10 ]] || return "$mode_result"
+        [[ "$mode_result" == 10 || "$mode_result" == 11 ]] || return "$mode_result"
     fi
     if [[ -f "$VK_MANIFEST" ]]; then
-        previous_release=$(manifest_value active_release || true)
+        previous_release=$(manifest_value retained_release || true)
+        if [[ "$MODE" == "update" && "$mode_result" == 0 ]]; then
+            previous_release=$(manifest_value active_release || true)
+        fi
     fi
     install_dependencies
     verify_executables
@@ -602,10 +645,15 @@ install_or_update() {
     install_example
     verify_systemd_templates
     if [[ "$mode_result" != 10 ]]; then
-        stage_release "$version" "$digest"
+        local replace_existing=0
+        if [[ "$mode_result" == 11 ]]; then
+            replace_existing=1
+        fi
+        stage_release "$version" "$digest" "$replace_existing"
     fi
     refuse_active_services
     begin_commit_transaction "$version"
+    replace_release_from_staging "$version"
     install_units_and_links "$version"
     write_manifest "$version" "$digest" "$previous_release"
     daemon_reload

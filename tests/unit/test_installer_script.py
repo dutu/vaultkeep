@@ -93,6 +93,69 @@ def test_install_dry_run_reports_plan_without_writing(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="installer is a Debian shell script")
+def test_install_dry_run_allows_same_version_reinstall(tmp_path: Path) -> None:
+    prefix = tmp_path / "opt" / "vaultkeep"
+    release = prefix / "releases" / "0.1.0"
+    prefix.mkdir(parents=True)
+    (prefix / "install-manifest.json").write_text(
+        json.dumps(
+            {
+                "active_release": str(release),
+                "retained_release": "",
+                "source_digest": "different-source-digest",
+                "version": "0.1.0",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_bash(), str(INSTALLER), "install", "--dry-run"],
+        cwd=ROOT,
+        env=_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "existing version differs from candidate; reinstalling from current checkout" in result.stdout
+    assert f"PLAN replace existing release: {release}" in result.stdout
+    assert not (tmp_path / "etc").exists()
+    assert not (tmp_path / "var").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="installer is a Debian shell script")
+def test_update_dry_run_rejects_same_version_different_source(tmp_path: Path) -> None:
+    prefix = tmp_path / "opt" / "vaultkeep"
+    release = prefix / "releases" / "0.1.0"
+    prefix.mkdir(parents=True)
+    (prefix / "install-manifest.json").write_text(
+        json.dumps(
+            {
+                "active_release": str(release),
+                "retained_release": "",
+                "source_digest": "different-source-digest",
+                "version": "0.1.0",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_bash(), str(INSTALLER), "update", "--dry-run"],
+        cwd=ROOT,
+        env=_env(tmp_path),
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "same version with different source digest is not an update" in result.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="installer is a Debian shell script")
 def test_uninstall_dry_run_uses_manifest_and_preserves_config(tmp_path: Path) -> None:
     prefix = tmp_path / "opt" / "vaultkeep"
     release = prefix / "releases" / "0.1.0.dev0"
