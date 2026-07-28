@@ -460,9 +460,7 @@ def _assert_configured_mount_point(root: Path, mount_point: Path) -> None:
             f"Unable to resolve configured destination mount point: {mount_point}"
         ) from error
     if not _path_is_relative_to(root_resolved, mount_point_resolved):
-        raise DestinationError(
-            f"Destination root is not below configured mount point: {root}"
-        )
+        raise DestinationError(f"Destination root is not below configured mount point: {root}")
     if not os.path.ismount(mount_point):
         raise DestinationError(f"Configured mount point is not mounted: {mount_point}")
 
