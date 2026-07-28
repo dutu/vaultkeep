@@ -100,9 +100,12 @@ def validate_job(
     runtime_params: Mapping[str, str] | None = None,
 ) -> CommandResult:
     """Validate configuration, optionally including the runtime destination/source checks."""
+    if schema_only:
+        load_config(config_path)
+        return CommandResult("validate", "valid")
+
     config = load_validated_config(config_path, runtime_params=runtime_params)
-    if not schema_only:
-        _validate_runtime(config, require_sources=True, require_writable_destination=False)
+    _validate_runtime(config, require_sources=True, require_writable_destination=False)
     return CommandResult("validate", "valid")
 
 

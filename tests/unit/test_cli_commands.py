@@ -12,10 +12,17 @@ from vaultkeep.cli.commands import main
 from vaultkeep.config import JobConfig
 from vaultkeep.errors import DestinationError
 
+EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.disabled"
+
 
 def test_version_does_not_require_a_command(capsys: Any) -> None:
     assert main(["--version"]) == 0
     assert capsys.readouterr().out.strip()
+
+
+def test_schema_only_validation_accepts_disabled_template(capsys: Any) -> None:
+    assert main(["--config", str(EXAMPLE_CONFIG), "validate", "--schema-only"]) == 0
+    assert capsys.readouterr().out.strip() == "validate: valid"
 
 
 def test_schema_only_validation_uses_config_path(tmp_path: Path, capsys: Any) -> None:
