@@ -2,7 +2,7 @@
 
 Vaultkeep is a backup application for Debian systems. It creates independent archive files from one or more files and directories, skips unchanged sources, applies calendar-based retention, and runs either manually or through managed systemd timers.
 
-This file is the user guide. For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](architecture_and_design.md).
+This file is the shared user guide for both operating modes. For mode-specific setup and command examples, see the [root mode guide](docs/root-mode.md) or [user mode guide](docs/user-mode.md). For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](architecture_and_design.md).
 
 ## Table of contents
 
@@ -17,9 +17,10 @@ This file is the user guide. For configuration rules, data structures, security 
   - [Update the application](#update-the-application)
   - [Uninstall the application](#uninstall-the-application)
 - [Usage](#usage)
-  - [Create a job configuration](#create-a-job-configuration)
+  - [Choose a mode-specific workflow](#choose-a-mode-specific-workflow)
   - [Minimal job configuration](#minimal-job-configuration)
   - [Destination name templates](#destination-name-templates)
+  - [Runtime template parameters](#runtime-template-parameters)
   - [CLI reference](#cli-reference)
   - [Check the installed version](#check-the-installed-version)
   - [Validate a job configuration](#validate-a-job-configuration)
@@ -219,7 +220,10 @@ Installation does not start a backup. The example remains disabled at:
 /etc/vaultkeep/jobs/example.yaml.disabled
 ```
 
-After installing Vaultkeep, continue with [Create a job configuration](#create-a-job-configuration).
+After installing Vaultkeep, continue with the workflow for the intended mode:
+
+- [Root mode guide](docs/root-mode.md), for administrator-managed system backups.
+- [User mode guide](docs/user-mode.md), for per-user backups using `vaultkeep --user`.
 
 ### Update the application
 
@@ -263,14 +267,14 @@ Confirm the installed version:
 vaultkeep --version
 ```
 
-Validate all jobs and inspect timer changes:
+Validate root-mode jobs and inspect root-mode timer changes:
 
 ```bash
 sudo vaultkeep timers validate
 sudo vaultkeep timers sync --dry-run
 ```
 
-The installer does not enable or start timers. Apply timer changes explicitly:
+The installer does not enable or start timers. Apply root-mode timer changes explicitly:
 
 ```bash
 sudo vaultkeep timers sync
@@ -302,34 +306,17 @@ sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
 
 ## Usage
 
-### Create a job configuration
+### Choose a mode-specific workflow
 
-Copy the disabled example and give it the intended job ID:
+Job creation, command privileges, timer installation, secret paths, hook ownership, and state locations differ by mode. Use the mode-specific guide for the first working job:
 
-```bash
-sudo cp \
-  /etc/vaultkeep/jobs/example.yaml.disabled \
-  /etc/vaultkeep/jobs/app.yaml
-```
+- [Root mode guide](docs/root-mode.md), for jobs below `/etc/vaultkeep/jobs`, root-owned secrets, and system timers.
+- [User mode guide](docs/user-mode.md), for jobs below `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs`, user-owned secrets, and systemd user timers.
 
-Edit it:
+The sections below describe the shared job format, shared command surface, and backup behavior. Commands shown with `[--user]` mean:
 
-```bash
-sudo nano /etc/vaultkeep/jobs/app.yaml
-```
-
-The filename stem and `job.id` must match. For this example:
-
-```yaml
-job:
-  id: app
-```
-
-Create the destination before validation. For mounted destinations, mount the share through the operating system and configure `require_mount: true`.
-
-To run the job manually, see [Run a job manually](#run-a-job-manually).
-
-To run the job on a systemd schedule, see [Configure a job timer](#configure-a-job-timer).
+- omit `--user` for root mode and run privileged operations with `sudo` as shown in the root mode guide;
+- include `--user` for user mode and run as the user who owns the job.
 
 ### Minimal job configuration
 
@@ -340,8 +327,8 @@ job:
   id: app
 
 sources:
-  - path: /etc/myapp
-  - path: /var/lib/myapp
+  - path: /path/to/source
+  - path: /path/to/another-source
     exclude:
       - cache/
       - "*.tmp"
@@ -355,9 +342,9 @@ source_options:
   ignore_missing: false
 
 destination:
-  root: /mnt/backups/app
+  root: /path/to/backups/app
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
-  require_mount: true
+  require_mount: false
 
 archive:
   format: tar.zst
@@ -439,14 +426,14 @@ Example:
 
 ```yaml
 destination:
-  root: /mnt/backups/{repo}
+  root: /path/to/backups/{repo}
   name_template: "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 ```
 
 Run it with:
 
-```bash
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a run
+```text
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a run
 ```
 
 Any placeholder in `destination.root` must be supplied with `--param`. Any placeholder in `destination.name_template` that is not one of the built-in fields above must also be supplied with `--param`. Extra unused parameters are rejected.
@@ -483,7 +470,7 @@ vaultkeep [--user] timers sync [--dry-run]
 
 Every command also supports `-h` or `--help` in its own position, for example `vaultkeep timer --help`.
 
-Use `--user` for per-user job configuration, per-user state, and systemd user timers. Omit it for the root/system mode described in the main examples below.
+Use `--user` for per-user job configuration, per-user state, and systemd user timers. Omit it for root mode. Root-mode operations that read protected sources, write root-owned state, manage system timers, or use root-owned secrets must be run with `sudo`.
 
 ### Check the installed version
 
@@ -495,9 +482,9 @@ The command prints only the installed version.
 
 ### Validate a job configuration
 
-```bash
-vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate --schema-only
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+```text
+vaultkeep [--user] --config <job.yaml> validate --schema-only
+vaultkeep [--user] --config <job.yaml> validate
 ```
 
 Use schema-only validation for quick YAML structure checks. Use complete validation before running a backup or installing a timer.
@@ -506,29 +493,29 @@ Use schema-only validation for quick YAML structure checks. Use complete validat
 
 After changing a job configuration:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+```text
+vaultkeep [--user] --config <job.yaml> validate
 ```
 
 For a schedule change:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer update
+```text
+vaultkeep [--user] --config <job.yaml> timer update
 ```
 
 Changes to sources, exclusions, destination identity, archive format, encryption mode, password-file path, or metadata policy force a new backup on the next run.
 
 Retention changes do not force a backup. Preview and apply the new policy explicitly:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune --dry-run
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune
+```text
+vaultkeep [--user] --config <job.yaml> prune --dry-run
+vaultkeep [--user] --config <job.yaml> prune
 ```
 
 ### Run a job manually
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml run
+```text
+vaultkeep [--user] --config <job.yaml> run
 ```
 
 Possible successful results:
@@ -540,16 +527,16 @@ An unchanged run does not create an archive or apply retention.
 
 ### List job backups
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml list
+```text
+vaultkeep [--user] --config <job.yaml> list
 ```
 
 `list` reports valid and malformed matching entries without reading complete archive contents or changing state.
 
 ### Verify job backups
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml verify
+```text
+vaultkeep [--user] --config <job.yaml> verify
 ```
 
 Verification checks:
@@ -565,14 +552,14 @@ Encrypted verification reads the configured password file.
 
 Preview:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune --dry-run
+```text
+vaultkeep [--user] --config <job.yaml> prune --dry-run
 ```
 
 Apply:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune
+```text
+vaultkeep [--user] --config <job.yaml> prune
 ```
 
 Retention is count-based and calendar-bucketed. Vaultkeep evaluates tiers from coarsest to finest:
@@ -587,20 +574,20 @@ Retention runs automatically only after a new backup is finalized. Time passing 
 
 ### Configure a job timer
 
-Vaultkeep uses one systemd timer instance per job:
+Vaultkeep uses one systemd timer instance per job. Root mode manages system timers. User mode manages systemd user timers.
 
 ```text
-/etc/vaultkeep/jobs/app.yaml
-→ vaultkeep@app.timer
-→ vaultkeep@app.service
+<job.yaml>
+-> vaultkeep@app.timer
+-> vaultkeep@app.service
 ```
 
 Parameterized jobs derive the timer instance from the job ID and sorted runtime parameters:
 
 ```text
-/etc/vaultkeep/jobs/app.yaml + --param repo=nas-a
-→ vaultkeep@app--repo-nas-a--<hash>.timer
-→ vaultkeep@app--repo-nas-a--<hash>.service
+<job.yaml> + --param repo=nas-a
+-> vaultkeep@app--repo-nas-a--<hash>.timer
+-> vaultkeep@app--repo-nas-a--<hash>.service
 ```
 
 The generated service override stores the exact `vaultkeep --config ... --param ... run` command, so manual and scheduled runs use the same effective configuration.
@@ -624,44 +611,44 @@ schedule:
 
 Install and start the timer:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer install
+```text
+vaultkeep [--user] --config <job.yaml> timer install
 ```
 
 For a parameterized job, pass the same parameters to every timer command:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a timer install
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a timer status
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml --param repo=nas-a timer remove
+```text
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a timer install
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a timer status
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a timer remove
 ```
 
 Update the timer after changing the job schedule:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer update
+```text
+vaultkeep [--user] --config <job.yaml> timer update
 ```
 
 Inspect the timer:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer status
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer next
+```text
+vaultkeep [--user] --config <job.yaml> timer status
+vaultkeep [--user] --config <job.yaml> timer next
 ```
 
 Stop the timer without removing its Vaultkeep-managed systemd schedule file:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer disable
+```text
+vaultkeep [--user] --config <job.yaml> timer disable
 ```
 
 Remove, or uninstall, the timer:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer remove
+```text
+vaultkeep [--user] --config <job.yaml> timer remove
 ```
 
-`timer remove` disables and stops the timer, removes the per-job systemd drop-in, reloads systemd, and unregisters the timer from Vaultkeep's timer ownership registry. It does not delete the job YAML file, local job state, or backup archives.
+`timer remove` disables and stops the timer, removes the per-job systemd drop-in, reloads the appropriate systemd manager, and unregisters the timer from Vaultkeep's timer ownership registry. It does not delete the job YAML file, local job state, or backup archives.
 
 Supported intervals:
 
@@ -712,24 +699,23 @@ Manual and scheduled runs execute the same backup workflow. A per-job lock preve
 
 Commands covering every job:
 
-```bash
-sudo vaultkeep timers list
-sudo vaultkeep timers validate
-sudo vaultkeep timers sync --dry-run
-sudo vaultkeep timers sync
+```text
+vaultkeep [--user] timers list
+vaultkeep [--user] timers validate
+vaultkeep [--user] timers sync --dry-run
+vaultkeep [--user] timers sync
 ```
 
 `timers sync` creates or updates timers for jobs with `schedule.enabled: true` and disables timers for jobs with `schedule.enabled: false`. Use `--dry-run` to preview the actions.
 
 ### Password-protected backups
 
-Create a root-readable password file without placing the password in command history:
+Create a password file without placing the password in command history. The path and ownership rules are mode-specific:
 
-```bash
-sudo nano /etc/vaultkeep/secrets/app.passphrase
-```
+- root mode uses root-owned password files, normally below `/etc/vaultkeep/secrets`;
+- user mode uses user-owned password files, normally below `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/secrets`.
 
-The installer creates `/etc/vaultkeep/secrets` as a root-only directory. The file contains one UTF-8 passphrase line.
+The file contains one UTF-8 passphrase line.
 
 Change the archive settings:
 
@@ -740,20 +726,20 @@ archive:
 
 encryption:
   mode: password
-  password_file: /etc/vaultkeep/secrets/app.passphrase
+  password_file: /path/to/app.passphrase
 ```
 
 The archive filename retains the configured backup base name and changes its derived extension to `.tar.7z`.
 
 Vaultkeep passes the password to `/usr/bin/7z` through a private input pipe. It does not place the password in command arguments, environment variables, manifests, or logs.
 
-To preserve TAR filesystem semantics, Vaultkeep creates a private plaintext TAR below `/var/lib/vaultkeep/tmp`, encrypts it with AES-256 and encrypted headers, verifies the result, and removes the plaintext TAR before committing the backup. Secure physical erasure is not guaranteed on journaling filesystems, copy-on-write filesystems, or SSDs.
+To preserve TAR filesystem semantics, Vaultkeep creates a private plaintext TAR below the mode-specific temporary workspace, encrypts it with AES-256 and encrypted headers, verifies the result, and removes the plaintext TAR before committing the backup. Secure physical erasure is not guaranteed on journaling filesystems, copy-on-write filesystems, or SSDs.
 
 V1 uses one password for a job and destination namespace. Password rotation requires a new job ID, password file, and destination namespace. Retain the old password file while old encrypted backups are needed.
 
 ### Lifecycle hooks
 
-Hooks run as root and are trusted administrator code. Each hook phase accepts one hook object. The `command` field is one command expressed as an argument vector: the first item is the executable path, and the remaining items are arguments passed to that executable. It is split across YAML lines for readability; it is not several commands and it is not a shell script.
+Hooks run under the job's execution identity: root in root mode, or the calling user in user mode. Hooks are trusted code for that mode. Each hook phase accepts one hook object. The `command` field is one command expressed as an argument vector: the first item is the executable path, and the remaining items are arguments passed to that executable. It is split across YAML lines for readability; it is not several commands and it is not a shell script.
 
 ```yaml
 hooks:
@@ -787,30 +773,30 @@ Available phases:
 
 Hook failures stop the current workflow phase. If `before_check` fails, source discovery does not start. If `before_archive` fails, archive creation does not start; Vaultkeep still attempts `after_archive` so partially applied quiescing can be released, then runs `on_failure`. If archive creation fails after `before_archive` succeeds, Vaultkeep also attempts `after_archive` and then runs `on_failure`.
 
-Hook executables and their paths must be root-owned and not writable by group or other users. Shell strings, pipelines, inherited environments, secret arguments, and multiple commands per phase are not supported. Use a securely managed wrapper executable for multi-step actions.
+Hook executables and their paths must satisfy the ownership and writability rules for the selected mode. Shell strings, pipelines, inherited environments, secret arguments, and multiple commands per phase are not supported. Use a securely managed wrapper executable for multi-step actions.
 
 ### Restore an unencrypted backup
 
 Restore into an empty staging directory:
 
 ```bash
-sudo mkdir -p /restore/staging
-sudo zstd --decompress --stdout \
-  /mnt/backups/app/backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/backup-app-20260723T090000Z.tar.zst \
-  | sudo tar --extract --file=- --directory=/restore/staging
+mkdir -p /restore/staging
+zstd --decompress --stdout \
+  /path/to/backups/app/backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/backup-app-20260723T090000Z.tar.zst \
+  | tar --extract --file=- --directory=/restore/staging
 ```
 
-Inspect the restored content before copying it to the final location.
+Use `sudo` when restoring root-owned backups or extracting to a privileged location. Inspect the restored content before copying it to the final location.
 
 ### Restore an encrypted backup
 
 Extract the inner TAR; 7-Zip prompts for the password:
 
 ```bash
-sudo mkdir -p /restore/staging /restore/work
+mkdir -p /restore/staging /restore/work
 cd /restore/work
-sudo 7z x /mnt/backups/app/backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/backup-app-20260723T090000Z.tar.7z
-sudo tar --extract --file=app.tar --directory=/restore/staging
+7z x /path/to/backups/app/backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/backup-app-20260723T090000Z.tar.7z
+tar --extract --file=app.tar --directory=/restore/staging
 ```
 
 Vaultkeep does not provide a general restore command in v1. Standard `tar`, `zstd`, and `7z` tools remain sufficient.
@@ -819,22 +805,28 @@ Vaultkeep does not provide a general restore command in v1. Standard `tar`, `zst
 
 Validate the job first:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+```text
+vaultkeep [--user] --config <job.yaml> validate
 ```
 
-Inspect timer and service status:
+Inspect timer and service status through Vaultkeep:
 
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer status
-sudo systemctl status vaultkeep@app.timer
-sudo systemctl status vaultkeep@app.service
+```text
+vaultkeep [--user] --config <job.yaml> timer status
 ```
 
-Read scheduled-run logs:
+Inspect systemd directly when needed:
 
 ```bash
-sudo journalctl -u vaultkeep@app.service
+# root mode
+systemctl status vaultkeep@app.timer
+systemctl status vaultkeep@app.service
+journalctl -u vaultkeep@app.service
+
+# user mode
+systemctl --user status vaultkeep@app.timer
+systemctl --user status vaultkeep@app.service
+journalctl --user -u vaultkeep@app.service
 ```
 
 Common exit codes:
@@ -854,10 +846,11 @@ Common exit codes:
 | 14 | Timer management failure |
 | 15 | State or manifest failure |
 
-Local job state is stored below:
+Local job state is stored in the mode-specific state directory:
 
 ```text
-/var/lib/vaultkeep/jobs
+root mode: /var/lib/vaultkeep/jobs
+user mode: ${XDG_STATE_HOME:-~/.local/state}/vaultkeep/jobs
 ```
 
 If a job's `state.json` is missing or unusable, Vaultkeep reconstructs it automatically from valid destination manifests. Do not edit destination manifests to recreate local state.

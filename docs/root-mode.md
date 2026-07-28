@@ -15,6 +15,8 @@ Root mode uses the centrally installed `vaultkeep` command and system locations:
 
 Root mode is independent from user mode. It does not read user-mode jobs below `~/.config/vaultkeep`, and user-mode timers do not modify root-mode timer units or registries.
 
+For the shared job schema, destination template rules, command surface, retention behavior, restore notes, and troubleshooting reference, see the [shared user guide](../README.md#usage).
+
 ## Install or update Vaultkeep
 
 Root installs Vaultkeep and its Debian package dependencies once for the host:

@@ -12,6 +12,8 @@ vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml run
 
 Root mode and user mode are independent. User mode does not use `/etc/vaultkeep/jobs`, `/var/lib/vaultkeep`, `/run/lock/vaultkeep`, or root-mode system timers. A host can have root-mode jobs already installed while one or more users maintain separate user-mode jobs.
 
+For the shared job schema, destination template rules, command surface, retention behavior, restore notes, and troubleshooting reference, see the [shared user guide](../README.md#usage).
+
 ## Administrator prerequisite
 
 Root must install Vaultkeep and the required Debian packages first:
