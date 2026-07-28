@@ -88,7 +88,10 @@ def load_password_file(
     if not path.is_absolute():
         raise PasswordFileError("Password file path must be absolute")
     _disable_core_dumps()
-    initial = _validate_password_path(path, owner_uid=owner_uid, owner_gid=owner_gid)
+    if owner_uid == 0 and owner_gid == 0:
+        initial = _validate_password_path(path)
+    else:
+        initial = _validate_password_path(path, owner_uid=owner_uid, owner_gid=owner_gid)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
