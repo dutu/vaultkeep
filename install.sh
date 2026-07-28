@@ -490,7 +490,7 @@ from pathlib import Path
 
 def file_digest(path: str) -> str:
     item = Path(path)
-    if not item.exists() or item.is_symlink():
+    if not item.exists() or item.is_symlink() or not item.is_file():
         return ""
     return hashlib.sha256(item.read_bytes()).hexdigest()
 

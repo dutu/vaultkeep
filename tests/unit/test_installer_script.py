@@ -66,6 +66,13 @@ def test_installer_does_not_activate_timers() -> None:
     assert "systemctl daemon-reload" in installer
 
 
+def test_installer_manifest_does_not_hash_directories() -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+
+    assert "or not item.is_file()" in installer
+    assert "return hashlib.sha256(item.read_bytes()).hexdigest()" in installer
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="installer is a Debian shell script")
 def test_install_dry_run_reports_plan_without_writing(tmp_path: Path) -> None:
     result = subprocess.run(
