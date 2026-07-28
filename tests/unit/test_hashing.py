@@ -310,6 +310,10 @@ def test_backup_relevant_configuration_changes_fingerprint(
     destination["destination"]["name_template"] = "changed-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
     candidates.append(destination)
 
+    mount_point = deepcopy(valid_config)
+    mount_point["destination"]["mount_point"] = "/mnt/other-backups"
+    candidates.append(mount_point)
+
     compression = deepcopy(valid_config)
     compression["archive"]["compression_level"] = 7
     candidates.append(compression)

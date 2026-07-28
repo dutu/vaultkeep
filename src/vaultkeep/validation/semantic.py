@@ -86,6 +86,38 @@ def _validate_paths(config: JobConfig, issues: list[ValidationIssue]) -> None:
                 "path_absolute",
             )
 
+    mount_point = config.destination.mount_point
+    normalized_mount_point: PurePosixPath | None = None
+    if mount_point is not None:
+        if "\0" in mount_point:
+            _issue(
+                issues,
+                ("destination", "mount_point"),
+                "Mount-point path contains a null character.",
+                "path_null",
+            )
+        else:
+            normalized_mount_point = _absolute_posix_path(mount_point)
+            if normalized_mount_point is None:
+                _issue(
+                    issues,
+                    ("destination", "mount_point"),
+                    "Mount-point path must be absolute.",
+                    "path_absolute",
+                )
+
+    if (
+        normalized_destination is not None
+        and normalized_mount_point is not None
+        and not _is_within(normalized_destination, normalized_mount_point)
+    ):
+        _issue(
+            issues,
+            ("destination", "mount_point"),
+            "Mount point must be destination.root or one of its parents.",
+            "mount_point_parent",
+        )
+
     seen: dict[PurePosixPath, int] = {}
     for index, source_path in normalized_sources:
         previous = seen.get(source_path)

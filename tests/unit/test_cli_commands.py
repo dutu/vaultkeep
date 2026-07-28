@@ -52,6 +52,7 @@ def test_runtime_validation_probes_destination_writability(
         "destination": {
             **valid_config["destination"],
             "root": str(tmp_path),
+            "mount_point": None,
         },
     }
     config = JobConfig.model_validate(config_data)
@@ -66,6 +67,61 @@ def test_runtime_validation_probes_destination_writability(
             config,
             require_sources=False,
             require_writable_destination=True,
+        )
+
+
+def test_runtime_validation_accepts_destination_below_mounted_parent(
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mount_point = tmp_path / "share"
+    root = mount_point / "app"
+    root.mkdir(parents=True)
+    config_data = {
+        **valid_config,
+        "destination": {
+            **valid_config["destination"],
+            "root": str(root),
+            "mount_point": str(mount_point),
+        },
+    }
+    config = JobConfig.model_validate(config_data)
+
+    monkeypatch.setattr(workflow.os.path, "ismount", lambda path: Path(path) == mount_point)
+
+    workflow._validate_runtime(
+        config,
+        require_sources=False,
+        require_writable_destination=False,
+    )
+
+
+def test_runtime_validation_rejects_unmounted_configured_mount_point(
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mount_point = tmp_path / "share"
+    root = mount_point / "app"
+    root.mkdir(parents=True)
+    config_data = {
+        **valid_config,
+        "destination": {
+            **valid_config["destination"],
+            "root": str(root),
+            "mount_point": str(mount_point),
+        },
+    }
+    config = JobConfig.model_validate(config_data)
+
+    monkeypatch.setattr(workflow.os.path, "ismount", lambda path: False)
+
+    with pytest.raises(DestinationError, match="Configured mount point is not mounted"):
+        workflow._validate_runtime(
+            config,
+            require_sources=False,
+            require_writable_destination=False,
         )
 
 

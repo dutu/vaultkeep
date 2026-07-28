@@ -359,7 +359,6 @@ source_options:
 destination:
   root: /path/to/backups/app
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
-  require_mount: false
 
 archive:
   format: tar.zst
@@ -456,6 +455,16 @@ Any placeholder in `destination.root` must be supplied with `--param`. Any place
 Runtime parameter names must match `[A-Za-z_][A-Za-z0-9_]*` and cannot use built-in names such as `job`, `timestamp_utc`, `source_hash`, or `backup_id`. Runtime parameter values are intended for non-secret selectors such as repository names; they may contain only letters, digits, `.`, `_`, `:`, `@`, `+`, and `-`.
 
 Runtime parameter values are part of the effective backup identity. Different parameter values use different destination namespaces, configuration fingerprints, local state files, locks, and timer instances.
+
+For destinations below a mounted filesystem, set `destination.mount_point` to the actual mount path:
+
+```yaml
+destination:
+  root: /mnt/backups/app
+  mount_point: /mnt/backups
+```
+
+When `mount_point` is present, Vaultkeep requires it to be currently mounted before using `destination.root`. The mount point can be `destination.root` itself or one of its parents. Omit `mount_point` for ordinary local destinations.
 
 ### CLI reference
 

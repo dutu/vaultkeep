@@ -50,7 +50,7 @@ class DestinationConfig(StrictConfigModel):
     root: NonEmptyString
     name_template: NonEmptyString
     marker_file: NonEmptyString | None = None
-    require_mount: bool
+    mount_point: NonEmptyString | None = None
 
 
 class ArchiveConfig(StrictConfigModel):

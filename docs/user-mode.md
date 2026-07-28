@@ -75,7 +75,6 @@ source_options:
 destination:
   root: /home/alice/.local/share/backups/app
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
-  require_mount: false
 
 archive:
   format: tar.zst

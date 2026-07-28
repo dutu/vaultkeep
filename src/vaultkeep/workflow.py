@@ -432,6 +432,8 @@ def _validate_runtime(
     root = Path(config.destination.root)
     if not root.is_dir():
         raise DestinationError(f"Destination root is not an accessible directory: {root}")
+    if config.destination.mount_point is not None:
+        _assert_configured_mount_point(root, Path(config.destination.mount_point))
     if require_writable_destination:
         _assert_writable_destination(root)
     if (
@@ -443,6 +445,34 @@ def _validate_runtime(
         for source in config.sources:
             if not Path(source.path).exists() and not config.source_options.ignore_missing:
                 raise DestinationError(f"Configured source does not exist: {source.path}")
+
+
+def _assert_configured_mount_point(root: Path, mount_point: Path) -> None:
+    if not mount_point.is_dir():
+        raise DestinationError(
+            f"Configured mount point is not an accessible directory: {mount_point}"
+        )
+    try:
+        root_resolved = root.resolve(strict=False)
+        mount_point_resolved = mount_point.resolve(strict=False)
+    except OSError as error:
+        raise DestinationError(
+            f"Unable to resolve configured destination mount point: {mount_point}"
+        ) from error
+    if not _path_is_relative_to(root_resolved, mount_point_resolved):
+        raise DestinationError(
+            f"Destination root is not below configured mount point: {root}"
+        )
+    if not os.path.ismount(mount_point):
+        raise DestinationError(f"Configured mount point is not mounted: {mount_point}")
+
+
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _assert_writable_destination(root: Path) -> None:

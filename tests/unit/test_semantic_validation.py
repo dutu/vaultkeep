@@ -63,6 +63,27 @@ def test_marker_file_must_remain_below_destination(
 
 
 @pytest.mark.parametrize(
+    ("mount_point", "expected_code"),
+    [("relative/mount", "path_absolute"), ("a\0b", "path_null")],
+)
+def test_mount_point_must_be_absolute(
+    valid_config: dict[str, Any], mount_point: str, expected_code: str
+) -> None:
+    candidate = deepcopy(valid_config)
+    candidate["destination"]["mount_point"] = mount_point
+
+    assert expected_code in _issue_codes(_config(candidate))
+
+
+def test_mount_point_must_contain_destination_root(valid_config: dict[str, Any]) -> None:
+    candidate = deepcopy(valid_config)
+    candidate["destination"]["root"] = "/mnt/backups/app"
+    candidate["destination"]["mount_point"] = "/mnt/other"
+
+    assert "mount_point_parent" in _issue_codes(_config(candidate))
+
+
+@pytest.mark.parametrize(
     ("template", "expected_code"),
     [
         ("backup-{job}", "template_timestamp"),

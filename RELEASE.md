@@ -392,7 +392,7 @@ For each combination, create a fixture containing:
   - `job.id` matches the config filename stem.
   - `destination.root` points to the tested destination.
   - `destination.marker_file` is present and exists in the destination.
-  - `destination.require_mount` is `true` for CIFS and NFS.
+  - `destination.mount_point` is set to the actual CIFS or NFS mount path.
   - `archive.format` is the format being tested.
   - `encryption.mode` is `password` only for `.tar.7z`.
   - `encryption.password_file` points to a root-owned mode-`0600` file for

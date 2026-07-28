@@ -1251,6 +1251,7 @@ Check cross-field relationships:
 - one or more sources are configured;
 - source paths are absolute;
 - rendered destination root is absolute;
+- when configured, destination mount point is absolute and contains the rendered destination root;
 - destination is not inside a source;
 - sources do not overlap;
 - `name_template` is present;
@@ -2064,8 +2065,10 @@ destination:
   # Optional marker that must exist below destination.root.
   # marker_file: ".vaultkeep-target"
 
-  # Require destination.root to be a mount point.
-  require_mount: true
+  # Optional mount point for mounted destinations. When set, this path must
+  # be mounted before Vaultkeep uses destination.root. It can be
+  # destination.root itself or one of its parents.
+  # mount_point: /mnt/backups
 
 archive:
   # Supported values: tar.zst, tar.7z.

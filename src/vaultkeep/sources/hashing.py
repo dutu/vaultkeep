@@ -97,7 +97,11 @@ def calculate_config_fingerprint(
             "root": _normalize_posix_path(config.destination.root),
             "name_template": config.destination.name_template,
             "marker_file": config.destination.marker_file,
-            "require_mount": config.destination.require_mount,
+            "mount_point": (
+                _normalize_posix_path(config.destination.mount_point)
+                if config.destination.mount_point is not None
+                else None
+            ),
         },
         "runtime_params": dict(sorted((runtime_params or {}).items())),
         "archive": {
