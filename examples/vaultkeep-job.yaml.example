@@ -1,0 +1,116 @@
+# Vaultkeep job example.
+# Copy to /etc/vaultkeep/jobs/<job-id>.yaml or a user-mode jobs directory.
+# The file stem must match job.id, for example app.yaml with job.id: app.
+
+# Supported value: 1.
+config_version: 1
+
+job:
+  # Unique job ID. Values: letters, digits, _ and -; max 128 chars.
+  id: example
+
+sources:
+  # Source file or directory. Value: absolute path.
+  - path: /path/to/source
+
+    # Optional source-only excludes. Values: gitwildmatch patterns.
+    # exclude:
+    #   - cache/
+    #   - "*.tmp"
+    #   - "**/node_modules/**"
+
+# Optional global excludes. Values: gitwildmatch patterns.
+# exclude:
+#   - "*.swp"
+#   - "**/.cache/**"
+
+source_options:
+  # Follow symlink targets. Values: true, false.
+  follow_symlinks: false
+
+  # Descend into mounted filesystems below sources. Values: true, false.
+  cross_filesystems: false
+
+  # Ignore missing source paths. Values: true, false.
+  ignore_missing: false
+
+destination:
+  # Backup destination directory. Value: absolute local/CIFS/NFS path.
+  root: /mnt/backups/example
+
+  # Backup base name. Must include {timestamp} or {timestamp_utc}.
+  # Built-ins: {job}, {hostname}, {timestamp}, {timestamp_utc}, {source_hash}, {format}.
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+
+  # Optional marker required below destination.root. Value: relative path.
+  # marker_file: ".vaultkeep-target"
+
+  # Optional mount check. Value: absolute mount path at or above destination.root.
+  # mount_point: /mnt/backups
+
+archive:
+  # Archive format. Values: tar.zst, tar.7z.
+  format: tar.zst
+
+  # Compression level. Values: 1-19 for tar.zst, 1-9 for tar.7z.
+  # compression_level: 6
+
+encryption:
+  # Encryption mode. Values: none for tar.zst, password for tar.7z.
+  mode: none
+
+  # Required with mode: password. Value: absolute password-file path.
+  # password_file: /etc/vaultkeep/secrets/example.passphrase
+
+retention:
+  # Retention counts. Values: integers >= 0; at least one tier must be > 0.
+  hourly: 24
+  daily: 7
+  weekly: 8
+  monthly: 12
+  yearly: 3
+
+schedule:
+  # Enable systemd timer. Values: true, false.
+  enabled: false
+
+  # Required when enabled. Values: hourly, daily, weekly, monthly.
+  interval: daily
+
+  # Required when enabled: exactly one of window or at.
+  # window value: "HH:MM-HH:MM"; at value: "HH:MM".
+  window: "01:00-05:00"
+  # at: "03:30"
+
+  # Required with interval: weekly. Values: monday through sunday.
+  # day: sunday
+
+  # Required with interval: monthly. Values: 1-28.
+  # day: 1
+
+  # Run one catch-up activation after downtime. Values: true, false.
+  persistent: true
+
+hooks:
+  # Hook phases. Values: null or {command: [absolute_executable, args...], timeout_seconds: 1-3600}.
+  before_check: null
+  before_archive: null
+  after_archive: null
+  on_success: null
+  on_failure: null
+  on_unchanged: null
+
+  # Example hook:
+  # before_check:
+  #   command:
+  #     - /usr/local/sbin/prepare-app-backup
+  #     - --job
+  #     - example
+  #   timeout_seconds: 300
+
+logging:
+  # Log level. Values: error, warning, info, debug.
+  level: info
+
+  # Include subprocess output in logs. Values: true, false.
+  # include_command_output: false
