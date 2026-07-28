@@ -18,9 +18,7 @@ def test_runtime_parameters_render_destination_root_and_require_usage(
 ) -> None:
     candidate = deepcopy(valid_config)
     candidate["destination"]["root"] = "/mnt/backups/{repo}"
-    candidate["destination"][
-        "name_template"
-    ] = "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+    candidate["destination"]["name_template"] = "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 
     config = resolve_runtime_config(JobConfig.model_validate(candidate), {"repo": "nas-a"})
 

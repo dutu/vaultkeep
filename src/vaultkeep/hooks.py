@@ -203,9 +203,7 @@ def _validate_secure_status(
     owner_gid: int | None,
     allow_root_owned: bool,
 ) -> None:
-    owner_matches = status.st_uid == owner_uid and (
-        owner_gid is None or status.st_gid == owner_gid
-    )
+    owner_matches = status.st_uid == owner_uid and (owner_gid is None or status.st_gid == owner_gid)
     root_matches = allow_root_owned and status.st_uid == 0
     if not owner_matches and not root_matches:
         owner = _owner_label(owner_uid, owner_gid)

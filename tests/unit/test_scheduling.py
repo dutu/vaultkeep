@@ -87,9 +87,9 @@ def test_parameterized_install_derives_instance_and_writes_service_override(
 ) -> None:
     valid_config["schedule"]["enabled"] = True
     valid_config["destination"]["root"] = "/mnt/backups/{repo}"
-    valid_config["destination"][
-        "name_template"
-    ] = "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+    valid_config["destination"]["name_template"] = (
+        "backup-{job}-{repo}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+    )
     jobs = tmp_path / "jobs"
     jobs.mkdir()
     config_path = jobs / "app.yaml"

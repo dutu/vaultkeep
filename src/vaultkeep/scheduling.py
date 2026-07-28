@@ -160,9 +160,7 @@ class TimerManager:
         if shutil.which("systemctl") is None or shutil.which("systemd-analyze") is None:
             raise TimerError("Timer management requires systemctl and systemd-analyze")
         command = (
-            ("systemctl", "--user", "--version")
-            if self.user_mode
-            else ("systemctl", "--version")
+            ("systemctl", "--user", "--version") if self.user_mode else ("systemctl", "--version")
         )
         version = self._run(command)
         match = _SYSTEMD_VERSION.search(version)
