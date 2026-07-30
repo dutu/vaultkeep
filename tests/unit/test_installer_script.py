@@ -81,6 +81,22 @@ def test_installer_manifest_does_not_hash_directories() -> None:
     assert "return hashlib.sha256(item.read_bytes()).hexdigest()" in installer
 
 
+def test_installer_rewrites_venv_entry_points_after_release_move() -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+
+    assert "finalize_release_venv" in installer
+    assert '"$release/venv/bin/python" -m pip install' in installer
+    assert "--force-reinstall --no-build-isolation --no-deps" in installer
+    assert '"$release/venv/bin/vaultkeep" --version' in installer
+    assert 'mv "$stage" "$release"' in installer
+    assert 'if ! finalize_release_venv "$release" "$version"; then' in installer
+    assert 'rm -rf "$release"' in installer
+    assert (
+        'mv "$STAGED_REPLACEMENT_RELEASE" "$release"\n'
+        '    finalize_release_venv "$release" "$version"'
+    ) in installer
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="installer is a Debian shell script")
 def test_install_dry_run_reports_plan_without_writing(tmp_path: Path) -> None:
     result = subprocess.run(

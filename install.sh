@@ -364,8 +364,28 @@ PY
         die "release already exists: $release"
     fi
     mv "$stage" "$release"
+    if ! finalize_release_venv "$release" "$version"; then
+        rm -rf "$release"
+        return 1
+    fi
     CANDIDATE_RELEASE_PATH="$release"
     CANDIDATE_RELEASE_CREATED=1
+}
+
+finalize_release_venv() {
+    local release=$1 version=$2
+    if [[ "$DRY_RUN" == 1 ]]; then
+        log "PLAN finalize Python entry points in $release/venv"
+        return
+    fi
+    "$release/venv/bin/python" -m pip install \
+        --force-reinstall --no-build-isolation --no-deps "$release/src"
+    "$release/venv/bin/vaultkeep" --version | grep -Fx "$version" >/dev/null
+    local example
+    for example in "$release/src"/examples/*.example; do
+        [[ -f "$example" ]] || continue
+        "$release/venv/bin/vaultkeep" --config "$example" validate --schema-only >/dev/null
+    done
 }
 
 replace_release_from_staging() {
@@ -385,6 +405,7 @@ replace_release_from_staging() {
     REPLACED_RELEASE_BACKUP="$ROLLBACK_TMP/replaced-release"
     mv "$release" "$REPLACED_RELEASE_BACKUP"
     mv "$STAGED_REPLACEMENT_RELEASE" "$release"
+    finalize_release_venv "$release" "$version"
     CANDIDATE_RELEASE_PATH="$release"
     CANDIDATE_RELEASE_CREATED=1
 }
