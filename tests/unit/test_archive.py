@@ -30,6 +30,7 @@ from vaultkeep.archive.process import CommandResult
 from vaultkeep.archive.tar_input import (
     compare_tar_members,
     parse_gnu_tar_listing,
+    tar_filesystem_input,
     tar_member_input,
     validate_tar_members,
 )
@@ -453,10 +454,13 @@ def test_tar_zstd_creation_uses_required_gnu_tar_contract(
 
     producer = observed["producer"]
     assert "--format=gnu" in producer
+    assert "--absolute-names" in producer
     assert "--null" in producer
     assert "--verbatim-files-from" in producer
     assert "--no-recursion" in producer
-    assert observed["options"]["producer_input"] == tar_member_input(snapshot)
+    assert "--directory=/" not in producer
+    assert any(str(option).startswith("--transform=s#^") for option in producer)
+    assert observed["options"]["producer_input"] == tar_filesystem_input(snapshot)
     assert "-9" in observed["consumer"]
 
 
@@ -530,7 +534,7 @@ def test_inner_tar_creation_uses_exclusive_mode_0600(
     )
 
     assert "--format=gnu" in observed["command"]
-    assert observed["options"]["input_data"] == tar_member_input(_snapshot(tmp_path))
+    assert observed["options"]["input_data"] == tar_filesystem_input(_snapshot(tmp_path))
     if os.name == "posix":
         assert output.stat().st_mode & 0o777 == 0o600
 

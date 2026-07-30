@@ -9,7 +9,8 @@ from vaultkeep.archive.base import ArchiveTools
 from vaultkeep.archive.process import run_command, run_pipeline
 from vaultkeep.archive.tar_input import (
     snapshot_uses_followed_symlinks,
-    tar_member_input,
+    tar_filesystem_input,
+    tar_path_transforms,
 )
 from vaultkeep.errors import ArchiveCreationError
 from vaultkeep.sources.entries import SourceSnapshot
@@ -30,6 +31,7 @@ def create_tar_zstd(
         tools.tar,
         archive_path=None,
         dereference=snapshot_uses_followed_symlinks(snapshot),
+        transforms=tar_path_transforms(snapshot),
     )
     zstd_command = (
         tools.zstd,
@@ -44,7 +46,7 @@ def create_tar_zstd(
         run_pipeline(
             tar_command,
             zstd_command,
-            producer_input=tar_member_input(snapshot),
+            producer_input=tar_filesystem_input(snapshot),
         )
         _flush_nonempty_file(output_path)
     except BaseException as error:
@@ -73,8 +75,9 @@ def create_inner_tar(
             tools.tar,
             archive_path=output_path,
             dereference=snapshot_uses_followed_symlinks(snapshot),
+            transforms=tar_path_transforms(snapshot),
         )
-        run_command(command, input_data=tar_member_input(snapshot))
+        run_command(command, input_data=tar_filesystem_input(snapshot))
         os.chmod(output_path, 0o600)
         _flush_nonempty_file(output_path)
     except BaseException as error:
@@ -92,18 +95,20 @@ def _tar_create_command(
     *,
     archive_path: Path | None,
     dereference: bool,
+    transforms: tuple[str, ...],
 ) -> tuple[str | Path, ...]:
     command: list[str | Path] = [
         tar_path,
         "--format=gnu",
         "--create",
         f"--file={archive_path}" if archive_path is not None else "--file=-",
-        "--directory=/",
+        "--absolute-names",
         "--null",
         "--verbatim-files-from",
         "--no-recursion",
         "--sparse",
     ]
+    command.extend(f"--transform={transform}" for transform in transforms)
     if dereference:
         command.append("--dereference")
     command.append("--files-from=-")

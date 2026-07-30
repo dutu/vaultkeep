@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from vaultkeep.errors import ArchiveVerificationError
-from vaultkeep.sources.entries import SourceEntryType, SourceSnapshot
+from vaultkeep.sources.entries import SourceEntry, SourceEntryType, SourceSnapshot
 
 _SIMPLE_ESCAPES = {
     ord("a"): 0x07,
@@ -27,6 +30,36 @@ def tar_member_input(snapshot: SourceSnapshot) -> bytes:
     if len(members) != len(set(members)):
         raise ValueError("TAR member paths must be unique")
     return b"\0".join(members) + b"\0"
+
+
+def tar_filesystem_input(snapshot: SourceSnapshot) -> bytes:
+    """Return the complete raw NUL-delimited filesystem paths read by GNU TAR."""
+    if not snapshot.entries:
+        raise ValueError("Cannot archive an empty source snapshot")
+    paths = tuple(os.fsencode(entry.absolute_path) for entry in snapshot.entries)
+    if any(not path or not Path(os.fsdecode(path)).is_absolute() for path in paths):
+        raise ValueError("TAR filesystem paths must be non-empty and absolute")
+    if len(paths) != len(set(paths)):
+        raise ValueError("TAR filesystem paths must be unique")
+    return b"\0".join(paths) + b"\0"
+
+
+def tar_path_transforms(snapshot: SourceSnapshot) -> tuple[str, ...]:
+    """Return GNU TAR transforms from filesystem paths to archive member paths."""
+    if not snapshot.entries:
+        raise ValueError("Cannot archive an empty source snapshot")
+
+    transforms: list[str] = []
+    source_indexes = sorted({entry.source_index for entry in snapshot.entries})
+    for source_index in source_indexes:
+        entries = tuple(entry for entry in snapshot.entries if entry.source_index == source_index)
+        mapping = _infer_common_path_mapping(entries)
+        if mapping is None:
+            transforms.extend(_exact_entry_transforms(entries))
+            continue
+        filesystem_prefix, archive_prefix = mapping
+        transforms.extend(_prefix_transforms(filesystem_prefix, archive_prefix))
+    return tuple(transforms)
 
 
 def expected_tar_members(snapshot: SourceSnapshot) -> tuple[bytes, ...]:
@@ -74,6 +107,97 @@ def snapshot_uses_followed_symlinks(snapshot: SourceSnapshot) -> bool:
         entry.followed_symlink and entry.entry_type is not SourceEntryType.SYMLINK
         for entry in snapshot.entries
     )
+
+
+def _infer_common_path_mapping(entries: tuple[SourceEntry, ...]) -> tuple[str, str] | None:
+    absolute_paths = tuple(Path(entry.absolute_path) for entry in entries)
+    common = Path(os.path.commonpath(tuple(os.fspath(path) for path in absolute_paths)))
+    candidates = (common, *common.parents)
+    for filesystem_prefix in candidates:
+        archive_prefix = _archive_prefix_for_candidate(entries[0], filesystem_prefix)
+        if archive_prefix is None:
+            continue
+        if all(
+            _archive_path_for_candidate(entry, filesystem_prefix, archive_prefix)
+            == entry.archive_path
+            for entry in entries
+        ):
+            return os.fspath(filesystem_prefix), archive_prefix
+    return None
+
+
+def _archive_prefix_for_candidate(entry: SourceEntry, filesystem_prefix: Path) -> str | None:
+    try:
+        relative = entry.absolute_path.relative_to(filesystem_prefix)
+    except ValueError:
+        return None
+    relative_parts = _posix_parts(relative)
+    archive_parts = tuple(entry.archive_path.split("/"))
+    if not relative_parts:
+        return entry.archive_path
+    if len(archive_parts) < len(relative_parts):
+        return None
+    if tuple(archive_parts[-len(relative_parts) :]) != relative_parts:
+        return None
+    return "/".join(archive_parts[: -len(relative_parts)])
+
+
+def _archive_path_for_candidate(
+    entry: SourceEntry,
+    filesystem_prefix: Path,
+    archive_prefix: str,
+) -> str | None:
+    try:
+        relative = entry.absolute_path.relative_to(filesystem_prefix)
+    except ValueError:
+        return None
+    relative_path = relative.as_posix()
+    if relative_path == ".":
+        return archive_prefix
+    if archive_prefix:
+        return f"{archive_prefix}/{relative_path}"
+    return relative_path
+
+
+def _posix_parts(path: Path) -> tuple[str, ...]:
+    value = path.as_posix()
+    if value == ".":
+        return ()
+    return tuple(value.split("/"))
+
+
+def _exact_entry_transforms(entries: tuple[SourceEntry, ...]) -> tuple[str, ...]:
+    transforms: list[str] = []
+    for entry in entries:
+        source = os.fspath(entry.absolute_path)
+        archive = entry.archive_path
+        transforms.append(f"s#^{_escape_basic_regex(source)}$#{_escape_replacement(archive)}#")
+    return tuple(transforms)
+
+
+def _prefix_transforms(filesystem_prefix: str, archive_prefix: str) -> tuple[str, ...]:
+    escaped_source = _escape_basic_regex(filesystem_prefix)
+    if archive_prefix:
+        escaped_archive = _escape_replacement(archive_prefix)
+        return (
+            f"s#^{escaped_source}$#{escaped_archive}#",
+            f"s#^{escaped_source}/#{escaped_archive}/#",
+        )
+    return (f"s#^{escaped_source}/##",)
+
+
+def _escape_basic_regex(value: str) -> str:
+    escaped = []
+    for character in value:
+        if character in "\\.[]^$*#":
+            escaped.append("\\" + character)
+        else:
+            escaped.append(character)
+    return "".join(escaped)
+
+
+def _escape_replacement(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("&", "\\&").replace("#", "\\#")
 
 
 def _decode_escape_quoting(value: bytes) -> bytes:
