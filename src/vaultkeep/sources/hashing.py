@@ -83,6 +83,8 @@ def calculate_config_fingerprint(
         "sources": [
             {
                 "path": _normalize_posix_path(source.path),
+                "archive_path_mode": source.archive_path_mode,
+                "archive_prefix": source.archive_prefix,
                 "exclude": source.exclude,
             }
             for source in config.sources

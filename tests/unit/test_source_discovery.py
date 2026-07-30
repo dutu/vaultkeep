@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
@@ -24,7 +24,13 @@ def _job(
     source_options: dict[str, bool] | None = None,
 ) -> JobConfig:
     candidate = deepcopy(valid_config)
-    candidate["sources"] = sources
+    configured_sources = []
+    for source in sources:
+        configured = {"archive_path_mode": "prefix", **source}
+        if configured["archive_path_mode"] == "prefix":
+            configured.setdefault("archive_prefix", "source")
+        configured_sources.append(configured)
+    candidate["sources"] = configured_sources
     candidate["exclude"] = global_exclude or []
     if source_options is not None:
         candidate["source_options"] = source_options
@@ -92,6 +98,77 @@ def test_traversal_includes_empty_directories_and_applies_exclusions(
     assert [entry.raw_archive_path for entry in snapshot.entries] == sorted(
         entry.raw_archive_path for entry in snapshot.entries
     )
+
+
+def test_prefix_archive_paths_use_configured_archive_prefix(
+    tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    source = tmp_path / "actual-source"
+    source.mkdir()
+    (source / "file.txt").write_text("content", encoding="utf-8")
+    config = _job(
+        valid_config,
+        [{"path": str(source), "archive_prefix": "stored-source"}],
+    )
+
+    archive_paths = [entry.archive_path for entry in discover_sources(config).entries]
+
+    assert archive_paths == ["stored-source", "stored-source/file.txt"]
+
+
+def test_empty_archive_prefix_stores_directory_contents_at_archive_root(
+    tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "empty").mkdir()
+    (source / "file.txt").write_text("content", encoding="utf-8")
+    config = _job(
+        valid_config,
+        [{"path": str(source), "archive_prefix": ""}],
+    )
+
+    archive_paths = [entry.archive_path for entry in discover_sources(config).entries]
+
+    assert archive_paths == ["empty", "file.txt"]
+
+
+def test_preserve_archive_path_mode_uses_full_path_without_leading_slash(
+    tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    config = _job(
+        valid_config,
+        [{"path": str(source), "archive_path_mode": "preserve"}],
+    )
+
+    entry = discover_sources(config).entries[0]
+    absolute = source.absolute()
+    expected = PurePosixPath(*absolute.parts[1:] if absolute.anchor else absolute.parts).as_posix()
+
+    assert entry.archive_path == expected
+
+
+def test_duplicate_archive_paths_are_rejected_for_files_and_directories(
+    tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "shared").mkdir()
+    (second / "shared").mkdir()
+    config = _job(
+        valid_config,
+        [
+            {"path": str(first), "archive_prefix": ""},
+            {"path": str(second), "archive_prefix": ""},
+        ],
+    )
+
+    with pytest.raises(SourceDiscoveryError, match="Duplicate archive member path"):
+        discover_sources(config)
 
 
 def test_individual_file_can_be_excluded(tmp_path: Path, valid_config: dict[str, Any]) -> None:

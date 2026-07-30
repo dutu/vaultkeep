@@ -27,7 +27,13 @@ def _job(
     exclude: list[str] | None = None,
 ) -> JobConfig:
     candidate = deepcopy(valid_config)
-    candidate["sources"] = [{"path": str(source)}]
+    candidate["sources"] = [
+        {
+            "path": str(source),
+            "archive_path_mode": "prefix",
+            "archive_prefix": "source",
+        }
+    ]
     candidate["exclude"] = exclude or []
     return JobConfig.model_validate(candidate)
 
@@ -297,6 +303,15 @@ def test_backup_relevant_configuration_changes_fingerprint(
     source_path = deepcopy(valid_config)
     source_path["sources"][0]["path"] = "/srv/other"
     candidates.append(source_path)
+
+    archive_prefix = deepcopy(valid_config)
+    archive_prefix["sources"][0]["archive_prefix"] = "other"
+    candidates.append(archive_prefix)
+
+    archive_path_mode = deepcopy(valid_config)
+    archive_path_mode["sources"][0]["archive_path_mode"] = "preserve"
+    archive_path_mode["sources"][0].pop("archive_prefix")
+    candidates.append(archive_path_mode)
 
     exclusions = deepcopy(valid_config)
     exclusions["exclude"].append("*.bak")

@@ -29,7 +29,7 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
         "logging",
     ),
     ("job",): ("id",),
-    ("sources",): ("path", "exclude"),
+    ("sources",): ("path", "archive_path_mode", "archive_prefix", "exclude"),
     ("source_options",): ("follow_symlinks", "cross_filesystems", "ignore_missing"),
     ("destination",): ("root", "name_template", "marker_file", "mount_point"),
     ("archive",): ("format", "compression_level"),

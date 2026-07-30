@@ -58,6 +58,9 @@ def _validate_paths(config: JobConfig, issues: list[ValidationIssue]) -> None:
     normalized_sources: list[tuple[int, PurePosixPath]] = []
     for index, source in enumerate(config.sources):
         location = ("sources", index, "path")
+        _validate_source_archive_path_config(
+            index, source.archive_path_mode, source.archive_prefix, issues
+        )
         if "\0" in source.path:
             _issue(issues, location, "Source path contains a null character.", "path_null")
             continue
@@ -181,6 +184,37 @@ def _validate_paths(config: JobConfig, issues: list[ValidationIssue]) -> None:
                 "Marker file must be a relative path below the destination root.",
                 "marker_path",
             )
+
+
+def _validate_source_archive_path_config(
+    index: int,
+    archive_path_mode: str,
+    archive_prefix: str | None,
+    issues: list[ValidationIssue],
+) -> None:
+    prefix_path = ("sources", index, "archive_prefix")
+    if archive_path_mode == "prefix" and archive_prefix is not None:
+        _validate_archive_prefix(prefix_path, archive_prefix, issues)
+
+
+def _validate_archive_prefix(
+    path: tuple[IssuePathPart, ...],
+    archive_prefix: str,
+    issues: list[ValidationIssue],
+) -> None:
+    if "\0" in archive_prefix:
+        _issue(issues, path, "Archive prefix contains a null character.", "archive_prefix_path")
+        return
+    if archive_prefix == "":
+        return
+    prefix = PurePosixPath(archive_prefix)
+    if prefix.is_absolute() or ".." in prefix.parts or "." in prefix.parts:
+        _issue(
+            issues,
+            path,
+            "Archive prefix must be a safe relative path below the archive root.",
+            "archive_prefix_path",
+        )
 
 
 def _absolute_posix_path(value: str) -> PurePosixPath | None:

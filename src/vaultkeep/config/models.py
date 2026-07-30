@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 JobId = Annotated[
@@ -33,7 +33,17 @@ class SourceConfig(StrictConfigModel):
     """One configured source."""
 
     path: NonEmptyString
+    archive_path_mode: Literal["prefix", "preserve"]
+    archive_prefix: str | None = None
     exclude: list[NonEmptyString] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _archive_prefix_matches_mode(self) -> Self:
+        if self.archive_path_mode == "prefix" and self.archive_prefix is None:
+            raise ValueError("archive_prefix is required when archive_path_mode is prefix")
+        if self.archive_path_mode == "preserve" and self.archive_prefix is not None:
+            raise ValueError("archive_prefix is only valid when archive_path_mode is prefix")
+        return self
 
 
 class SourceOptionsConfig(StrictConfigModel):

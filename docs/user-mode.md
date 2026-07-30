@@ -68,7 +68,11 @@ job:
 
 sources:
   - path: /home/alice/Documents
+    archive_path_mode: prefix
+    archive_prefix: Documents
   - path: /home/alice/Projects/app
+    archive_path_mode: prefix
+    archive_prefix: app
     exclude:
       - .venv/
       - __pycache__/

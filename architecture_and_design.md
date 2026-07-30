@@ -409,26 +409,37 @@ Example:
 ```yaml
 sources:
   - path: /etc/myapp
+    archive_path_mode: prefix
+    archive_prefix: myapp-config
 
   - path: /var/lib/myapp
+    archive_path_mode: prefix
+    archive_prefix: myapp-data
     exclude:
       - cache/
       - "*.tmp"
 
   - path: /home/user/config.json
+    archive_path_mode: prefix
+    archive_prefix: config.json
 
 exclude:
   - "**/.cache/**"
 ```
 
-All archive paths preserve their absolute location relative to `/`.
+Each source explicitly selects its archive path layout:
+
+- `archive_path_mode: prefix` stores the source below `archive_prefix`;
+- `archive_path_mode: preserve` stores the source using its absolute path without the leading `/`.
+
+With `prefix` mode, `archive_prefix` is required and may be an empty string. An empty prefix stores a directory source's contents directly at the archive root. Every final archive member path must be unique across all sources.
 
 Example archive paths:
 
 ```text
-etc/myapp/...
-var/lib/myapp/...
-home/user/config.json
+myapp-config/...
+myapp-data/...
+config.json
 ```
 
 The archive must not store a leading `/`.
@@ -481,10 +492,12 @@ Vaultkeep must reject:
 - exclusions that remove every configured source;
 - malformed glob patterns;
 - non-absolute paths;
+- missing or invalid source archive path layout fields;
+- duplicate final archive member paths;
 - unreadable sources;
 - source type changes during a run.
 
-Overlapping sources are fatal because they can cause duplicate archive entries.
+Overlapping sources and duplicate final archive member paths are fatal because one archive member path must map to exactly one discovered source entry.
 
 ## 8.4 Source entry types
 
@@ -537,7 +550,7 @@ Digest format version 1 uses SHA-256. Every field is framed as a two-byte big-en
 
 The same immutable `SourceSnapshot` entry list drives hashing and archive creation. Archive tools must not independently recurse through source directories.
 
-Vaultkeep also calculates a backup-relevant configuration fingerprint. It includes source paths, exclusions, source options, destination identity, explicit runtime parameters, archive format, encryption mode, password-file path, and metadata policy. It excludes password contents, logging, retention counts, hooks, and scheduling. A changed fingerprint forces a new backup even when the source digest is unchanged.
+Vaultkeep also calculates a backup-relevant configuration fingerprint. It includes source paths, source archive path layout fields, exclusions, source options, destination identity, explicit runtime parameters, archive format, encryption mode, password-file path, and metadata policy. It excludes password contents, logging, retention counts, hooks, and scheduling. A changed fingerprint forces a new backup even when the source digest is unchanged.
 
 Configuration fingerprint format version 1 uses canonical, key-sorted JSON and SHA-256. Destination identity includes the root, naming template, marker path, and mount requirement. Archive identity includes the format and compression level. The fixed metadata-policy identifier records that mode, numeric user ID, and numeric group ID participate in source hashing.
 
@@ -2032,6 +2045,13 @@ job:
 sources:
   # Each source is a file or directory. Paths must be absolute.
   - path: /path/to/source
+
+    # Archive member path mode. Values: prefix, preserve.
+    archive_path_mode: prefix
+
+    # Required with archive_path_mode: prefix.
+    # Empty string stores source contents directly at the archive root.
+    archive_prefix: source
 
     # Exclusions apply only to this source.
     # exclude:

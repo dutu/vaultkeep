@@ -32,9 +32,9 @@ def test_valid_default_configuration_passes(valid_config: dict[str, Any]) -> Non
 def test_semantics_collect_path_and_overlap_errors(valid_config: dict[str, Any]) -> None:
     candidate = deepcopy(valid_config)
     candidate["sources"] = [
-        {"path": "relative"},
-        {"path": "/srv/app"},
-        {"path": "/srv/app/config"},
+        {"path": "relative", "archive_path_mode": "prefix", "archive_prefix": "relative"},
+        {"path": "/srv/app", "archive_path_mode": "prefix", "archive_prefix": "app"},
+        {"path": "/srv/app/config", "archive_path_mode": "prefix", "archive_prefix": "config"},
     ]
     candidate["destination"]["root"] = "/srv/app/backups"
 
@@ -45,9 +45,19 @@ def test_semantics_collect_path_and_overlap_errors(valid_config: dict[str, Any])
 
 def test_duplicate_normalized_sources_are_rejected(valid_config: dict[str, Any]) -> None:
     candidate = deepcopy(valid_config)
-    candidate["sources"] = [{"path": "/srv/app"}, {"path": "/srv/other/../app"}]
+    candidate["sources"] = [
+        {"path": "/srv/app", "archive_path_mode": "prefix", "archive_prefix": "app"},
+        {"path": "/srv/other/../app", "archive_path_mode": "prefix", "archive_prefix": "app2"},
+    ]
 
     assert "source_duplicate" in _issue_codes(_config(candidate))
+
+
+def test_source_archive_path_config_is_validated(valid_config: dict[str, Any]) -> None:
+    unsafe_prefix = deepcopy(valid_config)
+    unsafe_prefix["sources"][0]["archive_prefix"] = "../outside"
+
+    assert "archive_prefix_path" in _issue_codes(_config(unsafe_prefix))
 
 
 @pytest.mark.parametrize(

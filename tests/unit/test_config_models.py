@@ -84,6 +84,27 @@ def test_at_least_one_source_is_required(valid_config: dict[str, Any]) -> None:
         JobConfig.model_validate(candidate)
 
 
+def test_source_archive_path_mode_is_required(valid_config: dict[str, Any]) -> None:
+    candidate = deepcopy(valid_config)
+    candidate["sources"][0].pop("archive_path_mode")
+
+    with pytest.raises(ValidationError, match="Field required"):
+        JobConfig.model_validate(candidate)
+
+
+def test_source_archive_prefix_matches_archive_path_mode(valid_config: dict[str, Any]) -> None:
+    missing_prefix = deepcopy(valid_config)
+    missing_prefix["sources"][0].pop("archive_prefix")
+
+    preserve_with_prefix = deepcopy(valid_config)
+    preserve_with_prefix["sources"][0]["archive_path_mode"] = "preserve"
+
+    with pytest.raises(ValidationError, match="archive_prefix is required"):
+        JobConfig.model_validate(missing_prefix)
+    with pytest.raises(ValidationError, match="archive_prefix is only valid"):
+        JobConfig.model_validate(preserve_with_prefix)
+
+
 def test_hook_timeout_bounds_are_enforced(valid_config: dict[str, Any]) -> None:
     candidate = deepcopy(valid_config)
     candidate["hooks"]["before_check"] = {

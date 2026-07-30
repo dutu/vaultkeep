@@ -7,7 +7,7 @@ import stat
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 
-from vaultkeep.config.models import JobConfig
+from vaultkeep.config.models import JobConfig, SourceConfig
 from vaultkeep.errors import SourceDiscoveryError
 from vaultkeep.sources.entries import SourceEntry, SourceEntryType, SourceSnapshot
 from vaultkeep.sources.exclusions import (
@@ -40,6 +40,7 @@ def discover_sources(config: JobConfig) -> SourceSnapshot:
             root_device = _device_id(root, followed_root)
             discovered.extend(
                 _walk(
+                    source=source,
                     root=root,
                     path=root,
                     relative_path="",
@@ -69,6 +70,7 @@ def discover_sources(config: JobConfig) -> SourceSnapshot:
 
 def _walk(
     *,
+    source: SourceConfig,
     root: Path,
     path: Path,
     relative_path: str,
@@ -93,14 +95,23 @@ def _walk(
         return
 
     link_target = os.readlink(path) if entry_type is SourceEntryType.SYMLINK else None
-    yield _source_entry(
-        path,
-        source_index,
-        entry_type,
-        effective_stat,
-        link_target,
-        followed_symlink=is_link and follow_symlinks,
+    archive_path = _archive_path(
+        source=source,
+        path=path,
+        relative_path=relative_path,
+        is_root=is_root,
+        is_directory=is_directory,
     )
+    if archive_path is not None:
+        yield _source_entry(
+            path,
+            archive_path,
+            source_index,
+            entry_type,
+            effective_stat,
+            link_target,
+            followed_symlink=is_link and follow_symlinks,
+        )
 
     if not is_directory:
         return
@@ -122,6 +133,7 @@ def _walk(
         child_path = Path(child.path)
         child_relative = child_path.relative_to(root).as_posix()
         yield from _walk(
+            source=source,
             root=root,
             path=child_path,
             relative_path=child_relative,
@@ -147,6 +159,7 @@ def _entry_type(mode: int, preserve_symlink: bool, path: Path) -> SourceEntryTyp
 
 def _source_entry(
     path: Path,
+    archive_path: str,
     source_index: int,
     entry_type: SourceEntryType,
     status: os.stat_result,
@@ -156,7 +169,7 @@ def _source_entry(
 ) -> SourceEntry:
     return SourceEntry(
         absolute_path=path,
-        archive_path=_archive_path(path),
+        archive_path=archive_path,
         entry_type=entry_type,
         mode=stat.S_IMODE(status.st_mode),
         uid=status.st_uid,
@@ -172,7 +185,29 @@ def _source_entry(
     )
 
 
-def _archive_path(path: Path) -> str:
+def _archive_path(
+    *,
+    source: SourceConfig,
+    path: Path,
+    relative_path: str,
+    is_root: bool,
+    is_directory: bool,
+) -> str | None:
+    if source.archive_path_mode == "preserve":
+        return _preserved_archive_path(path)
+    if source.archive_prefix is None:
+        raise SourceDiscoveryError("archive_prefix is required when archive_path_mode is prefix")
+    prefix = source.archive_prefix
+    if prefix == "":
+        if is_root and is_directory:
+            return None
+        return path.name if is_root else relative_path
+    if is_root:
+        return prefix
+    return PurePosixPath(prefix, relative_path).as_posix()
+
+
+def _preserved_archive_path(path: Path) -> str:
     absolute = path.absolute()
     parts = absolute.parts[1:] if absolute.anchor else absolute.parts
     return PurePosixPath(*parts).as_posix()

@@ -345,7 +345,11 @@ job:
 
 sources:
   - path: /path/to/source
+    archive_path_mode: prefix
+    archive_prefix: source
   - path: /path/to/another-source
+    archive_path_mode: prefix
+    archive_prefix: another-source
     exclude:
       - cache/
       - "*.tmp"

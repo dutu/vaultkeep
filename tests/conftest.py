@@ -13,7 +13,14 @@ def valid_config() -> dict[str, Any]:
     return {
         "config_version": 1,
         "job": {"id": "app"},
-        "sources": [{"path": "/srv/app", "exclude": ["cache/"]}],
+        "sources": [
+            {
+                "path": "/srv/app",
+                "archive_path_mode": "prefix",
+                "archive_prefix": "app",
+                "exclude": ["cache/"],
+            }
+        ],
         "exclude": ["*.tmp"],
         "source_options": {
             "follow_symlinks": False,

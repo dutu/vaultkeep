@@ -56,7 +56,13 @@ def _snapshot(
     with suppress(OSError):
         (source / "link").symlink_to("regular.txt")
     candidate = deepcopy(valid_config)
-    candidate["sources"] = [{"path": str(source)}]
+    candidate["sources"] = [
+        {
+            "path": str(source),
+            "archive_path_mode": "prefix",
+            "archive_prefix": "source",
+        }
+    ]
     candidate["exclude"] = []
     candidate["source_options"]["follow_symlinks"] = False
     config = JobConfig.model_validate(candidate)

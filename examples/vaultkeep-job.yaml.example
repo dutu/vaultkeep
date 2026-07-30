@@ -13,6 +13,13 @@ sources:
   # Source file or directory. Value: absolute path.
   - path: /path/to/source
 
+    # Archive member path mode. Values: prefix, preserve.
+    archive_path_mode: prefix
+
+    # Required with archive_path_mode: prefix.
+    # Empty string stores source contents directly at the archive root.
+    archive_prefix: source
+
     # Optional source-only excludes. Values: gitwildmatch patterns.
     # exclude:
     #   - cache/
