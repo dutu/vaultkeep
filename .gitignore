@@ -2,11 +2,19 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.eggs/
 .python-version
 
 # Virtual environments
 .venv/
 venv/
+env/
+
+# Local environment variables (keep shareable examples)
+.env
+.env.*
+!.env.example
+!.env.*.example
 
 # Test, coverage, and analysis output
 .coverage
@@ -25,5 +33,8 @@ dist/
 # Editors and operating systems
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
