@@ -26,24 +26,68 @@ def test_components_are_explicit_and_normalized(value) -> None:
         support.selection(value)
 
 
-def test_absent_unit_nonzero_requires_complete_affirmative_properties(monkeypatch) -> None:
-    output = (
-        "LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
-        "FragmentPath=\nDropInPaths=\nExecStart=\nUnitFileState=not-found\n"
-    )
+@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("empty_fields", [False, True])
+def test_absent_unit_accepts_missing_service_properties(
+    monkeypatch, returncode: int, empty_fields: bool
+) -> None:
+    # systemd 257 does not expose ExecStart for an absent worker instance, even
+    # with --all. Empty properties may also be omitted from the response.
+    output = "LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+    if empty_fields:
+        output += "FragmentPath=\nDropInPaths=\nUnitFileState=\n"
+
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, returncode, output, "")
+
+    monkeypatch.setattr(support.subprocess, "run", run)
+    state = support.properties(["systemctl"], "vaultkeep-trigger-exec@installer-check.service")
+    assert state["LoadState"] == "not-found"
+    assert state["ExecStart"] == ""
+
+
+@pytest.mark.parametrize(
+    "output,returncode",
+    [
+        ("", 1),
+        ("LoadState=not-found\nActiveState=inactive\n", 1),
+        ("LoadState=not-found\nActiveState=inactive\nSubState=dead\n", 2),
+        ("LoadState=not-found\nActiveState=active\nSubState=running\n", 1),
+        (
+            "LoadState=loaded\nActiveState=inactive\nSubState=dead\n"
+            "FragmentPath=/etc/systemd/user/vaultkeep-trigger.service\nDropInPaths=\n"
+            "UnitFileState=disabled\nExecStart=/usr/local/bin/vaultkeep-trigger monitor\n",
+            1,
+        ),
+    ],
+)
+def test_inconclusive_absence_or_failed_query_is_refused(monkeypatch, output, returncode) -> None:
     monkeypatch.setattr(
-        support.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, output, "")
+        support.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, returncode, output, "bus unavailable"),
     )
-    assert (
-        support.properties(["systemctl"], "vaultkeep-trigger.service")["LoadState"] == "not-found"
+    with pytest.raises(ValueError, match="inconclusive"):
+        support.properties(["systemctl"], "vaultkeep-trigger-exec@installer-check.service")
+
+
+@pytest.mark.parametrize("unit", ["vaultkeep@demo.timer", "vaultkeep-trigger.service"])
+def test_loaded_unit_requires_only_applicable_properties(monkeypatch, unit: str) -> None:
+    output = (
+        "LoadState=loaded\nActiveState=inactive\nSubState=dead\n"
+        "FragmentPath=/etc/systemd/system/vaultkeep@.timer\nDropInPaths=\n"
+        "UnitFileState=disabled\n"
     )
     monkeypatch.setattr(
         support.subprocess,
         "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "bus unavailable"),
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, output, ""),
     )
-    with pytest.raises(ValueError, match="inconclusive"):
-        support.properties(["systemctl"], "vaultkeep-trigger.service")
+    if unit.endswith(".timer"):
+        assert support.properties(["systemctl"], unit)["LoadState"] == "loaded"
+    else:
+        with pytest.raises(ValueError, match="inconclusive"):
+            support.properties(["systemctl"], unit)
 
 
 def test_lock_check_does_not_create_or_change_evidence(tmp_path: Path) -> None:

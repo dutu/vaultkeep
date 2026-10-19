@@ -462,6 +462,7 @@ def properties(command: list[str], unit: str) -> dict[str, str]:
             "show",
             unit,
             "--no-pager",
+            "--all",
             "--property=LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,UnitFileState,Type,Restart,TimeoutStartUSec,UMask,PartOf,BindsTo",
         ],
         capture_output=True,
@@ -470,25 +471,28 @@ def properties(command: list[str], unit: str) -> dict[str, str]:
         check=False,
     )
     data = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-    required = {
-        "LoadState",
-        "ActiveState",
-        "SubState",
-        "FragmentPath",
-        "DropInPaths",
-        "ExecStart",
-        "UnitFileState",
-    }
-    # systemctl show can return 1 for an affirmatively absent unit.
+    required = {"LoadState", "ActiveState", "SubState"}
+    absent = (
+        data.get("LoadState") == "not-found"
+        and data.get("ActiveState") == "inactive"
+        and data.get("SubState") == "dead"
+    )
+    if absent:
+        # Absent units may not expose the service interface at all. Normalize
+        # optional empty fields only after the manager has confirmed absence.
+        for name in ("FragmentPath", "DropInPaths", "ExecStart", "UnitFileState"):
+            data.setdefault(name, "")
+    else:
+        required.update(("FragmentPath", "DropInPaths", "UnitFileState"))
+        if unit.endswith(".service"):
+            required.add("ExecStart")
+    # systemctl show can return 1 for an affirmatively absent unit. Errors from
+    # loaded units and incomplete responses remain inconclusive.
     if not required <= data.keys() or (
-        result.returncode
-        and not (
-            result.returncode == 1
-            and data["LoadState"] == "not-found"
-            and data["ActiveState"] == "inactive"
-        )
+        result.returncode and not (result.returncode == 1 and absent)
     ):
-        fail(f"inconclusive unit properties: {unit}")
+        missing = ", ".join(sorted(required - data.keys())) or "none"
+        fail(f"inconclusive unit properties: {unit} (exit {result.returncode}; missing: {missing})")
     return data
 
 

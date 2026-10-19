@@ -5,6 +5,27 @@ The examples below assume `vaultkeep-trigger` is on your `PATH`; otherwise use t
 absolute installed console-script path. For nondefault config, put `--config PATH`
 before `check-config` or `monitor`. `status` does not read configuration.
 
+## Installer reports `inconclusive unit properties`
+
+When adding Trigger to a core-only installation, the user manager can report the
+worker instance as `not-found`, `inactive`, and `dead` without an `ExecStart`
+property. This is normal before Trigger's shared units are installed. The corrected
+installer accepts that confirmed absence; it still requires command properties for
+loaded services and refuses failed or incomplete manager queries.
+
+Inspect the response as the affected account:
+
+```sh
+systemctl --user show vaultkeep-trigger-exec@installer-check.service --all --no-pager \
+    --property=LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,UnitFileState
+```
+
+If an older installer refuses that absent-unit response, use the corrected checkout
+and repeat `sudo ./install.sh install --with-trigger`. This preflight refusal leaves
+the existing core deployment active; no unit or state cleanup is needed. Other
+responses, especially active work or an unreachable user manager, require resolving
+the reported condition before retrying.
+
 ## First checks
 
 ```sh

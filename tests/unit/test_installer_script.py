@@ -77,6 +77,8 @@ from pathlib import Path
 args = sys.argv[1:]
 with open(os.environ['HOST_LOG'], 'a') as log:
     log.write(json.dumps(args) + '\\n')
+if args and args[0] == '--user':
+    args = args[1:]
 control = json.loads(Path(os.environ['HOST_CONTROL']).read_text())
 if any(arg in args for arg in ('start', 'stop', 'enable', 'disable', 'preset')):
     raise SystemExit('installer attempted service activation or enablement change')
@@ -335,6 +337,58 @@ def test_same_version_addition_preserved_by_plain_update(
     run_installer(installed, "install")
     run_installer(installed, "update", "--with-trigger")
     assert manifest(installed) == data
+
+
+def test_trigger_addition_with_running_user_manager_and_absent_units(
+    installed: dict[str, str], tmp_path: Path
+) -> None:
+    source = tmp_path / "candidate-source"
+    shutil.copytree(CANDIDATE_SOURCE, source)
+    runtime = tmp_path / "user-runtime"
+    runtime.mkdir(mode=0o700)
+    account_home = tmp_path / "user-home"
+    account_home.mkdir()
+    installed["HOST_USER_RUNTIME"] = str(runtime)
+    installed["HOST_USER_HOME"] = str(account_home)
+    helper = source / "scripts/install_support.py"
+    helper.write_text(
+        helper.read_text()
+        .replace('Path(f"/run/user/{uid}")', 'Path(os.environ["HOST_USER_RUNTIME"])')
+        .replace("Path(pwd.getpwuid(uid).pw_dir)", 'Path(os.environ["HOST_USER_HOME"])')
+    )
+    fake = Path(installed["PATH"].split(":")[0])
+    executable(
+        fake / "runuser",
+        """#!/usr/bin/python3
+import os, sys
+args = sys.argv[sys.argv.index('systemctl'):]
+os.execvp('systemctl', args)
+""",
+    )
+    control(
+        installed,
+        managers=f"user@{os.getuid()}.service loaded active running user manager\n",
+        properties="LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+        "FragmentPath=\nDropInPaths=\nUnitFileState=\n",
+    )
+    previous = manifest(installed)
+
+    run_installer(installed, "install", "--with-trigger", source=source)
+
+    assert manifest(installed)["components"] == ["core", "trigger"]
+    assert manifest(installed)["retained_release"] == previous["active_release"]
+    assert (
+        subprocess.check_output(
+            [installed["VAULTKEEP_TRIGGER_BIN_LINK"], "--version"], text=True
+        ).strip()
+        == "0.2.0"
+    )
+    calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
+    assert any(
+        "--user" in call and "vaultkeep-trigger-exec@installer-check.service" in call
+        for call in calls
+    )
+    assert ["--user", "daemon-reload"] in calls
 
 
 @pytest.mark.parametrize("combined", [False, True])
