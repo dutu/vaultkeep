@@ -6,12 +6,24 @@ readonly MODE=${1:-}
 
 DRY_RUN=0
 PURGE=0
+WITH_TRIGGER=0
+COMPONENTS=core
+PREVIOUS_COMPONENTS=none
+CHECK_USERS=0
+RELEASE_ID=""
+STAGED_RELEASE=""
+RESTORE_FAILED=0
+UNIT_VALIDATION_DIR=""
 
 VK_PREFIX=${VAULTKEEP_INSTALL_PREFIX:-/opt/vaultkeep}
 VK_CONFIG_ROOT=${VAULTKEEP_CONFIG_ROOT:-/etc/vaultkeep}
 VK_VAR_ROOT=${VAULTKEEP_VAR_ROOT:-/var/lib/vaultkeep}
 VK_BIN_LINK=${VAULTKEEP_BIN_LINK:-/usr/local/bin/vaultkeep}
 VK_SYSTEMD_ROOT=${VAULTKEEP_SYSTEMD_ROOT:-/etc/systemd/system}
+VK_TRIGGER_BIN_LINK=${VAULTKEEP_TRIGGER_BIN_LINK:-/usr/local/bin/vaultkeep-trigger}
+VK_USER_SYSTEMD_ROOT=${VAULTKEEP_USER_SYSTEMD_ROOT:-/etc/systemd/user}
+VK_MONITOR_UNIT="$VK_USER_SYSTEMD_ROOT/vaultkeep-trigger.service"
+VK_WORKER_UNIT="$VK_USER_SYSTEMD_ROOT/vaultkeep-trigger-exec@.service"
 VK_TESTING=${VAULTKEEP_INSTALL_TESTING:-0}
 
 VK_RELEASES="$VK_PREFIX/releases"
@@ -29,19 +41,16 @@ VK_TIMER_UNIT="$VK_SYSTEMD_ROOT/vaultkeep@.timer"
 
 ROLLBACK_ACTIVE=0
 ROLLBACK_TMP=""
-PREVIOUS_CURRENT_TARGET=""
-PREVIOUS_BIN_TARGET=""
 CANDIDATE_RELEASE_PATH=""
 CANDIDATE_RELEASE_CREATED=0
-STAGED_REPLACEMENT_RELEASE=""
 REPLACED_RELEASE_PATH=""
 REPLACED_RELEASE_BACKUP=""
 
 usage() {
     cat <<'EOF'
 Usage:
-  sudo ./install.sh install [--dry-run]
-  sudo ./install.sh update [--dry-run]
+  sudo ./install.sh install [--with-trigger] [--dry-run]
+  sudo ./install.sh update [--with-trigger] [--dry-run]
   sudo /opt/vaultkeep/current/src/install.sh uninstall [--dry-run] [--purge]
 EOF
 }
@@ -70,6 +79,7 @@ parse_args() {
     shift || true
     while (($#)); do
         case "$1" in
+            --with-trigger) WITH_TRIGGER=1 ;;
             --dry-run) DRY_RUN=1 ;;
             --purge) PURGE=1 ;;
             *)
@@ -79,6 +89,9 @@ parse_args() {
         esac
         shift
     done
+    if [[ "$MODE" == uninstall && "$WITH_TRIGGER" == 1 ]]; then
+        die "--with-trigger is valid only with install/update"
+    fi
     if [[ "$MODE" != "uninstall" && "$PURGE" == 1 ]]; then
         die "--purge is valid only with uninstall"
     fi
@@ -110,20 +123,29 @@ script_dir() {
 }
 
 SOURCE_DIR=$(script_dir)
+SNAPSHOT_PATHS=("$VK_CURRENT" "$VK_BIN_LINK" "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" "$VK_MANIFEST" "$VK_TIMER_REGISTRY")
 
 preflight_host() {
+    if [[ "$VK_TESTING" != 1 ]]; then
+        [[ "$(id -u)" == 0 ]] || die "installer requires root"
+    fi
+    local os_release=/etc/os-release
+    if [[ "$VK_TESTING" == 1 ]]; then
+        os_release=${VAULTKEEP_TEST_OS_RELEASE:-/etc/os-release}
+    fi
+    [[ -r "$os_release" ]] || die "/etc/os-release is required"
+    # shellcheck disable=SC1090
+    . "$os_release"
+    [[ "${ID:-}" == debian && "${VERSION_ID:-}" == 13 && "${VERSION_CODENAME:-trixie}" == trixie ]] ||
+        die "Vaultkeep 0.2.0 requires Debian 13 trixie; upgrade Debian 12 before updating Vaultkeep"
+    if command -v python3 >/dev/null 2>&1; then
+        verify_python
+    elif [[ -e "$VK_MANIFEST" || "$MODE" == uninstall ]]; then
+        die "python3 >=3.13 is required to inspect an existing deployment"
+    fi
     if [[ "$VK_TESTING" == 1 ]]; then
         return
     fi
-    [[ "$(id -u)" == 0 ]] || die "installer requires root"
-    [[ -r /etc/os-release ]] || die "/etc/os-release is required"
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    [[ "${ID:-}" == "debian" ]] || die "only Debian is supported"
-    case " ${VERSION_CODENAME:-} ${VERSION_ID:-} " in
-        *" bookworm "*|*" trixie "*|*" 12 "*|*" 13 "*) ;;
-        *) die "supported Debian releases are bookworm/trixie only" ;;
-    esac
     [[ -d /run/systemd/system ]] || die "systemd must be the active system manager"
     require_command systemctl
     local version
@@ -190,37 +212,17 @@ candidate_version() {
 
 source_digest() {
     (cd "$SOURCE_DIR" && find . -type f \
-        ! -path './.git/*' \
-        ! -path './.idea/*' \
-        ! -path './.venv/*' \
-        ! -path './.mypy_cache/*' \
-        ! -path './.pip-tools-cache/*' \
-        ! -path './.pytest_cache/*' \
-        ! -path './.ruff_cache/*' \
-        ! -path './build/*' \
-        ! -path './dist/*' \
-        ! -path '*/__pycache__/*' \
-        -print0 |
-        sort -z |
-        xargs -0 sha256sum |
-        sha256sum |
-        awk '{print $1}')
+        ! -path './.git/*' ! -path './.idea/*' ! -path '*/.venv/*' \
+        ! -path '*/.mypy_cache/*' ! -path '*/.pip-tools-cache/*' \
+        ! -path '*/.pytest_cache/*' ! -path '*/.ruff_cache/*' \
+        ! -path '*/build/*' ! -path '*/dist/*' ! -path '*/__pycache__/*' \
+        ! -path './.aws/*' ! -path './.codex/*' ! -path './.agents/*' \
+        ! -name '.coverage*' ! -name '*.pyc' ! -name '.env' ! -name '.env.*' \
+        -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
 }
 
 manifest_value() {
-    local key=$1
-    [[ -f "$VK_MANIFEST" ]] || return 1
-    python3 - "$VK_MANIFEST" "$key" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-value = data
-for part in sys.argv[2].split("."):
-    value = value[part]
-print(value)
-PY
+    support manifest "$1"
 }
 
 version_is_newer() {
@@ -265,13 +267,24 @@ plan_install_or_update() {
     log "  source: $SOURCE_DIR"
     log "  version: $version"
     log "  source_digest: $digest"
-    log "  release: $VK_RELEASES/$version"
-    log "  current: $VK_CURRENT -> releases/$version"
+    log "  previous components: $PREVIOUS_COMPONENTS"
+    log "  desired components: $COMPONENTS"
+    log "  interpreter: Debian python3 >=3.13; hash-locked binary dependencies: $(selected_lock)"
+    log "  release: $VK_RELEASES/$RELEASE_ID"
+    log "  current: $VK_CURRENT -> releases/$RELEASE_ID"
     log "  executable: $VK_BIN_LINK -> $VK_CURRENT/venv/bin/vaultkeep"
     log "  service unit: $VK_SERVICE_UNIT"
     log "  timer unit: $VK_TIMER_UNIT"
-    log "  config root: $VK_CONFIG_ROOT"
-    log "  state root: $VK_VAR_ROOT"
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        log "  executable: $VK_TRIGGER_BIN_LINK -> $VK_CURRENT/venv/bin/vaultkeep-trigger"
+        log "  shared user templates: $VK_MONITOR_UNIT $VK_WORKER_UNIT"
+    fi
+    log "  preserve config/state: $VK_CONFIG_ROOT $VK_VAR_ROOT and all user homes, wallet data and archives"
+    log "  activity checks: system schedules/jobs, running user managers, runtime locks and foreground processes"
+    log "  schedules must be paused/drained manually; enablement and timer timestamps are preserved"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        log "PLAN activity checks are not a live quiescence guarantee; apply repeats checks before staging and activation"
+    fi
 }
 
 prepare_directories() {
@@ -279,6 +292,9 @@ prepare_directories() {
     run install -d -o root -g root -m 0755 "$VK_CONFIG_ROOT"
     run install -d -o root -g root -m 0750 "$VK_JOBS" "$VK_VAR_ROOT" "$VK_STATE_JOBS"
     run install -d -o root -g root -m 0700 "$VK_SECRETS" "$VK_TMP"
+}
+
+prepare_registry() {
     if [[ "$DRY_RUN" == 0 && ! -f "$VK_TIMER_REGISTRY" ]]; then
         printf '{}\n' >"$VK_TIMER_REGISTRY"
         chown root:root "$VK_TIMER_REGISTRY"
@@ -299,125 +315,81 @@ install_examples() {
 }
 
 stage_release() {
-    local version=$1 digest=$2 replace_existing=${3:-0}
-    local stage="$VK_STAGING/$version-$$"
-    local release="$VK_RELEASES/$version"
+    local version=$1 digest=$2
+    local stage="$VK_STAGING/$RELEASE_ID-$$"
     if [[ "$DRY_RUN" == 1 ]]; then
         log "PLAN stage release below $stage"
-        if [[ "$replace_existing" == 1 ]]; then
-            log "PLAN replace existing release: $release"
-        fi
+        log "PLAN finalize selected Python entry points in $VK_RELEASES/$RELEASE_ID/venv"
         return
     fi
     [[ ! -e "$stage" ]] || die "staging path already exists: $stage"
-    rm -rf "$stage"
+    STAGED_RELEASE="$stage"
     install -d -o root -g root -m 0755 "$stage/src"
     rsync --archive --delete \
-        --exclude='.git/' \
-        --exclude='.idea/' \
-        --exclude='.venv/' \
-        --exclude='.mypy_cache/' \
-        --exclude='.pip-tools-cache/' \
-        --exclude='.pytest_cache/' \
-        --exclude='.ruff_cache/' \
-        --exclude='build/' \
-        --exclude='dist/' \
-        --exclude='__pycache__/' \
+        --exclude='.git/' --exclude='.idea/' --exclude='.venv/' \
+        --exclude='.mypy_cache/' --exclude='.pip-tools-cache/' \
+        --exclude='.pytest_cache/' --exclude='.ruff_cache/' \
+        --exclude='build/' --exclude='dist/' --exclude='__pycache__/' \
+        --exclude='.aws/' --exclude='.codex/' --exclude='.agents/' --exclude='.coverage*' \
+        --exclude='.env' --exclude='.env.*' \
         "$SOURCE_DIR/" "$stage/src/"
     python3 -m venv "$stage/venv"
-    "$stage/venv/bin/python" -m pip install --require-hashes -r "$stage/src/requirements.lock"
-    "$stage/venv/bin/python" -m pip install --no-build-isolation --no-deps "$stage/src"
-    "$stage/venv/bin/vaultkeep" --version | grep -Fx "$version" >/dev/null
-    local example
-    for example in "$stage/src"/examples/*.example; do
-        [[ -f "$example" ]] || continue
-        "$stage/venv/bin/vaultkeep" --config "$example" validate --schema-only >/dev/null
-    done
-    python3 - "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR" <<'PY'
+    "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/$(selected_lock)"
+    install_packages "$stage"
+    verify_release "$stage" "$version"
+    python3 - "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR" "$COMPONENTS" <<'META'
 import json
 import sys
 from pathlib import Path
 
-Path(sys.argv[1]).write_text(
-    json.dumps(
-        {
-            "schema_version": 1,
-            "version": sys.argv[2],
-            "source_digest": sys.argv[3],
-            "source_checkout": sys.argv[4],
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    + "\n",
-    encoding="utf-8",
-)
-PY
+Path(sys.argv[1]).write_text(json.dumps({
+    "schema_version": 2,
+    "version": sys.argv[2],
+    "source_digest": sys.argv[3],
+    "source_checkout": sys.argv[4],
+    "components": sys.argv[5].split(","),
+}, indent=2, sort_keys=True) + "\n")
+META
     chown -R root:root "$stage"
-    if [[ -e "$release" ]]; then
-        if [[ "$replace_existing" == 1 ]]; then
-            STAGED_REPLACEMENT_RELEASE="$stage"
-            CANDIDATE_RELEASE_PATH="$release"
-            return
-        fi
-        rm -rf "$stage"
-        die "release already exists: $release"
-    fi
-    mv "$stage" "$release"
-    if ! finalize_release_venv "$release" "$version"; then
-        rm -rf "$release"
-        return 1
-    fi
-    CANDIDATE_RELEASE_PATH="$release"
-    CANDIDATE_RELEASE_CREATED=1
 }
 
 finalize_release_venv() {
     local release=$1 version=$2
-    if [[ "$DRY_RUN" == 1 ]]; then
-        log "PLAN finalize Python entry points in $release/venv"
-        return
-    fi
     "$release/venv/bin/python" -m pip install \
         --force-reinstall --no-build-isolation --no-deps "$release/src"
-    "$release/venv/bin/vaultkeep" --version | grep -Fx "$version" >/dev/null
-    local example
-    for example in "$release/src"/examples/*.example; do
-        [[ -f "$example" ]] || continue
-        "$release/venv/bin/vaultkeep" --config "$example" validate --schema-only >/dev/null
-    done
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        "$release/venv/bin/python" -m pip install \
+            --force-reinstall --no-build-isolation --no-deps "$release/src/components/trigger"
+    fi
+    verify_release "$release" "$version"
 }
 
 replace_release_from_staging() {
     local version=$1
-    local release="$VK_RELEASES/$version"
-    if [[ -z "$STAGED_REPLACEMENT_RELEASE" ]]; then
-        return
-    fi
-    if [[ "$DRY_RUN" == 1 ]]; then
-        log "PLAN replace existing release: $release"
-        return
-    fi
-    [[ -d "$release" ]] || die "release to replace does not exist: $release"
-    [[ -d "$STAGED_REPLACEMENT_RELEASE" ]] ||
-        die "staged replacement release does not exist: $STAGED_REPLACEMENT_RELEASE"
-    REPLACED_RELEASE_PATH="$release"
-    REPLACED_RELEASE_BACKUP="$ROLLBACK_TMP/replaced-release"
-    mv "$release" "$REPLACED_RELEASE_BACKUP"
-    mv "$STAGED_REPLACEMENT_RELEASE" "$release"
-    finalize_release_venv "$release" "$version"
+    local release="$VK_RELEASES/$RELEASE_ID"
+    [[ -n "$STAGED_RELEASE" ]] || return 0
     CANDIDATE_RELEASE_PATH="$release"
+    if [[ -e "$release" ]]; then
+        [[ -f "$VK_MANIFEST" && "$(manifest_value active_release)" == "$release" ]] ||
+            die "pre-existing inactive release requires operator inspection: $release"
+        REPLACED_RELEASE_PATH="$release"
+        REPLACED_RELEASE_BACKUP="$ROLLBACK_TMP/replaced-release"
+        mv "$release" "$REPLACED_RELEASE_BACKUP"
+    fi
     CANDIDATE_RELEASE_CREATED=1
+    mv "$STAGED_RELEASE" "$release"
+    STAGED_RELEASE=""
+    finalize_release_venv "$release" "$version"
 }
 
 verify_systemd_templates() {
-    if [[ "$DRY_RUN" == 1 || "$VK_TESTING" == 1 ]]; then
+    if [[ "$DRY_RUN" == 1 ]]; then
         log "PLAN verify systemd templates"
         return
     fi
     local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"; trap - RETURN' RETURN
+    tmp=$(mktemp -d "$VK_STAGING/units.XXXXXX")
+    UNIT_VALIDATION_DIR="$tmp"
     sed -E 's#^ExecStart=/usr/local/bin/vaultkeep .*$#ExecStart=/bin/true#' \
         "$SOURCE_DIR/systemd/vaultkeep@.service" >"$tmp/vaultkeep@.service"
     awk '
@@ -425,102 +397,119 @@ verify_systemd_templates() {
         $0 == "Unit=vaultkeep@%i.service" { print "OnCalendar=*-*-* 00:00:00" }
     ' "$SOURCE_DIR/systemd/vaultkeep@.timer" >"$tmp/vaultkeep@.timer"
     systemd-analyze verify "$tmp/vaultkeep@.service" "$tmp/vaultkeep@.timer"
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        local name
+        for name in vaultkeep-trigger.service vaultkeep-trigger-exec@.service; do
+            sed -E 's#^ExecStart=.*#ExecStart=/bin/true#' \
+                "$SOURCE_DIR/components/trigger/systemd/$name" >"$tmp/$name"
+        done
+        install -d -m 0700 "$tmp/runtime"
+        XDG_RUNTIME_DIR="$tmp/runtime" systemd-analyze --user verify \
+            "$tmp/vaultkeep-trigger.service" "$tmp/vaultkeep-trigger-exec@.service"
+    fi
+    rm -rf "$tmp"
+    UNIT_VALIDATION_DIR=""
 }
 
 refuse_active_services() {
-    if [[ "$DRY_RUN" == 1 || "$VK_TESTING" == 1 ]]; then
-        log "PLAN confirm no active vaultkeep@*.service instances"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        log "PLAN confirm paused core timers/services and Trigger monitors/workers; no relevant queued jobs or held locks"
         return
     fi
-    if systemctl list-units --state=active 'vaultkeep@*.service' --no-legend | grep -q .; then
-        die "one or more Vaultkeep backup services are active"
-    fi
+    support activity "$CHECK_USERS" "$([[ "$MODE" == uninstall ]] && echo 1 || echo 0)" "$COMPONENTS"
 }
 
 install_units_and_links() {
-    local version=$1
+    run install -d -o root -g root -m 0755 "$VK_SYSTEMD_ROOT" "$(dirname "$VK_BIN_LINK")"
     run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep@.service" "$VK_SERVICE_UNIT"
     run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep@.timer" "$VK_TIMER_UNIT"
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        run install -d -o root -g root -m 0755 "$VK_USER_SYSTEMD_ROOT" "$(dirname "$VK_TRIGGER_BIN_LINK")"
+        run install -o root -g root -m 0644 "$SOURCE_DIR/components/trigger/systemd/vaultkeep-trigger.service" "$VK_MONITOR_UNIT"
+        run install -o root -g root -m 0644 "$SOURCE_DIR/components/trigger/systemd/vaultkeep-trigger-exec@.service" "$VK_WORKER_UNIT"
+    fi
     if [[ "$DRY_RUN" == 0 ]]; then
-        local tmp_link="$VK_PREFIX/.current.$$"
-        ln -s "releases/$version" "$tmp_link"
-        mv -Tf "$tmp_link" "$VK_CURRENT"
+        ln -s "releases/$RELEASE_ID" "$VK_PREFIX/.current.$$"
+        mv -Tf "$VK_PREFIX/.current.$$" "$VK_CURRENT"
         ln -sfn "$VK_CURRENT/venv/bin/vaultkeep" "$VK_BIN_LINK"
+        if [[ "$COMPONENTS" == core,trigger ]]; then
+            ln -sfn "$VK_CURRENT/venv/bin/vaultkeep-trigger" "$VK_TRIGGER_BIN_LINK"
+        fi
     else
-        log "PLAN switch $VK_CURRENT to releases/$version"
-        log "PLAN create $VK_BIN_LINK"
+        log "PLAN switch $VK_CURRENT to releases/$RELEASE_ID and reconcile selected command links"
     fi
 }
 
 begin_commit_transaction() {
-    local version=$1
     if [[ "$DRY_RUN" == 1 ]]; then
         return
     fi
-    ROLLBACK_TMP=$(mktemp -d)
-    CANDIDATE_RELEASE_PATH="$VK_RELEASES/$version"
-    if [[ -L "$VK_CURRENT" ]]; then
-        PREVIOUS_CURRENT_TARGET=$(readlink "$VK_CURRENT")
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        SNAPSHOT_PATHS+=("$VK_TRIGGER_BIN_LINK" "$VK_MONITOR_UNIT" "$VK_WORKER_UNIT")
     fi
-    if [[ -L "$VK_BIN_LINK" ]]; then
-        PREVIOUS_BIN_TARGET=$(readlink "$VK_BIN_LINK")
-    fi
-    [[ -f "$VK_SERVICE_UNIT" ]] && cp -a "$VK_SERVICE_UNIT" "$ROLLBACK_TMP/service"
-    [[ -f "$VK_TIMER_UNIT" ]] && cp -a "$VK_TIMER_UNIT" "$ROLLBACK_TMP/timer"
-    [[ -f "$VK_MANIFEST" ]] && cp -a "$VK_MANIFEST" "$ROLLBACK_TMP/manifest"
-    [[ -f "$VK_TIMER_REGISTRY" ]] && cp -a "$VK_TIMER_REGISTRY" "$ROLLBACK_TMP/timer-registry"
+    local index path
+    ROLLBACK_TMP=$(mktemp -d "$VK_PREFIX/.transaction.XXXXXX")
+    for index in "${!SNAPSHOT_PATHS[@]}"; do
+        path=${SNAPSHOT_PATHS[$index]}
+        if [[ -e "$path" || -L "$path" ]]; then
+            cp -a --no-dereference "$path" "$ROLLBACK_TMP/$index"
+        fi
+    done
     ROLLBACK_ACTIVE=1
-    trap rollback_commit ERR
 }
 
 finish_commit_transaction() {
-    if [[ "$DRY_RUN" == 1 ]]; then
-        return
-    fi
+    [[ "$DRY_RUN" == 0 ]] || return 0
     ROLLBACK_ACTIVE=0
-    trap - ERR
+    trap - EXIT INT TERM HUP
     rm -rf "$ROLLBACK_TMP"
 }
 
 restore_or_remove_file() {
     local backup=$1 destination=$2
-    if [[ -f "$backup" ]]; then
-        cp -a "$backup" "$destination"
+    if [[ -e "$backup" || -L "$backup" ]]; then
+        rm -f "$destination" && cp -a --no-dereference "$backup" "$destination"
     else
         rm -f "$destination"
     fi
 }
 
 rollback_commit() {
-    local status=$?
-    trap - ERR
+    local status=${1:-1}
+    trap - EXIT INT TERM HUP
+    set +e
+    [[ "$status" != 0 ]] || status=1
+    log "cleaning up incomplete Vaultkeep installer transaction; schedules remain paused" >&2
     if [[ "$ROLLBACK_ACTIVE" == 1 ]]; then
-        log "rolling back incomplete Vaultkeep installer transaction" >&2
-        if [[ -n "$PREVIOUS_CURRENT_TARGET" ]]; then
-            ln -sfn "$PREVIOUS_CURRENT_TARGET" "$VK_CURRENT"
-        else
-            rm -f "$VK_CURRENT"
+        local index path
+        for index in "${!SNAPSHOT_PATHS[@]}"; do
+            path=${SNAPSHOT_PATHS[$index]}
+            restore_or_remove_file "$ROLLBACK_TMP/$index" "$path" || rollback_failure "$path"
+        done
+    fi
+    if [[ "$CANDIDATE_RELEASE_CREATED" == 1 ]]; then
+        rm -rf "$CANDIDATE_RELEASE_PATH" || rollback_failure "$CANDIDATE_RELEASE_PATH"
+    fi
+    if [[ -n "$REPLACED_RELEASE_BACKUP" && -d "$REPLACED_RELEASE_BACKUP" ]]; then
+        mv "$REPLACED_RELEASE_BACKUP" "$REPLACED_RELEASE_PATH" || rollback_failure "$REPLACED_RELEASE_PATH"
+    fi
+    if [[ -n "$STAGED_RELEASE" ]]; then
+        rm -rf "$STAGED_RELEASE" || rollback_failure "$STAGED_RELEASE"
+    fi
+    if [[ -n "$UNIT_VALIDATION_DIR" ]]; then
+        rm -rf "$UNIT_VALIDATION_DIR" || rollback_failure "$UNIT_VALIDATION_DIR"
+    fi
+    rm -f "$VK_PREFIX/.current.$$" "${VK_MANIFEST%.json}.tmp"
+    if [[ "$ROLLBACK_ACTIVE" == 1 ]]; then
+        systemctl daemon-reload || rollback_failure "system manager daemon-reload"
+        if [[ "$CHECK_USERS" == 1 && "$COMPONENTS" == core,trigger ]]; then
+            support reload-users || rollback_failure "running user managers daemon-reload"
         fi
-        if [[ -n "$PREVIOUS_BIN_TARGET" ]]; then
-            ln -sfn "$PREVIOUS_BIN_TARGET" "$VK_BIN_LINK"
-        else
-            rm -f "$VK_BIN_LINK"
-        fi
-        restore_or_remove_file "$ROLLBACK_TMP/service" "$VK_SERVICE_UNIT"
-        restore_or_remove_file "$ROLLBACK_TMP/timer" "$VK_TIMER_UNIT"
-        restore_or_remove_file "$ROLLBACK_TMP/manifest" "$VK_MANIFEST"
-        restore_or_remove_file "$ROLLBACK_TMP/timer-registry" "$VK_TIMER_REGISTRY"
-        if [[ "$CANDIDATE_RELEASE_CREATED" == 1 && "$CANDIDATE_RELEASE_PATH" == "$VK_RELEASES/"* ]]; then
-            rm -rf "$CANDIDATE_RELEASE_PATH"
-        fi
-        if [[ -n "$REPLACED_RELEASE_BACKUP" && -d "$REPLACED_RELEASE_BACKUP" ]]; then
-            rm -rf "$REPLACED_RELEASE_PATH"
-            mv "$REPLACED_RELEASE_BACKUP" "$REPLACED_RELEASE_PATH"
-        fi
-        if [[ "$VK_TESTING" != 1 ]]; then
-            systemctl daemon-reload >/dev/null 2>&1 || true
-        fi
-        rm -rf "$ROLLBACK_TMP"
+    fi
+    if [[ "$RESTORE_FAILED" == 0 ]]; then
+        [[ -z "$ROLLBACK_TMP" ]] || rm -rf "$ROLLBACK_TMP"
+    else
+        log "rollback incomplete; recovery snapshots retained at $ROLLBACK_TMP" >&2
     fi
     exit "$status"
 }
@@ -528,92 +517,21 @@ rollback_commit() {
 write_manifest() {
     local version=$1 digest=$2 previous=${3:-}
     if [[ "$DRY_RUN" == 1 ]]; then
-        log "PLAN write $VK_MANIFEST"
+        log "PLAN write $VK_MANIFEST (schema 2, $COMPONENTS; retained: $previous)"
         return
     fi
-    python3 - "$VK_MANIFEST" "$version" "$digest" "$VK_PREFIX" "$VK_RELEASES/$version" \
-        "$previous" "$VK_CURRENT" "$VK_BIN_LINK" "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" \
-        "$VK_CONFIG_ROOT" "$VK_VAR_ROOT" "$VK_TIMER_REGISTRY" <<'PY'
-import hashlib
-import json
-import os
-import sys
-from pathlib import Path
-
-(
-    manifest,
-    version,
-    digest,
-    prefix,
-    release,
-    previous,
-    current,
-    bin_link,
-    service_unit,
-    timer_unit,
-    config_root,
-    var_root,
-    timer_registry,
-) = sys.argv[1:]
-
-def file_digest(path: str) -> str:
-    item = Path(path)
-    if not item.exists() or item.is_symlink() or not item.is_file():
-        return ""
-    return hashlib.sha256(item.read_bytes()).hexdigest()
-
-def record(path: str) -> dict[str, object]:
-    item = Path(path)
-    if item.is_symlink():
-        return {
-            "path": str(item),
-            "type": "symlink",
-            "target": os.readlink(item),
-        }
-    return {
-        "path": str(item),
-        "type": "file" if item.is_file() else "directory",
-        "mode": oct(item.stat().st_mode & 0o777),
-        "sha256": file_digest(path),
-    }
-
-data = {
-    "schema_version": 1,
-    "version": version,
-    "source_digest": digest,
-    "prefix": prefix,
-    "active_release": release,
-    "retained_release": previous,
-    "current_symlink": current,
-    "bin_symlink": bin_link,
-    "config_root": config_root,
-    "var_root": var_root,
-    "timer_registry": timer_registry,
-    "owned_artifacts": [
-        record(prefix),
-        record(release),
-        record(current),
-        record(bin_link),
-        record(service_unit),
-        record(timer_unit),
-        record(timer_registry),
-    ],
-}
-target = Path(manifest)
-tmp = target.with_name(target.name + ".tmp")
-tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-os.chown(tmp, 0, 0)
-os.chmod(tmp, 0o600)
-os.replace(tmp, target)
-PY
+    support write-manifest "$version" "$digest" "$previous" "$COMPONENTS"
 }
 
 daemon_reload() {
-    if [[ "$DRY_RUN" == 1 || "$VK_TESTING" == 1 ]]; then
-        log "PLAN systemctl daemon-reload"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        log "PLAN systemctl daemon-reload; reload running user managers when Trigger selected"
         return
     fi
     systemctl daemon-reload
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        support reload-users
+    fi
 }
 
 validate_existing_mode() {
@@ -650,121 +568,142 @@ validate_existing_mode() {
 
 install_or_update() {
     preflight_host
-    acquire_lock
     ensure_checkout
-    local version digest previous_release=""
+    local version digest previous_release="" active_release="" mode_result=0 rebuild=1
+    local manifest_before=missing manifest_after=missing
+    if [[ -f "$VK_MANIFEST" ]]; then
+        manifest_before=$(sha256sum "$VK_MANIFEST")
+    fi
     version=$(candidate_version)
-    [[ -n "$version" ]] || die "could not read project version from pyproject.toml"
+    [[ "$version" =~ ^[0-9]+(\.[0-9]+)*(\.dev[0-9]+)?$ ]] || die "invalid project version"
+    if [[ -f "$VK_MANIFEST" ]]; then
+        PREVIOUS_COMPONENTS=$(manifest_value components)
+        COMPONENTS=$PREVIOUS_COMPONENTS
+        active_release=$(manifest_value active_release)
+        previous_release=$(manifest_value retained_release)
+        CHECK_USERS=1
+    elif [[ "$MODE" == update ]]; then
+        die "update requires an existing installation manifest"
+    fi
+    [[ "$WITH_TRIGGER" == 0 ]] || COMPONENTS=core,trigger
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        CHECK_USERS=1
+        ensure_trigger_checkout
+    fi
+    RELEASE_ID=$version
+    [[ "$COMPONENTS" != core,trigger ]] || RELEASE_ID+="-with-trigger"
     digest=$(source_digest)
     plan_install_or_update "$version" "$digest"
-    local mode_result=0
     if validate_existing_mode "$version" "$digest"; then
         mode_result=0
     else
         mode_result=$?
         [[ "$mode_result" == 10 || "$mode_result" == 11 ]] || return "$mode_result"
     fi
-    if [[ -f "$VK_MANIFEST" ]]; then
-        previous_release=$(manifest_value retained_release || true)
-        if [[ "$MODE" == "update" && "$mode_result" == 0 ]]; then
-            previous_release=$(manifest_value active_release || true)
+    if command -v python3 >/dev/null 2>&1; then
+        support ownership "$SOURCE_DIR" "$COMPONENTS"
+    fi
+    # A clean supported host may bootstrap Debian's missing interpreter. An
+    # existing incompatible interpreter was already rejected before any mutation.
+    if ! command -v python3 >/dev/null 2>&1; then
+        if [[ "$DRY_RUN" == 1 ]]; then
+            log "PLAN apt installs Debian python3; verify >=3.13 before venv creation"
+        else
+            install_dependencies
+            verify_python
+            support ownership "$SOURCE_DIR" "$COMPONENTS"
         fi
     fi
-    install_dependencies
-    verify_executables
-    check_7z_compatibility
-    prepare_directories
-    install_examples
-    verify_systemd_templates
-    if [[ "$mode_result" != 10 ]]; then
-        local replace_existing=0
-        if [[ "$mode_result" == 11 ]]; then
-            replace_existing=1
-        fi
-        stage_release "$version" "$digest" "$replace_existing"
+    acquire_lock
+    if [[ -f "$VK_MANIFEST" ]]; then
+        manifest_after=$(sha256sum "$VK_MANIFEST")
+    fi
+    [[ "$manifest_before" == "$manifest_after" ]] ||
+        die "deployment changed during preflight; retry to resolve current component selection"
+    # Recheck metadata/ownership under the installer lock.
+    if command -v python3 >/dev/null 2>&1; then
+        support ownership "$SOURCE_DIR" "$COMPONENTS"
     fi
     refuse_active_services
-    begin_commit_transaction "$version"
-    replace_release_from_staging "$version"
-    install_units_and_links "$version"
+    if [[ "$mode_result" == 10 && "$COMPONENTS" == "$PREVIOUS_COMPONENTS" ]]; then
+        if [[ "$DRY_RUN" == 1 ]]; then
+            log "PLAN verify installed environment; rebuild through protected transaction if damaged"
+            rebuild=0
+        elif verify_release "$active_release" "$version"; then
+            rebuild=0
+        else
+            log "installed environment is inconsistent; staging a complete repair"
+        fi
+    fi
+    if [[ -n "$active_release" && "$active_release" != "$VK_RELEASES/$RELEASE_ID" ]]; then
+        previous_release=$active_release
+    fi
+    log "  retained release after success: $previous_release"
+    if [[ "$rebuild" == 0 && "$DRY_RUN" == 0 && "$(support needs-reconciliation "$COMPONENTS")" == 0 ]]; then
+        log "Vaultkeep $version verified ($COMPONENTS); no deployment changes required"
+        return
+    fi
+    start_transaction
+    if [[ "$rebuild" == 1 ]]; then
+        install_dependencies
+        if [[ "$DRY_RUN" == 0 ]]; then
+            verify_python
+            support ownership "$SOURCE_DIR" "$COMPONENTS"
+        fi
+        verify_executables
+        check_7z_compatibility
+        prepare_directories
+        verify_systemd_templates
+        stage_release "$version" "$digest"
+    fi
+    prepare_directories
+    refuse_active_services
+    support_or_plan_ownership
+    begin_commit_transaction
+    prepare_registry
+    if [[ "$DRY_RUN" == 0 && "$rebuild" == 1 ]]; then
+        replace_release_from_staging "$version"
+    fi
+    install_units_and_links
+    install_examples
     write_manifest "$version" "$digest" "$previous_release"
     daemon_reload
+    if [[ "$DRY_RUN" == 0 ]]; then
+        verify_release "$VK_RELEASES/$RELEASE_ID" "$version"
+        support ownership "$SOURCE_DIR" "$COMPONENTS" staging
+        refuse_active_services
+    fi
     finish_commit_transaction
-    log "Vaultkeep $version installed"
+    log "Vaultkeep $version installed ($COMPONENTS). Validate jobs/configuration and resume previously active schedules explicitly."
 }
 
 validate_manifest_for_uninstall() {
     [[ -f "$VK_MANIFEST" ]] || die "installation manifest not found: $VK_MANIFEST"
-    python3 - "$VK_MANIFEST" "$VK_PREFIX" "$VK_BIN_LINK" "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" "$VK_TIMER_REGISTRY" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest = Path(sys.argv[1])
-prefix = Path(sys.argv[2])
-allowed = {Path(arg) for arg in sys.argv[2:]}
-data = json.loads(manifest.read_text(encoding="utf-8"))
-required = {
-    "schema_version",
-    "version",
-    "source_digest",
-    "prefix",
-    "active_release",
-    "retained_release",
-    "current_symlink",
-    "bin_symlink",
-    "config_root",
-    "var_root",
-    "timer_registry",
-    "owned_artifacts",
-}
-if set(data) != required:
-    raise SystemExit("install manifest has unexpected fields")
-if data["schema_version"] != 1:
-    raise SystemExit("unsupported install manifest schema")
-for artifact in data["owned_artifacts"]:
-    path = Path(artifact["path"])
-    if not path.is_absolute():
-        raise SystemExit(f"manifest path is not absolute: {path}")
-    if path == prefix or prefix in path.parents or path in allowed:
-        continue
-    raise SystemExit(f"manifest path outside installer allowlist: {path}")
-PY
+    COMPONENTS=$(manifest_value components)
+    PREVIOUS_COMPONENTS=$COMPONENTS
+    CHECK_USERS=1
+    support ownership "$SOURCE_DIR" "$COMPONENTS"
 }
 
 uninstall_plan() {
-    log "Vaultkeep uninstall plan"
-    log "  disable vaultkeep timers"
-    log "  remove $VK_SERVICE_UNIT"
-    log "  remove $VK_TIMER_UNIT"
-    log "  remove $VK_BIN_LINK when it is the Vaultkeep symlink"
-    log "  remove $VK_PREFIX"
-    log "  remove $VK_TMP"
-    log "  remove $VK_TIMER_REGISTRY"
+    log "Vaultkeep uninstall plan ($COMPONENTS)"
+    log "  require stopped/disabled schedules and drained services/workers/jobs in all running managers"
+    log "  remove $VK_SERVICE_UNIT $VK_TIMER_UNIT $VK_BIN_LINK"
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        log "  remove $VK_MONITOR_UNIT $VK_WORKER_UNIT $VK_TRIGGER_BIN_LINK"
+    fi
+    log "  remove $VK_PREFIX $VK_TMP $VK_TIMER_REGISTRY"
     if [[ "$PURGE" == 1 ]]; then
-        log "  purge $VK_CONFIG_ROOT"
-        log "  purge $VK_VAR_ROOT"
+        log "  purge $VK_CONFIG_ROOT $VK_VAR_ROOT"
     else
-        log "  preserve $VK_CONFIG_ROOT"
-        log "  preserve $VK_STATE_JOBS"
+        log "  preserve $VK_CONFIG_ROOT $VK_STATE_JOBS"
     fi
-}
-
-remove_if_owned_symlink() {
-    local path=$1 target_prefix=$2
-    if [[ -L "$path" ]]; then
-        local target
-        target=$(readlink "$path")
-        if [[ "$target" == "$target_prefix"* ]]; then
-            run rm -f "$path"
-        else
-            log "preserve non-Vaultkeep symlink: $path -> $target"
-        fi
-    fi
+    log "  preserve every user's Trigger config/state/recovery evidence and core data, wallets and archives (also with --purge)"
 }
 
 uninstall_vaultkeep() {
     preflight_host
+    validate_manifest_for_uninstall
     acquire_lock
     validate_manifest_for_uninstall
     uninstall_plan
@@ -772,21 +711,81 @@ uninstall_vaultkeep() {
     if [[ "$DRY_RUN" == 1 ]]; then
         return
     fi
-    if [[ "$VK_TESTING" != 1 ]]; then
-        systemctl disable --now 'vaultkeep@*.timer' >/dev/null 2>&1 || true
+    # Repeat the live manager inventory immediately before removal.
+    refuse_active_services
+    rm -f "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" "$VK_BIN_LINK"
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        rm -f "$VK_MONITOR_UNIT" "$VK_WORKER_UNIT" "$VK_TRIGGER_BIN_LINK"
     fi
-    rm -f "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT"
-    remove_if_owned_symlink "$VK_BIN_LINK" "$VK_CURRENT"
-    rm -rf "$VK_PREFIX"
+    # Reload while the support script is still present (installed uninstall source).
+    daemon_reload
     rm -rf "$VK_TMP"
     rm -f "$VK_TIMER_REGISTRY"
     if [[ "$PURGE" == 1 ]]; then
         rm -rf "$VK_CONFIG_ROOT" "$VK_VAR_ROOT"
     fi
-    if [[ "$VK_TESTING" != 1 ]]; then
-        systemctl daemon-reload
+    rm -rf "$VK_PREFIX"
+    log "Vaultkeep uninstalled; user homes and backup destinations preserved"
+}
+
+
+support() {
+    python3 "$SOURCE_DIR/scripts/install_support.py" "$@"
+}
+
+verify_python() {
+    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 13) else 1)' ||
+        die "Debian python3 >=3.13 is required; refusing before apt or deployment changes"
+}
+
+selected_lock() {
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        echo requirements-trigger.lock
+    else
+        echo requirements.lock
     fi
-    log "Vaultkeep uninstalled"
+}
+
+ensure_trigger_checkout() {
+    [[ -f "$SOURCE_DIR/requirements-trigger.lock" && -f "$SOURCE_DIR/components/trigger/pyproject.toml" ]] ||
+        die "optional Trigger project or dependency lock is missing"
+    local trigger_version
+    trigger_version=$(sed -nE 's/^version = "([^"]+)"/\1/p' "$SOURCE_DIR/components/trigger/pyproject.toml")
+    [[ "$trigger_version" == "$(candidate_version)" ]] || die "component versions disagree"
+}
+
+install_packages() {
+    local release=$1
+    "$release/venv/bin/python" -m pip install --no-build-isolation --no-deps "$release/src"
+    if [[ "$COMPONENTS" == core,trigger ]]; then
+        "$release/venv/bin/python" -m pip install --no-build-isolation --no-deps "$release/src/components/trigger"
+    fi
+}
+
+verify_release() {
+    local release=$1 version=$2
+    [[ -x "$release/venv/bin/python" ]] || return 1
+    "$release/venv/bin/python" "$SOURCE_DIR/scripts/install_support.py" environment \
+        "$release" "$version" "$COMPONENTS" "$SOURCE_DIR"
+}
+
+support_or_plan_ownership() {
+    if [[ "$DRY_RUN" == 0 ]]; then
+        support ownership "$SOURCE_DIR" "$COMPONENTS" staging
+    fi
+}
+
+start_transaction() {
+    [[ "$DRY_RUN" == 0 ]] || return 0
+    trap 'rollback_commit $?' EXIT
+    trap 'rollback_commit 130' INT
+    trap 'rollback_commit 143' TERM
+    trap 'rollback_commit 129' HUP
+}
+
+rollback_failure() {
+    log "rollback failed: $1" >&2
+    RESTORE_FAILED=1
 }
 
 main() {

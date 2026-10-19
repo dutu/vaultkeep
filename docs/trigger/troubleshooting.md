@@ -1,0 +1,142 @@
+# Troubleshooting
+
+Use the executable and config path selected during [installation](../../README.md#install-the-application).
+The examples below assume `vaultkeep-trigger` is on your `PATH`; otherwise use the
+absolute installed console-script path. For nondefault config, put `--config PATH`
+before `check-config` or `monitor`. `status` does not read configuration.
+
+## First checks
+
+```sh
+systemctl --user status --no-pager vaultkeep-trigger.service
+journalctl --user -u vaultkeep-trigger.service -n 100 --no-pager
+vaultkeep-trigger status
+systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
+systemctl --user list-jobs --no-pager
+```
+
+Read observation and last-update ages, not just service activity or the monitor lock.
+A successful `status` exit does not mean the monitor or backups are healthy. Child
+diagnostics under the fixed state root can contain job output; review/redact them
+before sharing. Preserve requests/receipts when investigating uncertain execution.
+
+## `check-config` exits 2
+
+The configuration, a matcher, or a job validation failed. The message names the
+offending key or instance. Unknown keys are rejected by design; use
+[configuration](configuration.md) for the supported schema.
+Invalid command-line arguments also exit 2; check that global `--config` precedes
+the subcommand. Job validation exit 2 from VaultKeep itself is a Trigger integration
+error (exit 6), rather than a normal config failure.
+
+## `check-config --runtime` or `monitor` exits 3
+
+The systemd user manager is unreachable, the worker template/executable is unavailable
+or incompatible, `XDG_RUNTIME_DIR` is unset/unusable, or the state location or its
+existing parent is not writable. Runtime preflight fails closed because VaultKeep's lock
+namespace depends on the runtime directory.
+
+```sh
+systemctl --user is-system-running
+systemctl --user cat vaultkeep-trigger.service vaultkeep-trigger-exec@.service
+test -n "$XDG_RUNTIME_DIR" && test -d "$XDG_RUNTIME_DIR" && test -O "$XDG_RUNTIME_DIR"
+```
+
+Check that both installed `ExecStart` commands have the actual executable path and
+that the worker is `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`. Do not
+print the entire manager environment into logs to debug bus access. Failed config
+validation should be fixed before restarting; the monitor unit retries failed starts.
+
+## A second monitor refuses to start (exit 3)
+
+Another monitor holds `monitor.lock`. The message names the owning PID. `status` reports
+lock ownership and observation age independently; a held lock does not by itself prove
+responsive monitoring.
+Do not remove a held lock file to bypass ownership. Stop the extra monitor normally
+and keep workers independent; unlinking a live lock can permit two monitor owners.
+
+## `status` exits 2
+
+Persisted state is corrupt or has an incompatible schema version. Trigger does not
+migrate, repair, or reinitialize it; the diagnosis material is preserved for review.
+Other readable instances are still shown by the status query.
+An unknown selected ID also exits 2 when other records exist. IDs come from persisted
+state, so an enabled instance may not be recorded until the monitor first runs.
+
+## An instance reports `dispatch blocked`
+
+A state error has durably blocked that instance without stopping independent instances.
+The reason is stored in `<state-root>/blocked/<instance-id>.json`; the original instance
+and attempt records are preserved. Review and repair the underlying evidence before
+removing only that blocking diagnostic and restarting the monitor. Restart alone does
+not clear the block. See [per-instance recovery](recovery.md#per-instance-state-errors).
+
+## No backup was requested
+
+Check that the instance is enabled; the shipped example has all entries disabled.
+Only verified `running` evidence arms detection, and the app must have been observed
+running before its shutdown. Starting the monitor while an app is already stopped
+creates no request. An `ambiguous` or `inspection_unavailable` observation blocks
+automatic dispatch — see [process detection](process-detection.md).
+There is no directory-default inference or built-in writer discovery. Config checks
+cannot turn an illustrative matcher into a verified preset. A global poll interval
+also limits how quickly per-instance polls occur; service probes can add delays.
+
+## A backup is "blocked"
+
+A pending request is waiting behind an active or unresolved attempt for the same
+instance. `status` shows the blocking attempt ID and wait age. Trigger does not
+terminate the blocking worker; see [recovery](recovery.md) and
+[service operation](service-operation.md).
+
+A systemd oneshot worker can remain `activating` for the entire backup. The monitor
+waits for both worker and queued-start termination even if a receipt already exists.
+An overdue notification does not kill it or free its slot. Inspect its journal and
+private diagnostics, then follow [operator review](recovery.md#operator-review-and-repair).
+
+## Repeated submission rejections or contention
+
+Lock contention (VaultKeep exit 10) and classified pre-queue rejections retry after
+at least 30 seconds, only while the request remains current. Other terminal failures
+do not auto-retry. Check unit installation/policy and external timers/direct runs
+sharing the job. At five consecutive classified rejections there is one best-effort
+escalation; status retains the count. See [retry evidence](recovery.md#retries).
+
+## Dispatch is held by the history bound
+
+This is logged when too many recovery-protected records remain. Preserve those
+records and resolve outstanding associations before expecting new dispatch. It is
+separate from the durable state-error block and is not currently printed as a
+dedicated status reason. See [retention](service-operation.md#internal-constants).
+
+## Notifications do not appear
+
+A user service may lack `DBUS_SESSION_BUS_ADDRESS`. Check global notification
+enablement, the configured command, and the graphical session. The notifier silently
+ignores delivery errors and does not log success/failure. See
+[session setup](notifications.md#session-bus).
+
+## A result is `result_unknown`
+
+VaultKeep exited zero without a recognized trailing `run: created`/`run: unchanged`
+marker. This is recorded as successful execution with an unknown result and makes no
+new-archive claim.
+
+## `outcome_unknown` or `review required`
+
+`outcome_unknown` means the worker is confirmed absent but execution completion could
+not be established. `review_required` is a separate safety warning, for example after
+a restart or monitoring gap overlapped execution. Neither means a backup is safe to
+replay or an archive is safe to discard. A later `unchanged` result does not clear a
+consistency warning. Preserve state and follow [manual review](recovery.md#operator-review-and-repair).
+
+## Runtime config checks pass but backup fails
+
+Full validation does not check destination writability or configured hook executables.
+The service's selected XDG paths, fixed child `PATH`, credentials, and helper locations
+can differ from an interactive shell. Requests freeze paths and parameters, not job
+contents. Review the [child environment](service-operation.md#state-and-runtime-locations),
+receipt's original exit/signal, and job diagnostics; Trigger does not reinterpret the
+job or repair VaultKeep state.
+
+[User guide](../../README.md#logs-and-troubleshooting)

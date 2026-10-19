@@ -1,0 +1,4 @@
+# Combined production/build dependencies; preserve every core pin.
+-c requirements.lock
+-r requirements.in
+psutil>=6.1,<8

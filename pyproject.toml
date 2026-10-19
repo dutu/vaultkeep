@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vaultkeep"
-version = "0.1.0"
+version = "0.2.0"
 description = "Independent archive backups for Debian systems"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 license = "MIT"
 dependencies = [
     "pathspec>=0.12.1,<1",
@@ -34,13 +34,19 @@ include = [
     "/RELEASE.md",
     "/architecture_and_design.md",
     "/requirements.lock",
+    "/requirements.in",
+    "/requirements-trigger.in",
+    "/requirements-trigger.lock",
+    "/components/trigger",
+    "/scripts",
+    "/docs",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vaultkeep"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint]
@@ -58,7 +64,7 @@ select = [
 known-first-party = ["vaultkeep"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 strict = true
 files = ["src"]
 

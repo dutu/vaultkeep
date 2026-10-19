@@ -1,4 +1,4 @@
-# Vaultkeep v1 Release Gate Checklist
+# Vaultkeep 0.2.0 Release Gate Checklist
 
 Use this checklist from a clean checkout of the candidate tag. Tick each item only
 after the command or manual check has completed on the stated host.
@@ -12,12 +12,10 @@ Record the candidate version and commit before testing:
 
 ## Summary Gate Checklist
 
-Do not publish v1 until every gate below is checked:
+Do not publish 0.2.0 until every gate below is checked:
 
 - [ ] Source and version gate passed.
 - [ ] Local quality gate passed.
-- [ ] Debian 12 `bookworm` amd64 release matrix gate passed.
-- [ ] Debian 12 `bookworm` arm64 release matrix gate passed.
 - [ ] Debian 13 `trixie` amd64 release matrix gate passed.
 - [ ] Debian 13 `trixie` arm64 release matrix gate passed.
 - [ ] Installer first-install gate passed.
@@ -33,6 +31,7 @@ Do not publish v1 until every gate below is checked:
 - [ ] Failure-injection gate passed.
 - [ ] Security review gate passed.
 - [ ] Packaging gate passed.
+- [ ] Trigger integration/deployment gates below passed.
 - [ ] No release-blocking defects remain open.
 
 Acceptable result for every automated command: exit code `0`, no failed tests,
@@ -98,7 +97,8 @@ exercise real archive tools when available.
 
   ```bash
   python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock
-  python -m pip install --no-deps --no-build-isolation --editable .
+  python -m pip install --no-deps --no-build-isolation --editable . --editable components/trigger
+  python -m pip download --require-hashes --only-binary=:all: -r requirements-trigger.lock -d /tmp/vaultkeep-wheelhouse
   ```
 
   Acceptable result:
@@ -113,6 +113,8 @@ exercise real archive tools when available.
   ruff check .
   mypy
   pytest -vv
+  (cd components/trigger && pytest -vv)
+  python scripts/check_packages.py
   ```
 
   Acceptable result:
@@ -126,15 +128,14 @@ exercise real archive tools when available.
 
 ## 3. Debian Release Matrix Gate
 
-Run this section on each supported Debian release and architecture:
+Run this section on each supported Debian 13 architecture, with both component selections:
 
-- [ ] Debian 12 `bookworm` amd64
-- [ ] Debian 12 `bookworm` arm64
 - [ ] Debian 13 `trixie` amd64
 - [ ] Debian 13 `trixie` arm64
 
 Each host must be disposable or snapshot-backed. It must run systemd as PID 1
-and provide one dedicated writable CIFS mount and one dedicated writable NFS
+and test both core-only and combined installations. Provide dedicated disposable
+user accounts with running user managers and one dedicated writable CIFS mount and one dedicated writable NFS
 mount for Vaultkeep release validation.
 
 For each host, record:
@@ -159,7 +160,7 @@ For each host, record:
   Acceptable result:
 
   - `ID=debian`.
-  - `VERSION_CODENAME` is `bookworm` or `trixie`.
+  - `VERSION_CODENAME` is `trixie`; Python is >=3.13.
   - Architecture is the intended matrix entry.
   - `systemd` version is `247` or newer.
   - `/run/systemd/system` exists.
@@ -284,6 +285,7 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
 
 ### 4.2 Update
 
+First [pause schedules and drain work](README.md#pause-and-resume-for-maintenance).
 Use an already installed previous Vaultkeep release as the starting point, then
 run this candidate checkout as the update source.
 
@@ -316,6 +318,10 @@ run this candidate checkout as the update source.
   - Timer validation exits `0`.
 
 ### 4.3 Uninstall and Purge
+
+First stop/disable the relevant root and per-user schedules and drain work as described
+in [uninstallation](README.md#uninstall-the-application). Inspect offline-account
+enablement as well. Do not let the installer terminate backups to make checks pass.
 
 - [ ] Preview normal uninstall.
 
@@ -690,7 +696,7 @@ Acceptable result:
 ## 10. Release Decision
 
 - [ ] Local quality gate passed.
-- [ ] All four Debian release matrix entries passed.
+- [ ] Both Debian 13 architecture entries and both component selections passed.
 - [ ] Installer install/update/uninstall/purge passed.
 - [ ] Restore drills passed for local, CIFS, and NFS destinations.
 - [ ] Restore drills passed for `.tar.zst` and `.tar.7z`.
@@ -698,9 +704,59 @@ Acceptable result:
 - [ ] Failure-injection gate passed.
 - [ ] Security review gate passed.
 - [ ] Packaging gate passed.
+- [ ] Trigger integration/deployment gates below passed.
 - [ ] No release-blocking defects remain open.
 
 Release decision:
 
-- [ ] Approved for v1 publication.
+- [ ] Approved for 0.2.0 publication.
 - [ ] Rejected; fixes required before retest.
+
+## Trigger integration and transition gates
+
+Use disposable users, fake wallet processes, and temporary backup jobs. Record the
+candidate/host/interpreter/commands/results for each test; production wallet
+activation is not part of this checklist.
+
+- [ ] Default core environment contains no Trigger distribution, psutil or Trigger command.
+- [ ] Combined fresh installation installs both 0.2.0 commands and shared user templates;
+      works without logged-in users and never starts/enables/presets services or lingering.
+- [ ] Both independent wheels and sdists pass `python scripts/check_packages.py`; root
+      sdist supports an applied core and combined install without a neighboring checkout.
+- [ ] Debian 12 and an incompatible existing interpreter are rejected before apt/staging.
+      A clean Debian 13 host missing Python can bootstrap Debian Python, then checks >=3.13.
+- [ ] Actual schema-1 0.1.0 core upgrades to core and combined on Debian 13, preserving data
+      and retaining the old deployment. Debian 12 is upgraded before this transition.
+- [ ] Same-version addition via install/update, plain selection-preserving reinstall/update,
+      later-version core/combined upgrades and version/source guards pass.
+- [ ] Damaged packages/dependencies/entry points rebuild safely; missing owned artifacts
+      reconcile; modified units, masks, overrides and unrelated links are preserved/refused.
+- [ ] Root and multiple/lingering user managers are inventoried twice; paused schedules,
+      active/transitioning backups/workers, queued jobs, held foreground locks, unreachable
+      managers and a newly appearing manager are handled conservatively.
+- [ ] Enabled-active, enabled-inactive, disabled-active and disabled-inactive schedules
+      retain exact enablement/runtime links and persistent timer timestamps after manual
+      pause, success, refusal, INT/TERM/HUP and rollback. Installer makes no start/stop calls.
+- [ ] Injection at dependency/venv/package install, relocated entry points, package/example/
+      unit validation, each artifact/manifest write, activation and system/user reload restores
+      old software and all managed artifacts. Restoration failures retain useful snapshots
+      and report each failed path/account. Test fresh, upgrade, addition and repair cases.
+- [ ] Only previously active schedules are manually resumed after validation. Persistent
+      calendar catch-up works normally; the installer directly replays no completed attempt.
+- [ ] Real user units accept an explicit monitor --config override, retain exact worker
+      semantics, preserve independent worker lifetime and handle queued/activating states.
+- [ ] Standalone migration preserves IDs and schema-1 instance/request/launch/receipt/block
+      evidence; corrupt/unknown records still block, completed attempts never replay, and
+      pending requests recheck absence. Effective units resolve to shared executables.
+- [ ] Installed core/Trigger validation, created/unchanged markers, params, exit 10,
+      shared manual/timer/worker lock contention, errors/signals and version warnings pass.
+- [ ] Both selections uninstall normally and with purge after upgrade/addition; refuse
+      active/queued work and enabled schedules; preserve every user's Trigger evidence,
+      core user data, wallets, archives and unrelated units. Inspect offline enablement too.
+- [ ] Run the remaining [Trigger deployment checks](docs/plans/trigger-validation.md),
+      including process identity/writer review, systemctl rejection classification,
+      notifications and logout/shutdown limits. Keep unverified example instances disabled.
+
+Current local execution and remaining limits are recorded in
+[development/testing](docs/development/testing.md#validation-record). Automated
+fake-manager success does not satisfy the live Debian release matrix.

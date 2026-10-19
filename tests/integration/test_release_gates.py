@@ -47,11 +47,12 @@ def _mount_fstype(path: str) -> str:
 
 
 def test_release_host_is_supported_debian_systemd_root() -> None:
+    assert sys.version_info >= (3, 13)
     assert sys.platform == "linux"
     assert os.geteuid() == 0
     release = _os_release()
     assert release.get("ID") == "debian"
-    assert release.get("VERSION_CODENAME") in {"bookworm", "trixie"}
+    assert release.get("VERSION_CODENAME") == "trixie"
     assert Path("/run/systemd/system").is_dir()
     systemd_version = _run(["systemctl", "--version"]).splitlines()[0].split()[1]
     assert int(systemd_version) >= 247

@@ -29,8 +29,9 @@ provisioning, and fixes to unrelated Trigger limitations are outside this integr
 The installer continues to uninstall the whole managed deployment; a new command for
 removing only Trigger is outside this release's scope.
 
-This document specifies future implementation. It does not make the integration
-available or change current installation instructions.
+This document specifies the 0.2.0 integration. Implemented procedures are in the
+[root user guide](../../README.md); local checks and remaining live release gates
+are recorded in [development/testing](../development/testing.md#validation-record).
 
 ## Source baseline and verified constraints
 

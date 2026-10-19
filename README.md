@@ -1,6 +1,6 @@
 # Vaultkeep
 
-Vaultkeep is a backup application for Debian systems. It creates independent archive files from one or more files and directories, skips unchanged sources, applies calendar-based retention, and runs either manually or through managed systemd timers.
+Vaultkeep 0.2.0 is a backup application for Debian 13 systems. It creates independent archive files from one or more files and directories, skips unchanged sources, applies calendar-based retention, and runs either manually or through managed systemd timers.
 
 This file is the shared user guide for both operating modes. For mode-specific setup and command examples, see the [root mode guide](docs/root-mode.md) or [user mode guide](docs/user-mode.md). For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](architecture_and_design.md).
 
@@ -14,8 +14,6 @@ This file is the shared user guide for both operating modes. For mode-specific s
 - [Installation](#installation)
   - [Prerequisites](#prerequisites)
   - [Install the application](#install-the-application)
-  - [Update the application](#update-the-application)
-  - [Uninstall the application](#uninstall-the-application)
 - [Usage](#usage)
   - [Choose a mode-specific workflow](#choose-a-mode-specific-workflow)
   - [Minimal job configuration](#minimal-job-configuration)
@@ -36,6 +34,10 @@ This file is the shared user guide for both operating modes. For mode-specific s
   - [Restore an unencrypted backup](#restore-an-unencrypted-backup)
   - [Restore an encrypted backup](#restore-an-encrypted-backup)
   - [Logs and troubleshooting](#logs-and-troubleshooting)
+- [Optional Trigger](#optional-trigger)
+- [Maintenance and removal](#maintenance-and-removal)
+  - [Update the application](#update-the-application)
+  - [Uninstall the application](#uninstall-the-application)
 - [Design and implementation reference](#design-and-implementation-reference)
 
 ## Overview
@@ -128,7 +130,10 @@ backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/
 
 ### Important boundaries
 
-- V1 supports Debian 12 `bookworm` and Debian 13 `trixie`.
+- Version 0.2.0 targets Debian 13 `trixie`, Python 3.13+, on amd64 and arm64.
+- Upgrade Debian 12 to Debian 13 before updating an existing 0.1.0 installation.
+  On Debian 12, keep using 0.1.0 and its installed uninstall script; the 0.2.0
+  installer is unsupported there, including with a manually installed Python.
 - systemd 247 or newer is required.
 - Each job and machine uses a unique destination namespace. Multiple machines do not manage retention in the same destination directory.
 - Vaultkeep is not a filesystem snapshot system. Applications requiring point-in-time consistency provide a stable source through application dumps, lifecycle hooks, LVM, ZFS, or another snapshot mechanism.
@@ -149,7 +154,7 @@ Installation requires:
 
 The installer installs:
 
-- Python 3 and `python3-venv`;
+- Debian Python 3.13 and `python3-venv`;
 - GNU TAR;
 - Zstandard;
 - Debian's maintained `7zip` package;
@@ -175,7 +180,24 @@ sudo ./install.sh install --dry-run
 sudo ./install.sh install
 ```
 
-The first command previews dependencies and every planned filesystem and systemd change. The second command applies the installation.
+The first command previews dependencies and planned deployment changes. The second
+applies the installation. To install the optional wallet shutdown monitor, use:
+
+```bash
+sudo ./install.sh install --with-trigger --dry-run
+sudo ./install.sh install --with-trigger
+vaultkeep --version
+vaultkeep-trigger --version
+```
+
+Both commands report `0.2.0`. The default installation contains only core, with no
+Trigger command or `psutil` dependency. The combined deployment shares one virtual
+environment and installs inactive user templates. Installation never enables
+monitoring, starts backups, or configures lingering. Before replacing an existing
+installation, follow [maintenance](#pause-and-resume-for-maintenance).
+
+The two packages can also be built independently; that does not install their
+systemd units. See [developer setup](docs/development/testing.md).
 
 `/path/to/vaultkeep` is only the administrator's source checkout. It is not an installed application directory and can be removed after installation. Vaultkeep copies the selected source into the active versioned release below `/opt/vaultkeep`. A later same-version reinstall can use the same refreshed checkout. A later version update can use the same checkout or another trusted checkout of the newer release.
 
@@ -187,7 +209,7 @@ The installer:
 - creates configuration, secrets, state, and temporary directories;
 - installs inactive `.example` job templates;
 - installs and validates the shared systemd service and timer templates;
-- validates existing jobs and synchronizes their timers;
+- leaves existing jobs and schedules for explicit operator validation and resumption;
 - runs `vaultkeep --version`.
 
 Application code, virtual environments, and installer ownership metadata are consolidated below:
@@ -195,7 +217,7 @@ Application code, virtual environments, and installer ownership metadata are con
 ```text
 /opt/vaultkeep/
 ├── releases/
-│   └── <version>/
+│   └── <version>/                 # or <version>-with-trigger/
 │       ├── src/
 │       ├── venv/
 │       └── deployment.json
@@ -207,10 +229,11 @@ Debian keeps the remaining files in standard purpose-specific locations:
 
 | Purpose | Location |
 |---|---|
-| Command | `/usr/local/bin/vaultkeep` |
+| Commands | `/usr/local/bin/vaultkeep`; optional `/usr/local/bin/vaultkeep-trigger` |
 | Jobs and secrets | `/etc/vaultkeep` |
 | Local state and temporary files | `/var/lib/vaultkeep` |
-| Shared systemd templates | `/etc/systemd/system/vaultkeep@.service` and `vaultkeep@.timer` |
+| Core system templates | `/etc/systemd/system/vaultkeep@.service` and `vaultkeep@.timer` |
+| Optional Trigger user templates | `/etc/systemd/user/vaultkeep-trigger.service` and `vaultkeep-trigger-exec@.service` |
 
 The ownership manifest allows the installer to identify its files without scanning the system or guessing from filenames.
 
@@ -226,100 +249,6 @@ After installing Vaultkeep, continue with the workflow for the intended mode:
 
 - [Root mode guide](docs/root-mode.md), for administrator-managed system backups.
 - [User mode guide](docs/user-mode.md), for per-user backups using `vaultkeep --user`.
-
-### Reinstall the same application version
-
-During development, or when rebuilding the same release version from a refreshed checkout, run `install` again:
-
-```bash
-cd /path/to/vaultkeep
-git pull
-sudo ./install.sh install --dry-run
-sudo ./install.sh install
-```
-
-If the installed version matches the checkout version but the source content changed, `install` stages the checkout as a complete replacement for the existing release directory, validates it, and replaces `/opt/vaultkeep/releases/<version>` in a rollback-protected transaction. Existing jobs, secrets, state, timer registry, and backup destinations are preserved.
-
-If the installed version is different from the checkout version, `install` stops. Use `update` for a newer release version.
-
-### Update the application
-
-Fetch and select the newer release in the source checkout:
-
-```bash
-cd /path/to/vaultkeep
-git fetch --tags --prune
-git checkout <new-release-tag>
-```
-
-Preview the update from the refreshed checkout:
-
-```bash
-sudo ./install.sh update --dry-run
-```
-
-Apply it:
-
-```bash
-sudo ./install.sh update
-```
-
-The update mode:
-
-- requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;
-- stages the source and virtual environment as a complete versioned release;
-- validates the executable, example configurations, and systemd units;
-- atomically switches `/opt/vaultkeep/current` to the new release;
-- reloads systemd;
-- preserves user jobs and secrets;
-- retains the complete preceding release for rollback.
-
-`install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. The same version with different source content is not an update; use `install` to refresh the installed code or bump the project version before running `update`.
-
-Failed staging does not replace the active release. A failure after activation restores the preceding release, templates, and timer registry.
-
-Confirm the installed version:
-
-```bash
-vaultkeep --version
-```
-
-Validate root-mode jobs and inspect root-mode timer changes:
-
-```bash
-sudo vaultkeep timers validate
-sudo vaultkeep timers sync --dry-run
-```
-
-The installer does not enable or start timers. Apply root-mode timer changes explicitly:
-
-```bash
-sudo vaultkeep timers sync
-```
-
-### Uninstall the application
-
-Preview the complete uninstall plan:
-
-```bash
-sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
-```
-
-Remove the application, executable link, managed timers, systemd templates, temporary data, and installed application tree:
-
-```bash
-sudo /opt/vaultkeep/current/src/install.sh uninstall
-```
-
-Normal uninstall preserves job configurations, secrets, and per-job local state for a later reinstall. It also preserves every backup destination.
-
-To remove configuration, secrets, and local state as well:
-
-```bash
-sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
-```
-
-`--purge` does not remove backup archives or hook executables. Installer-added Debian packages remain installed because other applications can use them.
 
 ## Usage
 
@@ -884,6 +813,295 @@ user mode: ${XDG_STATE_HOME:-~/.local/state}/vaultkeep/jobs
 ```
 
 If a job's `state.json` is missing or unusable, Vaultkeep reconstructs it automatically from valid destination manifests. Do not edit destination manifests to recreate local state.
+
+## Optional Trigger
+
+Trigger observes Electrum, Bisq 1, and Wasabi processes, then requests a user-mode
+Vaultkeep backup after a confirmed shutdown. It must observe the application running
+first; starting the monitor with an already stopped wallet requests nothing. Process
+identity, data directory, every related writer, and distinct job destinations need
+review before enabling an instance. Runtime validation does not certify these
+properties. See [process checks](docs/trigger/process-detection.md) and
+[consistency limits](docs/trigger/consistency.md).
+
+### Configure and validate Trigger
+
+Run these steps as the wallet/job owner, after installing with `--with-trigger`.
+An active systemd user manager and a private, account-owned `XDG_RUNTIME_DIR` are
+required for monitoring. No graphical session is required for installation.
+
+1. Select the default configuration path and copy the disabled example only if it
+   does not already exist:
+
+   ```bash
+   trigger_config="$(/opt/vaultkeep/current/venv/bin/python -c 'from vaultkeep_trigger.paths import config_path; print(config_path())')"
+   install -d -m 700 "$(dirname "$trigger_config")"
+   if [ ! -e "$trigger_config" ]; then
+       install -m 600 /opt/vaultkeep/current/src/components/trigger/examples/config.toml "$trigger_config"
+   fi
+   ```
+
+   Existing configuration is preserved. Config resolution uses an explicit `--config`,
+   absolute `XDG_CONFIG_HOME`, or the account-home `.config` fallback. Trigger state
+   stays at `<account-home>/.local/state/vaultkeep-trigger`, independently of `HOME`
+   and `XDG_STATE_HOME`; the monitor lock is below `$XDG_RUNTIME_DIR/vaultkeep-trigger`.
+
+2. Edit the TOML, keeping unverified instances disabled. Configure the absolute core
+   executable, application identity and user-mode YAML job. Validate actual jobs
+   separately, then validate Trigger:
+
+   ```bash
+   vaultkeep --user --config /absolute/path/to/job.yaml validate
+   vaultkeep-trigger --config "$trigger_config" check-config
+   vaultkeep-trigger --config "$trigger_config" check-config --runtime
+   ```
+
+   Supply any required `--param KEY=VALUE` before `validate`. The disabled example
+   checks structure and the executable without probing disabled jobs. `--runtime`
+   additionally checks the user manager, worker template, runtime/state parent
+   permissions, full validation of enabled jobs, and warns on a core version mismatch.
+   See [configuration](docs/trigger/configuration.md) and [CLI](docs/trigger/cli.md).
+
+3. Inspect both effective units before activation:
+
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user show vaultkeep-trigger.service vaultkeep-trigger-exec@installer-check.service \
+       --property=FragmentPath,DropInPaths,ExecStart
+   ```
+
+   The property query uses an inactive worker instance to inspect its template without
+   starting it. Both fragments should use `/etc/systemd/user` and the shared
+   `/usr/local/bin/vaultkeep-trigger` command. Legacy local copies take precedence;
+   follow [migration](docs/trigger/migration.md) before proceeding. For a custom
+   config path, use `systemctl --user edit vaultkeep-trigger.service`:
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/local/bin/vaultkeep-trigger --config /absolute/path/config.toml monitor
+   ```
+
+   Keep the worker command exactly `vaultkeep-trigger exec-worker %i`; it reads frozen
+   requests and must remain independent of monitor stop/restart. Inspect and validate
+   again after changing a drop-in.
+
+### Start Trigger explicitly
+
+Only after the instance's deployment checks pass:
+
+```bash
+vaultkeep-trigger --config "$trigger_config" check-config --runtime &&
+systemctl --user enable --now vaultkeep-trigger.service
+```
+
+Optional notifications need a usable desktop session and `notify-send`; neither is
+required. Installation never enables lingering. See [service lifetime](docs/trigger/service-operation.md#lifecycle-limits).
+
+### Trigger operation and health
+
+```bash
+vaultkeep-trigger status
+systemctl --user is-active vaultkeep-trigger.service
+journalctl --user -u vaultkeep-trigger.service -n 100 --no-pager
+systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
+```
+
+`status` is read-only. Compare observation/update ages with lock ownership; a held
+lock alone does not prove responsive monitoring. Exit 0 means a readable report,
+including when a backup failed. `created` means a new archive, `unchanged` means no
+new archive, and unknown outcomes/review warnings need [evidence review](docs/trigger/recovery.md).
+Vaultkeep owns archive verification and restore.
+
+After a config edit, repeat both config checks and restart the monitor explicitly.
+Stopping or restarting the monitor leaves workers running. Config is read at startup;
+there is no reload command. A monitor gap can require later review. Use
+`systemctl --user stop vaultkeep-trigger.service` to pause and `start` to resume.
+See [service operation](docs/trigger/service-operation.md),
+[notifications](docs/trigger/notifications.md), and [troubleshooting](docs/trigger/troubleshooting.md).
+
+## Maintenance and removal
+
+### Pause and resume for maintenance
+
+Before update, reinstall, component addition, environment repair, or uninstall:
+
+1. Inventory root and every user's timers/monitors, including lingering accounts.
+   Record active states and exact enablement, including runtime enablement:
+
+   ```bash
+   sudo systemctl list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'user@*.service'
+   sudo systemctl list-unit-files 'vaultkeep@*.timer'
+   systemctl --user list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'vaultkeep-trigger*'
+   systemctl --user list-unit-files 'vaultkeep@*.timer' 'vaultkeep-trigger*'
+   ```
+
+2. Stop each active timer and monitor using `systemctl stop` in its owning manager.
+   For example, substitute the actual timer instance:
+
+   ```bash
+   sudo systemctl stop vaultkeep@app.timer
+   systemctl --user stop vaultkeep@app.timer
+   systemctl --user stop vaultkeep-trigger.service
+   ```
+
+   Do not use `vaultkeep timer disable` for maintenance: it changes enablement and
+   clears persistent timestamps. Stop custom/foreground launchers too. Let services,
+   workers, queued jobs, and manual backups finish. Do not kill them to pass checks.
+   Inspect `systemctl list-jobs` and `systemctl --user list-jobs` in each manager.
+
+3. Keep the maintenance window closed to new jobs, monitors, or user sessions. The
+   installer checks live managers, known locks and recognizable foreground commands
+   twice; these checks cannot prove arbitrary custom commands are absent or prevent
+   another account from starting work. Unreachable managers cause refusal. No running
+   user manager is a valid clean-host condition.
+
+4. After successful installation or rollback, validate actual core jobs and Trigger
+   config/runtime readiness. Resume only the timers/monitors recorded as active,
+   using `systemctl start` in each owning manager. Previously inactive schedules stay
+   inactive; enablement remains unchanged. Persistent calendar timers can catch up a
+   missed event on resumption. The installer never explicitly replays a backup or
+   Trigger attempt. A later manual restart failure does not roll software back.
+
+### Reinstall the same application version
+
+First [pause schedules and drain work](#pause-and-resume-for-maintenance). When rebuilding the same release version from a refreshed checkout, run `install` again:
+
+```bash
+cd /path/to/vaultkeep
+git pull --ff-only
+sudo ./install.sh install --dry-run
+sudo ./install.sh install
+```
+
+If the installed version matches the checkout version but the source content changed, `install` stages the checkout as a complete replacement for the existing release directory, validates it, and replaces `/opt/vaultkeep/releases/<version>` in a rollback-protected transaction. Existing jobs, secrets, state, timer registry, and backup destinations are preserved.
+
+If the installed version is different from the checkout version, `install` stops. Use `update` for a newer release version.
+
+### Update the application
+
+Upgrade Debian 12 to Debian 13 first. On Debian 13, a schema-1 core deployment can
+update directly to 0.2.0 without moving jobs or state.
+
+[Pause schedules and drain work](#pause-and-resume-for-maintenance), then fetch and select the newer release in the source checkout:
+
+```bash
+cd /path/to/vaultkeep
+git fetch --tags --prune
+git checkout <new-release-tag>
+```
+
+Preview the update from the refreshed checkout:
+
+```bash
+sudo ./install.sh update --dry-run
+```
+
+Apply it:
+
+```bash
+sudo ./install.sh update
+```
+
+The update mode:
+
+- requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;
+- stages the source and virtual environment as a complete versioned release;
+- validates the executable, example configurations, and systemd units;
+- atomically switches `/opt/vaultkeep/current` to the new release;
+- reloads systemd;
+- preserves user jobs and secrets;
+- retains the complete preceding release for rollback.
+
+`install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. The same version with different source content is not an update; use `install` to refresh the installed code or bump the project version before running `update`.
+
+Adding `--with-trigger` to either `install` or `update` adds Trigger. This also
+works on an existing 0.2.0 core deployment from matching source, creating
+`releases/0.2.0-with-trigger` and retaining the old core release. Later invocations
+without the flag preserve the installed component selection. Removing only Trigger
+is not supported by the installer.
+
+An exact version/source/component match checks packages, locked versions, commands,
+and managed artifacts. A damaged application environment is rebuilt; missing owned
+links/templates are reconciled. Modified units, unrelated links, masks, and conflicting
+overrides require operator resolution. These checks do not prove arbitrary Python
+file integrity.
+
+Failed staging leaves the active release intact. Ordinary failures and handled INT,
+TERM, or HUP signals restore managed deployment artifacts. Schedules stay paused on
+success and rollback; resume them explicitly after validating the installed or
+restored deployment. Apt changes are outside rollback. After power loss or SIGKILL,
+inspect `current`, `install-manifest.json`, retained releases, and `.staging` or
+`.transaction.*` directories before retrying. Preserve recovery snapshots if rollback
+reports a failure; never erase Trigger evidence to force an update.
+
+Confirm the installed version:
+
+```bash
+vaultkeep --version
+```
+
+Validate root-mode jobs and inspect root-mode timer changes:
+
+```bash
+sudo vaultkeep timers validate
+sudo vaultkeep timers sync --dry-run
+```
+
+The installer does not enable or start timers. Apply root-mode timer changes explicitly:
+
+```bash
+sudo vaultkeep timers sync
+```
+
+### Uninstall the application
+
+1. In every affected account, disable user core timers and the Trigger monitor,
+   including accounts not currently logged in. Stop root timers too. Record the
+   actual unit names with `list-unit-files`; disable each relevant timer explicitly.
+
+   ```bash
+   systemctl --user disable --now vaultkeep-trigger.service
+   systemctl --user list-unit-files 'vaultkeep@*.timer'
+   sudo systemctl list-unit-files 'vaultkeep@*.timer'
+   systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
+   systemctl --user list-jobs --no-pager
+   ```
+
+   Run the Trigger command only where it is installed. Drain backups, workers, and
+   queued jobs; preserve unresolved evidence for [review](docs/trigger/recovery.md).
+   The installer refuses active work and enabled schedules in running managers. It
+   does not remove user-owned enablement links, masks, overrides, or local units.
+
+2. Preview the complete uninstall plan:
+
+```bash
+sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
+```
+
+3. Remove both installed components, managed command links/shared templates, temporary data, and the deployment tree:
+
+```bash
+sudo /opt/vaultkeep/current/src/install.sh uninstall
+```
+
+Normal uninstall preserves job configurations, secrets, and per-job local state for a later reinstall. It also preserves every backup destination.
+
+To remove configuration, secrets, and local state as well:
+
+```bash
+sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
+```
+
+`--purge` affects only managed core `/etc/vaultkeep` and `/var/lib/vaultkeep`.
+Every user's Trigger TOML, fixed state directory, receipts, launch records, logs,
+blocks, review warnings, and user-mode core data survive normal uninstall and purge.
+It does not remove backup archives, wallets, or hook executables. Installer-added Debian packages remain installed because other applications can use them.
+
+Each account should inspect `systemctl --user list-unit-files 'vaultkeep-trigger*'`
+and remove only its obsolete local units/drop-ins after backing them up. Reload that
+user manager. Keep Trigger data unless it is deliberately retired after all work is
+gone and evidence reviewed; see [migration and cleanup](docs/trigger/migration.md).
 
 ## Design and implementation reference
 

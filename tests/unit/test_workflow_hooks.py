@@ -123,7 +123,7 @@ def test_created_run_orders_hooks_and_persists_outcomes(
     monkeypatch.setattr(workflow, "_run_configured_hook", run_phase)
 
     result = workflow.run_backup(
-        tmp_path / "app.yaml", paths=workflow.WorkflowPaths(tmp_path, tmp_path)
+        tmp_path / "app.yaml", paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks")
     )
 
     assert result.result == "created"
@@ -163,7 +163,10 @@ def test_archive_failure_keeps_primary_error_and_runs_cleanup_then_failure_hook(
     monkeypatch.setattr(workflow, "_run_configured_hook", run_phase)
 
     with pytest.raises(DestinationError, match="primary"):
-        workflow.run_backup(tmp_path / "app.yaml", paths=workflow.WorkflowPaths(tmp_path, tmp_path))
+        workflow.run_backup(
+            tmp_path / "app.yaml",
+            paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks"),
+        )
 
     assert phases == ["before_check", "before_archive", "after_archive", "on_failure"]
     assert [outcome.phase for outcome in states[-1].last_run.hooks] == phases
@@ -196,7 +199,10 @@ def test_before_archive_failure_runs_cleanup_then_failure_hook(
     monkeypatch.setattr(workflow, "_run_configured_hook", run_phase)
 
     with pytest.raises(HookError, match="quiesce failed"):
-        workflow.run_backup(tmp_path / "app.yaml", paths=workflow.WorkflowPaths(tmp_path, tmp_path))
+        workflow.run_backup(
+            tmp_path / "app.yaml",
+            paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks"),
+        )
 
     assert phases == ["before_check", "before_archive", "after_archive", "on_failure"]
     assert [outcome.phase for outcome in states[-1].last_run.hooks] == phases

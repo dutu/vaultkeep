@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
 
-IssuePathPart: TypeAlias = str | int
+type IssuePathPart = str | int
 
 
 @dataclass(frozen=True, slots=True)

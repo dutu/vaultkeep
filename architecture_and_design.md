@@ -21,11 +21,11 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **v1 scope frozen; Milestones 1 through 10 implemented; external Debian release execution remains required before publishing v1**.
+Document status: **Core archive/configuration contracts remain schema 1. Release 0.2.0 adds the separately packaged optional Trigger component; external Debian release execution remains required.**
 
-Specification revision: **2026-07-23**.
+Specification revision: **2026-10-19**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, inactive `.example` configuration templates, and Python 3.11/3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, inactive `.example` configuration templates, and Python 3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -50,7 +50,7 @@ Future enhancements, excluded from v1:
 - encrypted-backup password rotation within an existing job and destination namespace;
 - support for package managers or operating systems beyond Debian.
 
-The v1 scope is closed. Changes before the v1 release are limited to correctness fixes, test hardening, documentation consistency, release-gate execution, and operational polish that does not add user-visible capability.
+Core backup behavior remains unchanged in 0.2.0. The optional integration is specified in [Trigger integration](docs/plans/trigger-integration-0.2.0.md) and [Trigger design](docs/design/trigger.md).
 
 ## 1.2 Capability status
 
@@ -69,7 +69,8 @@ The v1 scope is closed. Changes before the v1 release are limited to correctness
 | Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
 | Systemd scheduling | v1 | Implemented |
-| Installer, atomic updates, rollback, and uninstallation | v1 | Implemented — Debian release-environment validation remains part of v1 hardening |
+| Installer, atomic updates, rollback, and uninstallation | 0.2.0 | Component-aware deployment implemented; live Debian release validation remains required |
+| Optional Trigger distribution and shared user units | 0.2.0 | Integrated; per-instance process/writer and live-service deployment checks remain required |
 
 Every change that implements, removes, or reclassifies a capability must update this table in the same commit.
 
@@ -217,14 +218,10 @@ Reasons:
 
 Bash is appropriate only for installation and small operational wrappers.
 
-V1 uses the default CPython supplied by each supported Debian release:
-
-```text
-Debian 12 bookworm: Python 3.11
-Debian 13 trixie:   Python 3.13
-```
-
-`pyproject.toml` declares `requires-python = ">=3.11"`. Production code remains compatible with Python 3.11, and continuous integration runs the complete Python test suite on 3.11 and 3.13. The CLI uses the standard-library `argparse` module.
+Release 0.2.0 uses Debian 13's default Python 3.13. Both distributions declare
+`requires-python = ">=3.13"`; CI uses Python 3.13. This ends Debian 12/Python 3.11
+support for new installs and updates. Existing 0.1.0 deployments must upgrade the OS
+before updating. The CLI uses standard-library `argparse`.
 
 V1 runtime dependency ranges are:
 
@@ -236,7 +233,7 @@ pathspec >=0.12.1,<1
 
 The `pathspec` upper bound preserves the v1 GitWildMatch contract. The `ruamel.yaml` upper bound preserves the reviewed 0.18 safe-loader API and pure-Python behavior. Hatchling `>=1.26,<2` is the build backend.
 
-Every release contains a fully resolved `requirements.lock` with hashes for every supported Python and machine-architecture combination. The installer installs that lock with hash verification and installs Vaultkeep with `--no-deps --no-build-isolation`. A dependency update requires a new Vaultkeep version and the complete release test matrix.
+Every release contains a fully resolved `requirements.lock` with hashes for every supported Python and machine-architecture combination. The installer selects that lock or `requirements-trigger.lock` for a combined deployment, installs binary dependencies with hash verification, then installs each selected local project with `--no-deps --no-build-isolation`. The combined input constrains core pins and adds `psutil>=6.1,<8`. A dependency update requires a new Vaultkeep version and the complete release test matrix.
 
 Development uses Ruff for linting and formatting, mypy in strict mode for static type checking, and pytest with pytest-cov for tests and coverage reporting. Development dependencies are locked separately in `requirements-dev.lock` and are never installed by the production installer.
 
@@ -2173,187 +2170,137 @@ Future schema versions add fields only when their features are implemented. The 
 
 ## 25. Debian installer
 
-V1 provides one idempotent `install.sh` script for installation, updates, and uninstallation.
+`install.sh` is the single root-run deployment transaction. Its stdlib-only
+`scripts/install_support.py` helper validates ownership metadata, installed package
+inventories, live managers, effective units, runtime locks, and recognizable foreground
+processes. The shell owns staging, switching, snapshots, restoration and removal.
 
-The installer targets Debian Linux hosts with systemd and uses `apt`.
-
-The installer input is a trusted local source tree containing a complete Vaultkeep release. A GitHub repository clone checked out at a release tag is the normal input; an extracted source-release archive containing the same files is also valid. The installer never clones, fetches, pulls, or modifies the input source tree. It computes the source digest and copies the selected release into `/opt/vaultkeep`.
-
-The supported v1 operating-system matrix is Debian 12 `bookworm` and Debian 13 `trixie` on `amd64` and `arm64`. Every supported entry must pass the installer, systemd, archive, update, rollback, uninstall, and restore integration suites before release.
-
-Support for `dnf` and `yum` is excluded until a future platform-support release explicitly adds and tests those package managers.
+The tested release platform is Debian 13 `trixie` on amd64/arm64. An existing Python
+below 3.13 fails before apt or deployment mutation. A clean supported host may install
+Debian Python through apt, then verifies it before creating a venv. No alternate
+interpreter is provisioned. Apt package changes are outside rollback.
 
 ## 25.1 Installation paths
 
-```text
-/opt/vaultkeep
-/opt/vaultkeep/releases/<version>/src
-/opt/vaultkeep/releases/<version>/venv
-/opt/vaultkeep/releases/<version>/deployment.json
-/opt/vaultkeep/current -> releases/<version>
-/opt/vaultkeep/install-manifest.json
-/etc/vaultkeep
-/etc/vaultkeep/jobs
-/etc/vaultkeep/secrets
-/var/lib/vaultkeep
-/var/lib/vaultkeep/jobs
-/var/lib/vaultkeep/tmp
-/var/lib/vaultkeep/systemd-instances.json
-/usr/local/bin/vaultkeep
-/etc/systemd/system/vaultkeep@.service
-/etc/systemd/system/vaultkeep@.timer
-```
+Core uses `/opt/vaultkeep/releases/<version>`; combined deployments use
+`/opt/vaultkeep/releases/<version>-with-trigger`. Both distributions report the same
+package version. Every deployment contains `src`, one fresh `venv`, and
+`deployment.json`. `/opt/vaultkeep/current` is the single activation pointer.
+
+`/usr/local/bin/vaultkeep` and the optional `/usr/local/bin/vaultkeep-trigger` point
+through `current/venv/bin`. Core templates stay under `/etc/systemd/system`; optional
+Trigger templates use `/etc/systemd/user`. Core config/state/temp/registry remain
+under `/etc/vaultkeep` and `/var/lib/vaultkeep`. Trigger's user config, fixed state,
+and runtime paths are unchanged; see [Trigger design](docs/design/trigger.md).
 
 ## 25.2 Installer responsibilities
 
-The installer performs these operations:
+The installer validates the host, source, schema-specific manifest, version/source
+policy, additive component selection and artifact ownership. It locks installer
+transactions and checks that relevant schedules are paused and work is drained.
+It never starts/stops/enables/disables schedules during install/update.
 
-1. require root;
-2. require Debian and read `/etc/os-release`;
-3. require systemd as the active system manager at version 247 or newer;
-4. run `apt-get update`;
-5. install `python3`, `python3-venv`, `tar`, `zstd`, `rsync`, `util-linux`, and `mount`;
-6. install Debian's `7zip` package and fail when it has no installable candidate;
-7. verify the resolved `python3`, `tar`, `zstd`, `7z`, `findmnt`, `rsync`, `systemctl`, and `systemd-analyze` executables;
-8. run a private temporary compatibility check that creates and tests a header-encrypted archive using a fixed non-secret installer test password;
-9. calculate the checkout version and source digest and enforce the selected `install` or `update` mode;
-10. synchronize the checkout into a unique staged release below `/opt/vaultkeep`;
-11. create the staged release's virtual environment, install the hashed dependency lock, and install the Vaultkeep Python package with dependency resolution disabled;
-12. create configuration, secrets, state, temporary, and registry locations with the required ownership and permissions;
-13. install every `examples/*.example` file into the jobs directory, overwriting existing packaged `.example` files without activating them;
-14. validate the staged service template and a synthetic timer instance composed from the staged timer template and a generated validation drop-in with `systemd-analyze verify`;
-15. run the staged executable with `--version`;
-16. validate the inactive example with the staged executable and `validate --schema-only`;
-17. record installed unit contents and timer states, stop active Vaultkeep timers for the commit transaction, and confirm no Vaultkeep backup service is active;
-18. atomically rename the validated staged release to `/opt/vaultkeep/releases/<version>`;
-19. install the shared systemd service and timer templates;
-20. create or atomically switch `/opt/vaultkeep/current` to the candidate release;
-21. create or verify `/usr/local/bin/vaultkeep`;
-22. atomically write `/opt/vaultkeep/install-manifest.json`;
-23. run `systemctl daemon-reload`;
-24. report the installed version and retained rollback version.
+The selected hash-locked dependencies install with `--require-hashes --only-binary=:all:`.
+Selected local projects install with `--no-deps --no-build-isolation`. Staged checks
+cover versions, selected/absent distributions and imports, pip check, script paths,
+core schema-only examples and a temporary disabled Trigger example pointing at the
+candidate core. Synthetic systemd copies validate units without starting services.
+After relocation, every selected package is reinstalled to repair console scripts.
 
-It does not enable timers, start timers, or run an actual backup automatically during installation or update. Timer changes require an explicit `vaultkeep timers sync`.
-
-The source synchronization uses `rsync --archive --delete` against the exact source directory inside a newly created transaction staging directory below `/opt/vaultkeep`. It excludes `.git`, `.idea`, `.venv`, caches, build output, and runtime secrets. The installer verifies that the checkout and resolved staging target are absolute, the target is a newly created root-owned directory, and the target remains below `/opt/vaultkeep` before using deletion.
-
-The installer creates directories with these minimum restrictions:
-
-```text
-/etc/vaultkeep                 root:root 0755
-/etc/vaultkeep/jobs            root:root 0750
-/etc/vaultkeep/secrets         root:root 0700
-/etc/vaultkeep/jobs/*.example     root:root 0640
-/var/lib/vaultkeep             root:root 0750
-/var/lib/vaultkeep/jobs        root:root 0750
-/var/lib/vaultkeep/tmp         root:root 0700
-/var/lib/vaultkeep/systemd-instances.json root:root 0600
-```
-
-Existing files below jobs and secrets retain their ownership and modes; insecure existing job configurations and secret files are reported and rejected by runtime validation rather than silently rewritten. The installer never modifies hook executables, and runtime validation rejects insecure ones.
-
-`/opt/vaultkeep`, every release, the current-release symlink, the installation manifest, both systemd templates, and the executable symlink are root-owned and not writable by group or other users.
+Synchronizing source excludes Git/editor metadata, venvs, caches, build output and
+local environment/agent/credential directories. The input checkout is never changed.
+Production dependency resolution is never opportunistic. Packaged examples remain
+inactive; actual jobs and credentials require explicit operator validation.
 
 ## 25.3 Installer command modes
 
-The same script exposes:
-
-```bash
-sudo ./install.sh install
-sudo ./install.sh install --dry-run
-sudo ./install.sh update
-sudo ./install.sh update --dry-run
+```sh
+sudo ./install.sh install [--with-trigger] [--dry-run]
+sudo ./install.sh update [--with-trigger] [--dry-run]
+sudo /opt/vaultkeep/current/src/install.sh uninstall [--dry-run] [--purge]
 ```
 
-`install` creates the first deployment. When the same version and source digest are already active, it performs an idempotent verification and reconciliation. When the same version is already active with a different source digest, it stages the checkout as a complete replacement for that version's installed release directory and replaces the release in a rollback-protected transaction. An existing deployment with a different version causes `install` to fail with an instruction to use `update` for a new release.
+`--with-trigger` adds the component; omitting it preserves persisted selection. A
+same-version addition stages a complete second deployment. `update` requires a
+manifest and accepts a newer version or an identical version/source; changed source
+at the same version requires `install`. `install` allows a same-version source
+refresh but refuses a different installed version. Downgrades are refused.
 
-`update` requires a valid existing installation manifest. It installs the checkout from which the script is executed and never performs an implicit network fetch. A candidate version newer than the active version creates a new release. An exact version-and-source-digest match performs idempotent verification without a release switch. The same version with a different source digest is rejected as not being an update and is handled by `install`; an older version and every other non-upgrade combination are rejected.
+Exact version/source/component matches verify the environment; damage triggers a
+protected complete rebuild. Missing owned links/templates reconcile after ownership
+and quiescence checks. A healthy match makes no deployment changes. Modified units,
+unrelated links, masks and conflicting overrides require explicit operator resolution.
+Inventory checks do not establish arbitrary installed-file integrity.
 
-`install --dry-run` and `update --dry-run` perform non-mutating preflight, validate the checkout and any existing ownership metadata, and print the dependency, release, symlink, unit, timer, and cleanup plan.
+Dry runs inspect metadata/ownership and print selections, dependencies, paths,
+activity checks, retained release and preserved data without apt, writes, locks,
+builds, manager reloads or service actions. They are not a live quiescence guarantee.
 
 ## 25.4 Installation ownership manifest
 
-The installer atomically maintains:
-
-```text
-/opt/vaultkeep/install-manifest.json
-```
-
-The manifest records the installed application version, source digest, active and retained release paths, current-release symlink, executable symlink, shared unit files, and every other installer-owned file outside the user configuration and application-state trees. Each external artifact record includes its absolute path, file type, ownership, mode, and content digest or symlink target. Generated timer drop-ins remain tracked by `/var/lib/vaultkeep/systemd-instances.json`.
-
-Update, rollback, and uninstall operations parse the manifest with a strict schema and reject unknown fields, non-absolute paths, symlink traversal, and paths outside the fixed v1 installation allowlist. The allowlist is compiled into `install.sh`; manifest contents cannot extend it. Missing or invalid ownership metadata blocks destructive cleanup and produces a diagnostic plan for manual recovery.
+`install-manifest.json` records version/source, actual active/retained paths, fixed
+core paths and typed `owned_artifacts`. Schema 2 adds normalized `components`, either
+`["core"]` or `["core", "trigger"]`, and records the optional command/user templates.
+Schema 1 is explicitly core-only. Per-release `deployment.json` also records selection.
+Unknown schemas, fields, components, duplicate or missing artifacts, unsafe paths,
+unconfined release paths, inconsistent metadata and invalid artifact types/targets
+are errors. Manifest contents cannot extend the compiled allowlist or authorize
+home-directory deletion. Unit content hashes and command targets detect ownership
+conflicts. The core timer registry remains a separate core-managed file.
 
 ## 25.5 Update and rollback safety
 
-The installer creates a complete release for every installed application version:
+Operators record active schedules and enablement, pause schedules, drain work and
+hold the maintenance window closed. The installer checks root and running/lingering
+user managers, relevant unit properties/jobs, known monitor/core locks and recognizable
+foreground commands, then repeats the live inventory immediately before replacement.
+An unreachable or inconclusive running manager blocks apply. No user manager is valid
+on a clean host. These checks cannot prove arbitrary custom execution is absent or
+prevent races with new work started by other accounts.
 
-```text
-/opt/vaultkeep/releases/0.6.0/
-├── src/
-├── venv/
-└── deployment.json
+The transaction snapshots `current`, selected command links, core/Trigger templates,
+the manifest and core registry. An active directory replaced at the same version is
+saved until commit. A version/component transition retains the preceding active
+release. Exact-match reconciliation does not rotate retention. There is no release
+garbage collector.
 
-/opt/vaultkeep/current
-→ releases/0.6.0
-
-/usr/local/bin/vaultkeep
-→ /opt/vaultkeep/current/venv/bin/vaultkeep
-```
-
-Staging uses a unique root-owned directory below `/opt/vaultkeep` that cannot equal an active or retained release path. Each release's deployment metadata contains the application version and synchronized-source digest.
-
-The `current` symlink switches only after dependency installation, package installation, staged-executable version verification, example validation, staged-unit verification, and confirmation that no Vaultkeep backup service is active. The installer does not change timer enabled or active state; users apply timer changes explicitly with `vaultkeep timers sync`. `/usr/local/bin/vaultkeep` remains a stable symlink through `current` and does not change during a normal update.
-
-The complete previously active release remains available for rollback. Failed staging never modifies `current`. The installer retains the active release and one preceding release; removal of older releases occurs only after resolving their exact paths below `/opt/vaultkeep/releases`.
-
-Before replacing installed templates or switching `current`, the installer records the exact preceding targets and template contents. A failed update restores the preceding release symlink, templates, and timer registry, removes the exact candidate release created by that transaction, runs `systemctl daemon-reload`, and exits non-zero. A first installation with no preceding version removes only the files it created during that failed transaction.
+After relocation and command repair, install templates/links, switch `current`, write
+schema-2 metadata, reload the system and applicable running user managers, and
+perform read-only post-activation checks. Commit only after those checks succeed.
+ERR exits and handled INT/TERM/HUP clean staging or restore snapshots and the replaced
+release. Restoration attempts continue after individual errors; failed recovery
+snapshots remain with path/account diagnostics. Schedules stay paused through success
+and rollback. Runtime evidence is never restored from an older copy. SIGKILL/power
+loss is not an atomic rollback guarantee. Apt changes cannot be rolled back here.
 
 ## 25.6 Config preservation
 
-The installer must never overwrite existing `.yaml` job configurations or secrets.
-
-Updated packaged `.example` files are overwritten during install and update.
-
-It must not silently rewrite user configuration.
-
-Configuration migration belongs in explicit application commands, not automatic installer edits, unless the migration is narrowly defined and safe.
+Existing YAML/TOML, secrets, user state and archives are never rewritten by the
+installer. Packaged `.example` files may be refreshed. Trigger's disabled TOML example
+stays in the release; copying it to a user's config is an explicit operation.
+Enablement links, user overrides and persistent timer timestamps remain in place.
+After validation, operators resume only previously active schedules; calendar timers
+may legitimately catch up. The installer directly replays no completed backup attempt.
 
 ## 25.7 Uninstallation
 
-The same installer provides three uninstall modes:
+Whole-deployment uninstall validates schema-1/schema-2 ownership, requires paused and
+disabled schedules and drained services/workers/jobs, repeats live checks, removes
+selected managed command links/shared templates and reloads managers, then removes
+the managed prefix, core temp and registry. It does not recursively edit user homes,
+remove per-user units/drop-ins/enablement, or terminate active work.
 
-```bash
-sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
-sudo /opt/vaultkeep/current/src/install.sh uninstall
-sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
-```
-
-`uninstall --dry-run` validates ownership metadata and prints every service action and filesystem path without changing the system.
-
-`uninstall`:
-
-1. requires root and acquires the installer lock;
-2. validates the installation manifest and timer ownership registry;
-3. refuses to proceed while a Vaultkeep backup service is running;
-4. disables every timer instance owned by Vaultkeep;
-5. removes owned timer drop-ins and their empty instance directories;
-6. removes the shared service and timer templates;
-7. removes `/usr/local/bin/vaultkeep` only when it is the recorded Vaultkeep symlink;
-8. removes the validated `/opt/vaultkeep` application tree;
-9. removes `/var/lib/vaultkeep/tmp` and `/var/lib/vaultkeep/systemd-instances.json`;
-10. reloads systemd and reports preserved data.
-
-The normal uninstall preserves `/etc/vaultkeep`, including job configurations and secrets, and preserves `/var/lib/vaultkeep/jobs` so a reinstall retains local operational history. It never removes backup destinations or hook executables. Debian packages installed as prerequisites remain installed because they can be shared by other applications.
-
-`uninstall --purge` performs the normal uninstall and then removes the exact `/etc/vaultkeep` and `/var/lib/vaultkeep` trees. The explicit `--purge` flag is the authorization boundary for deleting configurations, secrets, and local state. Purge still never accesses or deletes configured backup destinations.
-
-The uninstall implementation copies its required routine into a root-owned private temporary directory before deleting `/opt/vaultkeep`, removes the temporary copy on exit, and reports every preserved, removed, skipped, or ownership-conflicting path. A path whose current type, ownership, mode, content digest, or symlink target conflicts with the recorded installation is preserved and reported instead of deleted.
+Normal uninstall preserves core config/secrets/job state. Purge additionally removes
+only managed `/etc/vaultkeep` and `/var/lib/vaultkeep`. Both preserve every user's
+Trigger config, state, requests, receipts, launches, blocks and warnings, user-mode
+core data, wallets, hook executables and archives. System dependencies remain installed.
+Operators must review offline accounts' enablement before a later reinstall.
 
 ---
 
 ## 26. Repository structure
 
-V1 repository layout:
+Repository layout (core and optional Trigger):
 
 ```text
 vaultkeep/
@@ -2371,6 +2318,10 @@ vaultkeep/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
+├── components/
+│   └── trigger/                 # independent package, tests, examples and units
+├── requirements-trigger.in
+├── requirements-trigger.lock
 ├── src/
 │   └── vaultkeep/
 ├── tests/
@@ -2396,7 +2347,7 @@ Use `pytest`.
 
 Testing must mirror the modular design.
 
-Every continuous-integration run executes Ruff format checking, Ruff linting, strict mypy, and pytest. Release integration gates remain additional to these per-commit checks.
+Every continuous-integration run executes Ruff format/lint, core strict mypy, root pytest including installed cross-package tests, Trigger pytest in a separate process, and distribution build/isolation checks. See [development/testing](docs/development/testing.md). Release integration gates remain additional to these per-commit checks.
 
 Core test areas:
 
@@ -2669,7 +2620,7 @@ Status: **Complete**.
 - [x] create repository;
 - [x] approve the v1 architecture and scope;
 - [x] define `pyproject.toml`;
-- [x] set the Python 3.11 baseline and runtime dependency ranges;
+- [x] set the Python baseline and runtime dependency ranges (3.13 in 0.2.0);
 - [x] generate the hashed release dependency lock;
 - [x] generate the development dependency lock;
 - [x] add PEP 440 version;
@@ -2677,7 +2628,7 @@ Status: **Complete**.
 - [x] establish package layout;
 - [x] add the root `.gitignore`;
 - [x] configure Ruff, strict mypy, pytest, and pytest-cov;
-- [x] add Python 3.11 and 3.13 continuous-integration jobs;
+- [x] add Python continuous-integration jobs (3.13 in 0.2.0);
 - [x] add strict config models.
 
 ### Milestone 2 — Validation and source discovery
