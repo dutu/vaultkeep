@@ -28,6 +28,17 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 
+def report_error(message: str) -> None:
+    prefix = "ERROR:"
+    if (
+        sys.stderr.isatty()
+        and os.environ.get("TERM", "dumb") != "dumb"
+        and not os.environ.get("NO_COLOR")
+    ):
+        prefix = "\033[1;31mERROR:\033[0m"
+    print(f"{prefix} installer: {message}", file=sys.stderr)
+
+
 def path_env(name: str, default: str) -> Path:
     value = os.environ.get(name, default)
     path = Path(value)
@@ -721,5 +732,5 @@ if __name__ == "__main__":
     try:
         main()
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
-        print(f"installer: {error}", file=sys.stderr)
+        report_error(str(error))
         raise SystemExit(1) from None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import importlib.util
+import io
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,32 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 support = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(support)
+
+
+@pytest.mark.parametrize(
+    "terminal,term,no_color,colored",
+    [
+        (True, "xterm", "", True),
+        (False, "xterm", "", False),
+        (True, "dumb", "", False),
+        (True, "xterm", "1", False),
+    ],
+)
+def test_helper_errors_are_explicit_and_color_only_on_terminals(
+    monkeypatch, terminal: bool, term: str, no_color: str, colored: bool
+) -> None:
+    output = io.StringIO()
+    monkeypatch.setattr(output, "isatty", lambda: terminal)
+    monkeypatch.setattr(support.sys, "stderr", output)
+    monkeypatch.setenv("TERM", term)
+    monkeypatch.setenv("NO_COLOR", no_color)
+
+    support.report_error("inconclusive unit properties: example.service")
+
+    prefix = "\033[1;31mERROR:\033[0m" if colored else "ERROR:"
+    assert (
+        output.getvalue() == f"{prefix} installer: inconclusive unit properties: example.service\n"
+    )
 
 
 @pytest.mark.parametrize(

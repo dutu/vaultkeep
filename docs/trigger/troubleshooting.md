@@ -7,6 +7,10 @@ before `check-config` or `monitor`. `status` does not read configuration.
 
 ## Installer reports `inconclusive unit properties`
 
+Installer failures are written to stderr with an explicit `ERROR:` prefix, shown
+in red on terminals. Redirected logs stay plain text. Set `NO_COLOR=1` to disable
+color; terminals with `TERM=dumb` also use plain text.
+
 When adding Trigger to a core-only installation, the user manager can report the
 worker instance as `not-found`, `inactive`, and `dead` without an `ExecStart`
 property. This is normal before Trigger's shared units are installed. The corrected

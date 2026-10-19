@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -164,6 +165,81 @@ def control(host: dict[str, str], **settings: object) -> None:
 def wheelhouse_available(host: dict[str, str]) -> None:
     if not list(Path(host["PIP_FIND_LINKS"]).glob("hatchling-*.whl")):
         pytest.fail("prepare the locked binary wheelhouse; see docs/development/testing.md")
+
+
+@pytest.mark.parametrize(
+    "arguments,status,message",
+    [
+        (["invalid"], 2, "unknown mode: invalid"),
+        (["install", "--unknown"], 2, "unknown option: --unknown"),
+        (["uninstall", "--with-trigger"], 1, "--with-trigger is valid only with install/update"),
+    ],
+)
+def test_installer_errors_have_explicit_prefix_in_plain_logs(
+    host: dict[str, str], arguments: list[str], status: int, message: str
+) -> None:
+    host["TERM"] = "xterm"
+    result = run_installer(host, *arguments, check=False)
+    assert result.returncode == status
+    assert result.stderr.startswith(f"ERROR: install.sh: {message}\n")
+    assert "\033[" not in result.stderr
+
+
+def test_helper_cli_errors_have_explicit_prefix_in_plain_logs(host: dict[str, str]) -> None:
+    result = subprocess.run(
+        [sys.executable, str(CANDIDATE_SOURCE / "scripts/install_support.py"), "unsupported"],
+        env=host,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "ERROR: installer: unknown installer check: unsupported\n"
+
+
+@pytest.mark.parametrize(
+    "term,no_color,colored",
+    [("xterm", "", True), ("dumb", "", False), ("xterm", "1", False)],
+)
+def test_installer_error_prefix_on_a_terminal(
+    host: dict[str, str], term: str, no_color: str, colored: bool
+) -> None:
+    import pty
+
+    host.update(TERM=term, NO_COLOR=no_color)
+    master, slave = pty.openpty()
+    try:
+        result = subprocess.run(
+            ["bash", str(INSTALLER), "uninstall", "--with-trigger"],
+            env=host,
+            stdout=subprocess.PIPE,
+            stderr=slave,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        os.close(slave)
+    output = b""
+    try:
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+                break
+            if not chunk:
+                break
+            output += chunk
+    finally:
+        os.close(master)
+    assert result.returncode == 1
+    prefix = "\033[1;31mERROR:\033[0m" if colored else "ERROR:"
+    assert output.decode().startswith(f"{prefix} install.sh: --with-trigger is valid only")
+    if not colored:
+        assert b"\033[" not in output
 
 
 @pytest.fixture
@@ -519,6 +595,7 @@ def test_reload_failure_rolls_back_addition_or_fresh_install(
     control(host, reload_fail_once=True)
     result = run_installer(host, "install", "--with-trigger", check=False)
     assert result.returncode != 0
+    assert "ERROR: install.sh: installer transaction failed (exit 1);" in result.stderr
     after = snapshot(host)
     # The inactive packaged example and empty install lock may remain on first failure.
     ignored = ("install.lock", ".example")

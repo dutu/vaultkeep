@@ -59,8 +59,16 @@ log() {
     printf '%s\n' "$*"
 }
 
+error() {
+    local prefix='ERROR:'
+    if [[ -t 2 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
+        prefix=$'\033[1;31mERROR:\033[0m'
+    fi
+    printf '%s %s: %s\n' "$prefix" "$SCRIPT_NAME" "$*" >&2
+}
+
 die() {
-    printf '%s: %s\n' "$SCRIPT_NAME" "$*" >&2
+    error "$*"
     exit 1
 }
 
@@ -72,6 +80,7 @@ parse_args() {
             exit 0
             ;;
         *)
+            error "unknown mode: $MODE"
             usage >&2
             exit 2
             ;;
@@ -83,6 +92,7 @@ parse_args() {
             --dry-run) DRY_RUN=1 ;;
             --purge) PURGE=1 ;;
             *)
+                error "unknown option: $1"
                 usage >&2
                 exit 2
                 ;;
@@ -479,7 +489,7 @@ rollback_commit() {
     trap - EXIT INT TERM HUP
     set +e
     [[ "$status" != 0 ]] || status=1
-    log "cleaning up incomplete Vaultkeep installer transaction; schedules remain paused" >&2
+    error "installer transaction failed (exit $status); cleaning up; schedules remain paused"
     if [[ "$ROLLBACK_ACTIVE" == 1 ]]; then
         local index path
         for index in "${!SNAPSHOT_PATHS[@]}"; do
@@ -509,7 +519,7 @@ rollback_commit() {
     if [[ "$RESTORE_FAILED" == 0 ]]; then
         [[ -z "$ROLLBACK_TMP" ]] || rm -rf "$ROLLBACK_TMP"
     else
-        log "rollback incomplete; recovery snapshots retained at $ROLLBACK_TMP" >&2
+        error "rollback incomplete; recovery snapshots retained at $ROLLBACK_TMP"
     fi
     exit "$status"
 }
@@ -784,7 +794,7 @@ start_transaction() {
 }
 
 rollback_failure() {
-    log "rollback failed: $1" >&2
+    error "rollback failed: $1"
     RESTORE_FAILED=1
 }
 
