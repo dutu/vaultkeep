@@ -73,17 +73,30 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
 ) -> None:
     output = TerminalOutput()
     monkeypatch.setattr(progress_module.sys, "stderr", output)
+    monkeypatch.setattr(commands, "monotonic", iter([10.0, 12.5]).__next__)
 
     def run(config: Path, **kwargs: Any) -> CommandResult:
         assert config == Path("app.yaml")
         kwargs["progress"]("Checking existing backups")
-        return CommandResult("run", result)
+        return CommandResult(
+            "run", result, removed=2, archive_path=Path("/backups/app.tar.zst"), archive_size=1536
+        )
 
     monkeypatch.setattr(commands, "run_backup", run)
 
     assert commands.main(["--config", "app.yaml", "run"]) == 0
     assert capsys.readouterr().out == f"run: {result}\n"
     assert "Checking existing backups" in output.getvalue()
+    if result == "created":
+        assert output.getvalue().endswith(
+            "Archive: /backups/app.tar.zst\n"
+            "Size: 1.5 KiB\n"
+            "Duration: 2.5s\n"
+            "Backups removed by retention: 2\n"
+        )
+    else:
+        assert "Archive:" not in output.getvalue()
+        assert "Duration:" not in output.getvalue()
     assert not progress_threads[0].is_alive()
 
 
@@ -92,7 +105,9 @@ def test_captured_run_has_no_progress_or_background_thread(
 ) -> None:
     def run(config: Path, **kwargs: Any) -> CommandResult:
         assert kwargs["progress"] is None
-        return CommandResult("run", "created")
+        return CommandResult(
+            "run", "created", archive_path=Path("/backups/app.tar.zst"), archive_size=1536
+        )
 
     monkeypatch.setattr(commands, "run_backup", run)
 
@@ -128,6 +143,25 @@ def test_failed_or_interrupted_run_stops_progress_before_error_handling(
 
     assert capsys.readouterr().out == ""
     assert not progress_threads[0].is_alive()
+
+
+def test_summary_follows_result_when_output_streams_share_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = TerminalOutput()
+    monkeypatch.setattr(commands.sys, "stdout", output)
+    monkeypatch.setattr(commands.sys, "stderr", output)
+    monkeypatch.setattr(
+        commands,
+        "run_backup",
+        lambda *args, **kwargs: CommandResult(
+            "run", "created", archive_path=Path("/backups/app.tar.zst"), archive_size=0
+        ),
+    )
+
+    assert commands.main(["--config", "app.yaml", "run"]) == 0
+    assert output.getvalue().startswith("run: created\nArchive: /backups/app.tar.zst\nSize: 0 B\n")
+    assert output.getvalue().endswith("Backups removed by retention: 0\n")
 
 
 def test_progress_stream_failure_does_not_interrupt_backup(

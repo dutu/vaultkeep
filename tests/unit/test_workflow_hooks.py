@@ -79,7 +79,9 @@ def _patch_creation_workflow(
     )
     monkeypatch.setattr(workflow, "allocate_job_backup_paths", lambda *args, **kwargs: allocated)
     monkeypatch.setattr(workflow, "create_staging_directory", lambda value: None)
-    monkeypatch.setattr(workflow, "build_archive", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        workflow, "build_archive", lambda *args, **kwargs: SimpleNamespace(size=1234)
+    )
     monkeypatch.setattr(
         workflow,
         "commit_archive_artifact",
@@ -128,6 +130,8 @@ def test_created_run_orders_hooks_and_persists_outcomes(
     )
 
     assert result.result == "created"
+    assert result.archive_size == 1234
+    assert result.archive_path == Path(_record().backup_path)
     assert phases == ["before_check", "before_archive", "after_archive", "on_success"]
     assert [outcome.phase for outcome in states[-1].last_run.hooks] == phases
 

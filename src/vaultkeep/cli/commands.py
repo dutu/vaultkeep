@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from contextlib import suppress
+from time import monotonic
 
 from vaultkeep.cli.parser import create_parser
 from vaultkeep.cli.progress import terminal_progress
@@ -19,7 +21,14 @@ from vaultkeep.errors import (
 )
 from vaultkeep.scheduling import TimerManager
 from vaultkeep.version import installed_version
-from vaultkeep.workflow import list_backups, prune_backups, run_backup, validate_job, verify_backups
+from vaultkeep.workflow import (
+    CommandResult,
+    list_backups,
+    prune_backups,
+    run_backup,
+    validate_job,
+    verify_backups,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -49,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 namespace.config, schema_only=namespace.schema_only, runtime_params=runtime_params
             )
         elif namespace.command == "run":
+            started = monotonic()
             with terminal_progress() as progress:
                 result = run_backup(
                     namespace.config,
@@ -56,6 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     user_mode=namespace.user_mode,
                     progress=progress,
                 )
+            elapsed = monotonic() - started
         elif namespace.command == "list":
             result, _ = list_backups(namespace.config, runtime_params=runtime_params)
         elif namespace.command == "verify":
@@ -110,5 +121,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     except VaultkeepError as error:
         print(error, file=sys.stderr)
         return 7
-    print(f"{result.command}: {result.result}")
+    print(f"{result.command}: {result.result}", flush=True)
+    if namespace.command == "run" and result.result == "created" and progress is not None:
+        _print_run_summary(result, elapsed)
     return 0
+
+
+def _print_run_summary(result: CommandResult, elapsed: float) -> None:
+    """Present completed backup facts on the terminal without rereading the archive."""
+    lines = []
+    if result.archive_path is not None:
+        lines.append(f"Archive: {result.archive_path}")
+    if result.archive_size is not None:
+        lines.append(f"Size: {_format_size(result.archive_size)}")
+    lines.append(f"Duration: {elapsed:.1f}s")
+    lines.append(f"Backups removed by retention: {result.removed}")
+    # Losing the summary stream must not turn a completed backup into a failure.
+    with suppress(OSError):
+        print("\n".join(lines), file=sys.stderr, flush=True)
+
+
+def _format_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if value < 1024 or unit == "PiB":
+            return f"{size} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    raise AssertionError("Unreachable size unit")

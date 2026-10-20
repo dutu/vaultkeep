@@ -75,6 +75,7 @@ class CommandResult:
     backups: int = 0
     removed: int = 0
     archive_path: Path | None = None
+    archive_size: int | None = None
 
 
 class _HookRunKwargs(TypedDict, total=False):
@@ -407,7 +408,11 @@ def run_backup(
         report("Saving backup state")
         write_local_state(state_path, latest_state)
         return CommandResult(
-            "run", "created", removed=len(removed), archive_path=Path(record.backup_path)
+            "run",
+            "created",
+            removed=len(removed),
+            archive_path=Path(record.backup_path),
+            archive_size=artifact.size,
         )
     except BaseException as error:
         report("Handling backup failure")

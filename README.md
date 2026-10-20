@@ -494,6 +494,9 @@ repeat every 10 seconds with a `still running` message. Elapsed time is for the
 whole run; these updates indicate the active stage, not a completion percentage.
 Progress is omitted when stderr is redirected or captured, including scheduled
 runs. The final result remains on stdout as `run: created` or `run: unchanged`.
+After `run: created`, the terminal also shows the archive path, archive size,
+total run duration, and number of backups removed by retention. This summary
+uses stderr and is omitted when stderr is redirected or captured.
 
 Possible successful results:
 
