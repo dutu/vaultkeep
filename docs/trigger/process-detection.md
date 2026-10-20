@@ -92,6 +92,6 @@ will be ambiguous. Revalidate against the intended installed versions before ena
 automatic execution.
 
 No automatic process-model validation command is provided. Keep the shipped
-[example instances](../../components/trigger/examples/config.toml) disabled until these checks pass.
+[application job examples](../../README.md#configure-and-validate-trigger) disabled until these checks pass.
 
 [User guide](../../README.md)

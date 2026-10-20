@@ -11,6 +11,7 @@ requires-python = ">=3.13"
 license = "MIT"
 dependencies = [
     "pathspec>=0.12.1,<1",
+    "psutil>=6.1,<8",
     "pydantic>=2.10,<3",
     "ruamel.yaml>=0.18.16,<0.19",
 ]
@@ -34,9 +35,6 @@ include = [
     "/RELEASE.md",
     "/requirements.lock",
     "/requirements.in",
-    "/requirements-trigger.in",
-    "/requirements-trigger.lock",
-    "/components/trigger",
     "/scripts",
     "/docs",
 ]
@@ -59,6 +57,17 @@ select = [
     "UP",
 ]
 
+# Keep the existing Trigger style exceptions during integration.
+[tool.ruff.lint.per-file-ignores]
+"src/vaultkeep/trigger/childproc.py" = ["SIM105"]
+"src/vaultkeep/trigger/matcher.py" = ["SIM110"]
+"src/vaultkeep/trigger/models.py" = ["UP042"]
+"src/vaultkeep/trigger/systemd.py" = ["UP042"]
+"src/vaultkeep/trigger/monitor.py" = ["B023"]
+"src/vaultkeep/trigger/state.py" = ["SIM105"]
+"tests/trigger/test_monitor.py" = ["RUF059"]
+"tests/trigger/test_preflight.py" = ["SIM117"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["vaultkeep"]
 
@@ -66,6 +75,11 @@ known-first-party = ["vaultkeep"]
 python_version = "3.13"
 strict = true
 files = ["src"]
+
+# Preserve the existing strict core boundary; Trigger retains its current typing.
+[[tool.mypy.overrides]]
+module = ["vaultkeep.trigger.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 addopts = [

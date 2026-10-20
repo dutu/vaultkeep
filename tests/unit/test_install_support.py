@@ -83,7 +83,7 @@ def test_absent_unit_accepts_missing_service_properties(
         (
             "LoadState=loaded\nActiveState=inactive\nSubState=dead\n"
             "FragmentPath=/etc/systemd/user/vaultkeep-trigger.service\nDropInPaths=\n"
-            "UnitFileState=disabled\nExecStart=/usr/local/bin/vaultkeep-trigger monitor\n",
+            "UnitFileState=disabled\nExecStart=/usr/local/bin/vaultkeep --user trigger monitor\n",
             1,
         ),
     ],
@@ -144,29 +144,33 @@ def test_lock_symlink_is_refused_without_following(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "argv,unit,valid",
     [
-        ("/usr/local/bin/vaultkeep-trigger monitor", "vaultkeep-trigger.service", True),
         (
-            "/usr/local/bin/vaultkeep-trigger --config /private/config.toml monitor",
-            "vaultkeep-trigger.service",
+            "/usr/local/bin/vaultkeep --user trigger monitor",
+            "vaultkeep-trigger@job-identity.service",
+            False,
+        ),
+        (
+            "/usr/local/bin/vaultkeep --user trigger --config /private/config.toml monitor",
+            "vaultkeep-trigger@job-identity.service",
             True,
         ),
         (
-            "/usr/local/bin/vaultkeep-trigger --config relative.toml monitor",
+            "/usr/local/bin/vaultkeep --user trigger --config relative.toml monitor",
             "vaultkeep-trigger.service",
             False,
         ),
         (
-            "/usr/local/bin/vaultkeep-trigger exec-worker %i",
+            "/usr/local/bin/vaultkeep --user trigger exec-worker %i",
             "vaultkeep-trigger-exec@.service",
             True,
         ),
         (
-            "/usr/local/bin/vaultkeep-trigger exec-worker 123",
+            "/usr/local/bin/vaultkeep --user trigger exec-worker 123",
             "vaultkeep-trigger-exec@123.service",
             True,
         ),
         (
-            "/usr/local/bin/vaultkeep-trigger --config /config exec-worker %i",
+            "/usr/local/bin/vaultkeep --user trigger --config /config exec-worker %i",
             "vaultkeep-trigger-exec@.service",
             False,
         ),
@@ -174,7 +178,7 @@ def test_lock_symlink_is_refused_without_following(tmp_path: Path) -> None:
     ],
 )
 def test_effective_trigger_commands_preserve_config_and_worker_boundary(argv, unit, valid) -> None:
-    executable = Path("/usr/local/bin/vaultkeep-trigger")
+    executable = Path("/usr/local/bin/vaultkeep")
     state = {"ExecStart": f"{{ path={argv.split()[0]} ; argv[]={argv} ; ignore_errors=no ; }}"}
     if valid:
         support.check_trigger_command(state, unit, executable, "test-account")
@@ -251,7 +255,7 @@ def test_user_manager_with_no_trigger_template_is_valid(monkeypatch, uninstall: 
         ["systemctl", "--user"],
         "alice",
         uninstall=uninstall,
-        trigger_bin=Path("/usr/local/bin/vaultkeep-trigger"),
+        trigger_bin=Path("/usr/local/bin/vaultkeep"),
     )
     assert any("list-jobs" in call for call in calls)
 
@@ -288,7 +292,7 @@ def test_paused_standalone_monitor_only_conflicts_when_selecting_trigger(
                 ["systemctl", "--user"],
                 "alice",
                 uninstall=False,
-                trigger_bin=Path("/usr/local/bin/vaultkeep-trigger"),
+                trigger_bin=Path("/usr/local/bin/vaultkeep"),
                 validate_trigger=True,
             )
     else:
@@ -296,7 +300,7 @@ def test_paused_standalone_monitor_only_conflicts_when_selecting_trigger(
             ["systemctl", "--user"],
             "alice",
             uninstall=False,
-            trigger_bin=Path("/usr/local/bin/vaultkeep-trigger"),
+            trigger_bin=Path("/usr/local/bin/vaultkeep"),
             validate_trigger=False,
         )
 
@@ -319,8 +323,8 @@ def test_worker_lifecycle_override_is_a_conflict(monkeypatch):
                 LoadState="loaded",
                 FragmentPath="/etc/systemd/user/vaultkeep-trigger-exec@.service",
                 ExecStart=(
-                    "{ path=/usr/local/bin/vaultkeep-trigger ; "
-                    "argv[]=/usr/local/bin/vaultkeep-trigger exec-worker installer-check ; "
+                    "{ path=/usr/local/bin/vaultkeep ; "
+                    "argv[]=/usr/local/bin/vaultkeep --user trigger exec-worker installer-check ; "
                     "ignore_errors=no ; }"
                 ),
                 Type="oneshot",
@@ -338,5 +342,65 @@ def test_worker_lifecycle_override_is_a_conflict(monkeypatch):
             ["systemctl", "--user"],
             "alice",
             uninstall=False,
-            trigger_bin=Path("/usr/local/bin/vaultkeep-trigger"),
+            trigger_bin=Path("/usr/local/bin/vaultkeep"),
         )
+
+
+@pytest.mark.parametrize("issue", [None, "unmanaged", "override"])
+def test_per_job_monitors_are_checked_without_changing_user_units(tmp_path, monkeypatch, issue):
+    unit = "vaultkeep-trigger@app-0123456789abcdef.service"
+    fragment = tmp_path / unit
+    content = f"# Managed by Vaultkeep: {unit}\n[Service]\n"
+    fragment.write_text(content if issue != "unmanaged" else "# operator-owned\n")
+    before = fragment.read_bytes()
+
+    def execute(argv):
+        return f"{unit} loaded inactive dead monitor\n" if "list-units" in argv else ""
+
+    monkeypatch.setattr(support, "execute", execute)
+
+    def properties(_argv, name):
+        if name != unit:
+            return {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+                "FragmentPath": "",
+                "DropInPaths": "",
+                "ExecStart": "",
+                "UnitFileState": "",
+            }
+        return {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "FragmentPath": str(fragment),
+            "DropInPaths": "/override.conf" if issue == "override" else "",
+            "ExecStart": (
+                "{ path=/usr/local/bin/vaultkeep ; "
+                "argv[]=/usr/local/bin/vaultkeep --user trigger --config /jobs/app.yaml monitor ; "
+                "ignore_errors=no ; }"
+            ),
+            "UnitFileState": "enabled",
+            "Type": "simple",
+            "Restart": "on-failure",
+            "UMask": "0077",
+        }
+
+    monkeypatch.setattr(support, "properties", properties)
+    if issue:
+        with pytest.raises(ValueError, match="review"):
+            support.check_manager(
+                ["systemctl", "--user"],
+                "alice",
+                uninstall=False,
+                trigger_bin=Path("/usr/local/bin/vaultkeep"),
+            )
+    else:
+        support.check_manager(
+            ["systemctl", "--user"],
+            "alice",
+            uninstall=False,
+            trigger_bin=Path("/usr/local/bin/vaultkeep"),
+        )
+    assert fragment.read_bytes() == before

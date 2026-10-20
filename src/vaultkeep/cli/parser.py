@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from vaultkeep.trigger.parser import configure_parser
+
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the top-level Vaultkeep argument parser."""
@@ -20,7 +22,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--user",
         action="store_true",
         dest="user_mode",
-        help="use per-user state, locks, hooks, secrets, and systemd user timers",
+        help="use per-user state, locks, hooks, secrets, and systemd user services/timers",
     )
     parser.add_argument(
         "--param",
@@ -30,6 +32,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="runtime template parameter for shared configurations; repeatable",
     )
     commands = parser.add_subparsers(dest="command")
+    configure_parser(commands.add_parser("trigger", help="manage optional shutdown-triggered jobs"))
     validate = commands.add_parser("validate")
     validate.add_argument("--schema-only", action="store_true")
     commands.add_parser("run")

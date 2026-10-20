@@ -1,6 +1,5 @@
-"""Build both distributions and verify isolation, versions and extracted sdists.
+"""Build and verify the unified Vaultkeep wheel and self-contained source archive.
 
-Run with the locked development environment and a prepared binary wheelhouse.
 All builds/installations use temporary paths and no services or production data.
 """
 
@@ -31,136 +30,117 @@ def build(project: Path, output: Path, kind: str = "") -> None:
     run(*arguments, str(project))
 
 
-def check_wheel(wheel: Path, package: str, command: str, version: str) -> None:
+def check_wheel(wheel: Path, version: str) -> None:
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert {n.split("/", 1)[0] for n in names} <= {
-            package,
+            "vaultkeep",
             wheel.name.removesuffix("-py3-none-any.whl") + ".dist-info",
         }
+        assert "vaultkeep/trigger/monitor.py" in names
         metadata_path = next(n for n in names if n.endswith(".dist-info/METADATA"))
         metadata = email.message_from_bytes(archive.read(metadata_path))
         assert metadata["Version"] == version
         assert metadata["Requires-Python"] == ">=3.13"
-        dependencies = metadata.get_all("Requires-Dist", [])
-        assert any("psutil" in d for d in dependencies) == (command == "vaultkeep-trigger")
-        assert not any(d.startswith("vaultkeep") for d in dependencies)
+        assert any(d.startswith("psutil") for d in metadata.get_all("Requires-Dist", []))
+        assert not any(
+            d.startswith("vaultkeep-trigger") for d in metadata.get_all("Requires-Dist", [])
+        )
         entry_path = next(n for n in names if n.endswith(".dist-info/entry_points.txt"))
         entries = configparser.ConfigParser()
         entries.read_string(archive.read(entry_path).decode())
-        assert set(entries["console_scripts"]) == {command}
+        assert set(entries["console_scripts"]) == {"vaultkeep"}
         assert any("LICENSE" in n for n in names)
 
 
 def check() -> None:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-    component_version = tomllib.loads((ROOT / "components/trigger/pyproject.toml").read_text())[
-        "project"
-    ]["version"]
-    assert version == component_version
-    environment = os.environ.copy()
-    environment.update(PIP_NO_INDEX="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
+    environment = dict(os.environ, PIP_NO_INDEX="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
     environment.setdefault("PIP_FIND_LINKS", "/tmp/vaultkeep-wheelhouse")
     with tempfile.TemporaryDirectory(prefix="vaultkeep-packages-") as directory:
         base = Path(directory)
+        output = base / "dist"
+        build(ROOT, output)
+        wheel = next(output.glob("*.whl"))
+        check_wheel(wheel, version)
+        with tarfile.open(next(output.glob("*.tar.gz"))) as archive:
+            members = archive.getnames()
+            assert not any(
+                part in n.split("/")
+                for n in members
+                for part in (
+                    ".git",
+                    ".venv",
+                    "__pycache__",
+                    ".aws",
+                    ".env",
+                    ".codex",
+                    ".agents",
+                    "components",
+                )
+            )
+            archive.extractall(output / "extracted", filter="data")
+        extracted = next((output / "extracted").iterdir())
+        for required in (
+            "src/vaultkeep/trigger/cli.py",
+            "requirements.lock",
+            "scripts/install_support.py",
+            "systemd/vaultkeep-trigger-exec@.service",
+            "install.sh",
+            "examples/vaultkeep-schedule.yaml.example",
+            "examples/electrum-trigger.yaml.example",
+            "examples/bisq-trigger.yaml.example",
+            "examples/wasabi-trigger.yaml.example",
+        ):
+            assert (extracted / required).is_file(), required
+        build(extracted, output / "rebuilt", "wheel")
         os_release = base / "os-release"
         os_release.write_text("ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n")
-        for project, name, namespace in (
-            (ROOT, "vaultkeep", "vaultkeep"),
-            (ROOT / "components/trigger", "vaultkeep-trigger", "vaultkeep_trigger"),
-        ):
-            output = base / name
-            build(project, output)
-            wheel = next(output.glob("*.whl"))
-            check_wheel(wheel, namespace, name, version)
-            with tarfile.open(next(output.glob("*.tar.gz"))) as archive:
-                members = archive.getnames()
-                assert not any(
-                    part in n.split("/")
-                    for n in members
-                    for part in (
-                        ".git",
-                        ".venv",
-                        "__pycache__",
-                        ".aws",
-                        ".env",
-                        ".codex",
-                        ".agents",
-                    )
-                )
-                archive.extractall(output / "extracted", filter="data")
-            extracted = next((output / "extracted").iterdir())
-            build(extracted, output / "rebuilt", "wheel")
-            if name == "vaultkeep":
-                for required in (
-                    "components/trigger/pyproject.toml",
-                    "requirements-trigger.lock",
-                    "requirements.lock",
-                    "scripts/install_support.py",
-                    "install.sh",
-                    "components/trigger/examples/config.toml",
-                ):
-                    assert (extracted / required).is_file(), required
-                for combined in (False, True):
-                    env = dict(
-                        environment,
-                        VAULTKEEP_INSTALL_TESTING="1",
-                        VAULTKEEP_TEST_OS_RELEASE=str(os_release),
-                        VAULTKEEP_INSTALL_PREFIX=str(base / "preview/opt/vaultkeep"),
-                        VAULTKEEP_CONFIG_ROOT=str(base / "preview/etc/vaultkeep"),
-                        VAULTKEEP_VAR_ROOT=str(base / "preview/var/vaultkeep"),
-                        VAULTKEEP_BIN_LINK=str(base / "preview/bin/vaultkeep"),
-                        VAULTKEEP_TRIGGER_BIN_LINK=str(base / "preview/bin/vaultkeep-trigger"),
-                        VAULTKEEP_SYSTEMD_ROOT=str(base / "preview/systemd/system"),
-                        VAULTKEEP_USER_SYSTEMD_ROOT=str(base / "preview/systemd/user"),
-                    )
-                    run(
-                        "bash",
-                        str(extracted / "install.sh"),
-                        "install",
-                        "--dry-run",
-                        *(["--with-trigger"] if combined else []),
-                        env=env,
-                        cwd=extracted,
-                    )
-                    assert not (base / "preview").exists()
-            venv = base / (name + "-env")
-            run(sys.executable, "-m", "venv", str(venv))
-            python = str(venv / "bin/python")
-            if name == "vaultkeep":
-                run(
-                    python,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--require-hashes",
-                    "--only-binary=:all:",
-                    "-r",
-                    str(ROOT / "requirements.lock"),
-                    env=environment,
-                )
-            else:
-                # Prove the independent wheel installs with only its declared deps.
-                run(
-                    python,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--only-binary=:all:",
-                    str(wheel),
-                    env=environment,
-                )
-            run(python, "-m", "pip", "install", "--no-deps", str(wheel), env=environment)
-            other = "vaultkeep_trigger" if name == "vaultkeep" else "vaultkeep"
-            run(
-                python,
-                "-c",
-                f"import {namespace}; import importlib.util; "
-                f"assert importlib.util.find_spec('{other}') is None",
-            )
-            assert run(str(venv / "bin" / name), "--version").strip() == version
-            run(python, "-m", "pip", "check")
-        print("Both wheels and independent sdists passed package isolation/version checks.")
+        preview = base / "preview"
+        env = dict(
+            environment,
+            VAULTKEEP_INSTALL_TESTING="1",
+            VAULTKEEP_TEST_OS_RELEASE=str(os_release),
+            VAULTKEEP_INSTALL_PREFIX=str(preview / "opt/vaultkeep"),
+            VAULTKEEP_CONFIG_ROOT=str(preview / "etc/vaultkeep"),
+            VAULTKEEP_VAR_ROOT=str(preview / "var/vaultkeep"),
+            VAULTKEEP_BIN_LINK=str(preview / "bin/vaultkeep"),
+            VAULTKEEP_TRIGGER_BIN_LINK=str(preview / "bin/vaultkeep-trigger"),
+            VAULTKEEP_SYSTEMD_ROOT=str(preview / "systemd/system"),
+            VAULTKEEP_USER_SYSTEMD_ROOT=str(preview / "systemd/user"),
+        )
+        run("bash", str(extracted / "install.sh"), "install", "--dry-run", env=env, cwd=extracted)
+        assert not preview.exists()
+        venv = base / "env"
+        run(sys.executable, "-m", "venv", str(venv))
+        python = str(venv / "bin/python")
+        run(
+            python,
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "--only-binary=:all:",
+            "-r",
+            str(ROOT / "requirements.lock"),
+            env=environment,
+        )
+        run(python, "-m", "pip", "install", "--no-deps", str(wheel), env=environment)
+        run(
+            python,
+            "-c",
+            "import vaultkeep.trigger.monitor; import importlib.util; "
+            "assert importlib.util.find_spec('vaultkeep_trigger') is None",
+        )
+        command = str(venv / "bin/vaultkeep")
+        for prefix in ([], ["trigger"]):
+            assert run(command, *prefix, "--version").strip() == version
+        for example in (ROOT / "examples").glob("*.example"):
+            run(command, "--config", str(example), "validate", "--schema-only")
+            run(command, "--user", "trigger", "--config", str(example), "check-config")
+        assert not (venv / "bin/vaultkeep-trigger").exists()
+        run(python, "-m", "pip", "check")
+        print("Unified wheel, source archive, installer preview and all job examples passed.")
 
 
 if __name__ == "__main__":

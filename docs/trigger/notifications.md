@@ -1,11 +1,10 @@
 # Notifications
 
-Optional desktop notifications are **globally** configured under `[trigger.notifications]`
+Optional desktop notifications are configured per job under YAML `trigger.notifications`
 and delivered best-effort by the monitor through `notify-send` with a bounded timeout.
 The configured command is invoked directly with title and body as two arguments;
 it is not a shell command string. Trigger does not block the monitoring loop waiting
-for delivery. There are no
-per-instance notification settings in v1.
+for delivery. Each job has its own notification settings.
 
 ## What is delivered
 
@@ -51,7 +50,7 @@ restarting the monitor:
 
 ```sh
 systemctl --user import-environment DBUS_SESSION_BUS_ADDRESS
-systemctl --user restart vaultkeep-trigger.service
+vaultkeep --user trigger --config /absolute/path/job.yaml update
 ```
 
 Run the import from the graphical session where the variable is set, and apply the

@@ -6,10 +6,10 @@ readonly MODE=${1:-}
 
 DRY_RUN=0
 PURGE=0
-WITH_TRIGGER=0
-COMPONENTS=core
+COMPONENTS=core,trigger
 PREVIOUS_COMPONENTS=none
-CHECK_USERS=0
+PREVIOUS_SCHEMA=0
+CHECK_USERS=1
 RELEASE_ID=""
 STAGED_RELEASE=""
 RESTORE_FAILED=0
@@ -49,8 +49,8 @@ REPLACED_RELEASE_BACKUP=""
 usage() {
     cat <<'EOF'
 Usage:
-  sudo ./install.sh install [--with-trigger] [--dry-run]
-  sudo ./install.sh update [--with-trigger] [--dry-run]
+  sudo ./install.sh install [--dry-run]
+  sudo ./install.sh update [--dry-run]
   sudo /opt/vaultkeep/current/src/install.sh uninstall [--dry-run] [--purge]
 EOF
 }
@@ -88,7 +88,6 @@ parse_args() {
     shift || true
     while (($#)); do
         case "$1" in
-            --with-trigger) WITH_TRIGGER=1 ;;
             --dry-run) DRY_RUN=1 ;;
             --purge) PURGE=1 ;;
             *)
@@ -99,9 +98,6 @@ parse_args() {
         esac
         shift
     done
-    if [[ "$MODE" == uninstall && "$WITH_TRIGGER" == 1 ]]; then
-        die "--with-trigger is valid only with install/update"
-    fi
     if [[ "$MODE" != "uninstall" && "$PURGE" == 1 ]]; then
         die "--purge is valid only with uninstall"
     fi
@@ -147,7 +143,7 @@ preflight_host() {
     # shellcheck disable=SC1090
     . "$os_release"
     [[ "${ID:-}" == debian && "${VERSION_ID:-}" == 13 && "${VERSION_CODENAME:-trixie}" == trixie ]] ||
-        die "Vaultkeep 0.2.0 requires Debian 13 trixie; upgrade Debian 12 before updating Vaultkeep"
+        die "Vaultkeep requires Debian 13 trixie; upgrade Debian 12 before updating Vaultkeep"
     if command -v python3 >/dev/null 2>&1; then
         verify_python
     elif [[ -e "$VK_MANIFEST" || "$MODE" == uninstall ]]; then
@@ -257,6 +253,9 @@ PY
 ensure_checkout() {
     [[ -f "$SOURCE_DIR/pyproject.toml" ]] || die "pyproject.toml not found in checkout: $SOURCE_DIR"
     [[ -f "$SOURCE_DIR/requirements.lock" ]] || die "requirements.lock not found in checkout"
+    [[ -f "$SOURCE_DIR/src/vaultkeep/trigger/cli.py" &&
+       -f "$SOURCE_DIR/systemd/vaultkeep-trigger-exec@.service" ]] ||
+        die "built-in Trigger source or service templates are missing"
     local found_example=0
     local example
     for example in "$SOURCE_DIR"/examples/*.example; do
@@ -277,17 +276,15 @@ plan_install_or_update() {
     log "  source: $SOURCE_DIR"
     log "  version: $version"
     log "  source_digest: $digest"
-    log "  previous components: $PREVIOUS_COMPONENTS"
-    log "  desired components: $COMPONENTS"
-    log "  interpreter: Debian python3 >=3.13; hash-locked binary dependencies: $(selected_lock)"
+    log "  Trigger is included; monitoring remains opt-in"
+    log "  interpreter: Debian python3 >=3.13; hash-locked binary dependencies: requirements.lock"
     log "  release: $VK_RELEASES/$RELEASE_ID"
     log "  current: $VK_CURRENT -> releases/$RELEASE_ID"
     log "  executable: $VK_BIN_LINK -> $VK_CURRENT/venv/bin/vaultkeep"
     log "  service unit: $VK_SERVICE_UNIT"
     log "  timer unit: $VK_TIMER_UNIT"
     if [[ "$COMPONENTS" == core,trigger ]]; then
-        log "  executable: $VK_TRIGGER_BIN_LINK -> $VK_CURRENT/venv/bin/vaultkeep-trigger"
-        log "  shared user templates: $VK_MONITOR_UNIT $VK_WORKER_UNIT"
+        log "  shared user worker template: $VK_WORKER_UNIT; monitor services are configured per job"
     fi
     log "  preserve config/state: $VK_CONFIG_ROOT $VK_VAR_ROOT and all user homes, wallet data and archives"
     log "  activity checks: system schedules/jobs, running user managers, runtime locks and foreground processes"
@@ -344,20 +341,19 @@ stage_release() {
         --exclude='.env' --exclude='.env.*' \
         "$SOURCE_DIR/" "$stage/src/"
     python3 -m venv "$stage/venv"
-    "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/$(selected_lock)"
+    "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/requirements.lock"
     install_packages "$stage"
     verify_release "$stage" "$version"
-    python3 - "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR" "$COMPONENTS" <<'META'
+    python3 - "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR" <<'META'
 import json
 import sys
 from pathlib import Path
 
 Path(sys.argv[1]).write_text(json.dumps({
-    "schema_version": 2,
+    "schema_version": 3,
     "version": sys.argv[2],
     "source_digest": sys.argv[3],
     "source_checkout": sys.argv[4],
-    "components": sys.argv[5].split(","),
 }, indent=2, sort_keys=True) + "\n")
 META
     chown -R root:root "$stage"
@@ -367,10 +363,6 @@ finalize_release_venv() {
     local release=$1 version=$2
     "$release/venv/bin/python" -m pip install \
         --force-reinstall --no-build-isolation --no-deps "$release/src"
-    if [[ "$COMPONENTS" == core,trigger ]]; then
-        "$release/venv/bin/python" -m pip install \
-            --force-reinstall --no-build-isolation --no-deps "$release/src/components/trigger"
-    fi
     verify_release "$release" "$version"
 }
 
@@ -409,13 +401,13 @@ verify_systemd_templates() {
     systemd-analyze verify "$tmp/vaultkeep@.service" "$tmp/vaultkeep@.timer"
     if [[ "$COMPONENTS" == core,trigger ]]; then
         local name
-        for name in vaultkeep-trigger.service vaultkeep-trigger-exec@.service; do
+        for name in vaultkeep-trigger-exec@.service; do
             sed -E 's#^ExecStart=.*#ExecStart=/bin/true#' \
-                "$SOURCE_DIR/components/trigger/systemd/$name" >"$tmp/$name"
+                "$SOURCE_DIR/systemd/$name" >"$tmp/$name"
         done
         install -d -m 0700 "$tmp/runtime"
         XDG_RUNTIME_DIR="$tmp/runtime" systemd-analyze --user verify \
-            "$tmp/vaultkeep-trigger.service" "$tmp/vaultkeep-trigger-exec@.service"
+            "$tmp/vaultkeep-trigger-exec@.service"
     fi
     rm -rf "$tmp"
     UNIT_VALIDATION_DIR=""
@@ -434,16 +426,15 @@ install_units_and_links() {
     run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep@.service" "$VK_SERVICE_UNIT"
     run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep@.timer" "$VK_TIMER_UNIT"
     if [[ "$COMPONENTS" == core,trigger ]]; then
-        run install -d -o root -g root -m 0755 "$VK_USER_SYSTEMD_ROOT" "$(dirname "$VK_TRIGGER_BIN_LINK")"
-        run install -o root -g root -m 0644 "$SOURCE_DIR/components/trigger/systemd/vaultkeep-trigger.service" "$VK_MONITOR_UNIT"
-        run install -o root -g root -m 0644 "$SOURCE_DIR/components/trigger/systemd/vaultkeep-trigger-exec@.service" "$VK_WORKER_UNIT"
+        run install -d -o root -g root -m 0755 "$VK_USER_SYSTEMD_ROOT"
+        run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep-trigger-exec@.service" "$VK_WORKER_UNIT"
     fi
     if [[ "$DRY_RUN" == 0 ]]; then
         ln -s "releases/$RELEASE_ID" "$VK_PREFIX/.current.$$"
         mv -Tf "$VK_PREFIX/.current.$$" "$VK_CURRENT"
         ln -sfn "$VK_CURRENT/venv/bin/vaultkeep" "$VK_BIN_LINK"
-        if [[ "$COMPONENTS" == core,trigger ]]; then
-            ln -sfn "$VK_CURRENT/venv/bin/vaultkeep-trigger" "$VK_TRIGGER_BIN_LINK"
+        if [[ "$PREVIOUS_SCHEMA" != 3 && "$PREVIOUS_COMPONENTS" == core,trigger ]]; then
+            rm -f "$VK_TRIGGER_BIN_LINK" "$VK_MONITOR_UNIT"
         fi
     else
         log "PLAN switch $VK_CURRENT to releases/$RELEASE_ID and reconcile selected command links"
@@ -527,7 +518,7 @@ rollback_commit() {
 write_manifest() {
     local version=$1 digest=$2 previous=${3:-}
     if [[ "$DRY_RUN" == 1 ]]; then
-        log "PLAN write $VK_MANIFEST (schema 2, $COMPONENTS; retained: $previous)"
+        log "PLAN write $VK_MANIFEST (schema 3; retained: $previous)"
         return
     fi
     support write-manifest "$version" "$digest" "$previous" "$COMPONENTS"
@@ -535,7 +526,7 @@ write_manifest() {
 
 daemon_reload() {
     if [[ "$DRY_RUN" == 1 ]]; then
-        log "PLAN systemctl daemon-reload; reload running user managers when Trigger selected"
+        log "PLAN systemctl daemon-reload; reload running user managers without starting or enabling monitors"
         return
     fi
     systemctl daemon-reload
@@ -588,20 +579,17 @@ install_or_update() {
     [[ "$version" =~ ^[0-9]+(\.[0-9]+)*(\.dev[0-9]+)?$ ]] || die "invalid project version"
     if [[ -f "$VK_MANIFEST" ]]; then
         PREVIOUS_COMPONENTS=$(manifest_value components)
-        COMPONENTS=$PREVIOUS_COMPONENTS
+        PREVIOUS_SCHEMA=$(manifest_value schema_version)
         active_release=$(manifest_value active_release)
         previous_release=$(manifest_value retained_release)
         CHECK_USERS=1
     elif [[ "$MODE" == update ]]; then
         die "update requires an existing installation manifest"
     fi
-    [[ "$WITH_TRIGGER" == 0 ]] || COMPONENTS=core,trigger
     if [[ "$COMPONENTS" == core,trigger ]]; then
         CHECK_USERS=1
-        ensure_trigger_checkout
     fi
     RELEASE_ID=$version
-    [[ "$COMPONENTS" != core,trigger ]] || RELEASE_ID+="-with-trigger"
     digest=$(source_digest)
     plan_install_or_update "$version" "$digest"
     if validate_existing_mode "$version" "$digest"; then
@@ -629,13 +617,13 @@ install_or_update() {
         manifest_after=$(sha256sum "$VK_MANIFEST")
     fi
     [[ "$manifest_before" == "$manifest_after" ]] ||
-        die "deployment changed during preflight; retry to resolve current component selection"
+        die "deployment changed during preflight; retry maintenance"
     # Recheck metadata/ownership under the installer lock.
     if command -v python3 >/dev/null 2>&1; then
         support ownership "$SOURCE_DIR" "$COMPONENTS"
     fi
     refuse_active_services
-    if [[ "$mode_result" == 10 && "$COMPONENTS" == "$PREVIOUS_COMPONENTS" ]]; then
+    if [[ "$mode_result" == 10 && "$PREVIOUS_SCHEMA" == 3 ]]; then
         if [[ "$DRY_RUN" == 1 ]]; then
             log "PLAN verify installed environment; rebuild through protected transaction if damaged"
             rebuild=0
@@ -650,7 +638,7 @@ install_or_update() {
     fi
     log "  retained release after success: $previous_release"
     if [[ "$rebuild" == 0 && "$DRY_RUN" == 0 && "$(support needs-reconciliation "$COMPONENTS")" == 0 ]]; then
-        log "Vaultkeep $version verified ($COMPONENTS); no deployment changes required"
+        log "Vaultkeep $version verified; no deployment changes required"
         return
     fi
     start_transaction
@@ -684,23 +672,27 @@ install_or_update() {
         refuse_active_services
     fi
     finish_commit_transaction
-    log "Vaultkeep $version installed ($COMPONENTS). Validate jobs/configuration and resume previously active schedules explicitly."
+    log "Vaultkeep $version installed. Validate jobs/configuration and resume previously active schedules explicitly."
 }
 
 validate_manifest_for_uninstall() {
     [[ -f "$VK_MANIFEST" ]] || die "installation manifest not found: $VK_MANIFEST"
     COMPONENTS=$(manifest_value components)
     PREVIOUS_COMPONENTS=$COMPONENTS
+    PREVIOUS_SCHEMA=$(manifest_value schema_version)
     CHECK_USERS=1
     support ownership "$SOURCE_DIR" "$COMPONENTS"
 }
 
 uninstall_plan() {
-    log "Vaultkeep uninstall plan ($COMPONENTS)"
+    log "Vaultkeep uninstall plan"
     log "  require stopped/disabled schedules and drained services/workers/jobs in all running managers"
     log "  remove $VK_SERVICE_UNIT $VK_TIMER_UNIT $VK_BIN_LINK"
     if [[ "$COMPONENTS" == core,trigger ]]; then
-        log "  remove $VK_MONITOR_UNIT $VK_WORKER_UNIT $VK_TRIGGER_BIN_LINK"
+        log "  remove $VK_WORKER_UNIT"
+        if [[ "$PREVIOUS_SCHEMA" != 3 ]]; then
+            log "  remove legacy $VK_MONITOR_UNIT $VK_TRIGGER_BIN_LINK"
+        fi
     fi
     log "  remove $VK_PREFIX $VK_TMP $VK_TIMER_REGISTRY"
     if [[ "$PURGE" == 1 ]]; then
@@ -725,7 +717,10 @@ uninstall_vaultkeep() {
     refuse_active_services
     rm -f "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" "$VK_BIN_LINK"
     if [[ "$COMPONENTS" == core,trigger ]]; then
-        rm -f "$VK_MONITOR_UNIT" "$VK_WORKER_UNIT" "$VK_TRIGGER_BIN_LINK"
+        rm -f "$VK_WORKER_UNIT"
+        if [[ "$PREVIOUS_SCHEMA" != 3 ]]; then
+            rm -f "$VK_TRIGGER_BIN_LINK" "$VK_MONITOR_UNIT"
+        fi
     fi
     # Reload while the support script is still present (installed uninstall source).
     daemon_reload
@@ -748,28 +743,9 @@ verify_python() {
         die "Debian python3 >=3.13 is required; refusing before apt or deployment changes"
 }
 
-selected_lock() {
-    if [[ "$COMPONENTS" == core,trigger ]]; then
-        echo requirements-trigger.lock
-    else
-        echo requirements.lock
-    fi
-}
-
-ensure_trigger_checkout() {
-    [[ -f "$SOURCE_DIR/requirements-trigger.lock" && -f "$SOURCE_DIR/components/trigger/pyproject.toml" ]] ||
-        die "optional Trigger project or dependency lock is missing"
-    local trigger_version
-    trigger_version=$(sed -nE 's/^version = "([^"]+)"/\1/p' "$SOURCE_DIR/components/trigger/pyproject.toml")
-    [[ "$trigger_version" == "$(candidate_version)" ]] || die "component versions disagree"
-}
-
 install_packages() {
     local release=$1
     "$release/venv/bin/python" -m pip install --no-build-isolation --no-deps "$release/src"
-    if [[ "$COMPONENTS" == core,trigger ]]; then
-        "$release/venv/bin/python" -m pip install --no-build-isolation --no-deps "$release/src/components/trigger"
-    fi
 }
 
 verify_release() {

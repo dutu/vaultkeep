@@ -18,7 +18,6 @@ import shlex
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 VERSION = re.compile(r"\d+(?:\.\d+)*(?:\.dev\d+)?")
@@ -83,21 +82,22 @@ class Layout:
                 if left != right and (left in right.parents or right in left.parents):
                     fail(f"overlapping installer roots: {left}, {right}")
 
-    def links(self, components: list[str]) -> dict[Path, str]:
+    def links(self, components: list[str], schema: int = 3) -> dict[Path, str]:
         links = {self.bin: str(self.current / "venv/bin/vaultkeep")}
-        if "trigger" in components:
+        if schema < 3 and "trigger" in components:
             links[self.trigger_bin] = str(self.current / "venv/bin/vaultkeep-trigger")
         return links
 
-    def units(self, components: list[str]) -> dict[Path, str]:
+    def units(self, components: list[str], schema: int = 3) -> dict[Path, str]:
         units = {self.service: "systemd/vaultkeep@.service", self.timer: "systemd/vaultkeep@.timer"}
         if "trigger" in components:
             units.update(
                 {
-                    self.monitor: "components/trigger/systemd/vaultkeep-trigger.service",
-                    self.worker: "components/trigger/systemd/vaultkeep-trigger-exec@.service",
+                    self.worker: "systemd/vaultkeep-trigger-exec@.service",
                 }
             )
+        if schema < 3 and "trigger" in components:
+            units[self.monitor] = "components/trigger/systemd/vaultkeep-trigger.service"
         return units
 
 
@@ -130,13 +130,19 @@ def read_manifest(layout: Layout) -> dict:
         "owned_artifacts",
     }
     schema = data.get("schema_version")
-    if type(schema) is not int or schema not in (1, 2):
+    if type(schema) is not int or schema not in (1, 2, 3):
         fail("unsupported install manifest schema")
     if schema == 2:
         required.add("components")
     if set(data) != required:
         fail("install manifest has unexpected fields")
-    components = selection(data["components"]) if schema == 2 else ["core"]
+    components = (
+        selection(data["components"])
+        if schema == 2
+        else ["core", "trigger"]
+        if schema == 3
+        else ["core"]
+    )
     version = data["version"]
     if not isinstance(version, str) or VERSION.fullmatch(version) is None:
         fail("invalid manifest version")
@@ -155,7 +161,7 @@ def read_manifest(layout: Layout) -> dict:
     for key, path in expected.items():
         if data[key] != str(path):
             fail(f"manifest {key} does not match installer path: {path}")
-    suffix = "-with-trigger" if "trigger" in components else ""
+    suffix = "-with-trigger" if schema == 2 and "trigger" in components else ""
     active = layout.releases / (version + suffix)
     if data["active_release"] != str(active):
         fail("invalid active release path")
@@ -181,8 +187,8 @@ def read_manifest(layout: Layout) -> dict:
         layout.current: "symlink",
         layout.registry: "file",
     }
-    allowed.update(dict.fromkeys(layout.links(components), "symlink"))
-    allowed.update(dict.fromkeys(layout.units(components), "file"))
+    allowed.update(dict.fromkeys(layout.links(components, schema), "symlink"))
+    allowed.update(dict.fromkeys(layout.units(components, schema), "file"))
     records = data["owned_artifacts"]
     if not isinstance(records, list):
         fail("invalid owned_artifacts")
@@ -200,7 +206,7 @@ def read_manifest(layout: Layout) -> dict:
             target = (
                 "releases/" + active.name
                 if path == layout.current
-                else layout.links(components)[path]
+                else layout.links(components, schema)[path]
             )
             if set(record) != {"path", "type", "target"} or record["target"] != target:
                 fail(f"invalid artifact target: {path}")
@@ -242,12 +248,17 @@ def check_ownership(
         else {layout.current: ""}
     )
     paths.update(layout.links(components))
+    if data:
+        paths.update(layout.links(data["components"], data["schema_version"]))
     for path, target in paths.items():
         if not os.path.lexists(path):
             continue
         if path not in old or not path.is_symlink() or os.readlink(path) != target:
             fail(f"unrelated or modified command/current link: {path}")
-    for path in layout.units(components):
+    units = layout.units(components)
+    if data:
+        units.update(layout.units(data["components"], data["schema_version"]))
+    for path in units:
         if path.with_name(path.name + ".d").exists():
             fail(f"unit drop-in requires operator review: {path}.d")
         if not os.path.lexists(path):
@@ -302,13 +313,11 @@ def record(path: Path) -> dict:
 def write_manifest(
     layout: Layout, version: str, checksum: str, retained: str, components: list[str]
 ) -> None:
-    suffix = "-with-trigger" if "trigger" in components else ""
-    release = layout.releases / (version + suffix)
+    release = layout.releases / version
     data = {
-        "schema_version": 2,
+        "schema_version": 3,
         "version": version,
         "source_digest": checksum,
-        "components": components,
         "prefix": str(layout.prefix),
         "active_release": str(release),
         "retained_release": retained,
@@ -345,16 +354,12 @@ def execute(argv: list[str]) -> str:
 def verify_environment(release: Path, version: str, components: list[str], source: Path) -> None:
     if Path(sys.prefix) != release / "venv":
         fail("candidate interpreter has incorrect virtual environment prefix")
-    lock = source / (
-        "requirements-trigger.lock" if "trigger" in components else "requirements.lock"
-    )
+    lock = source / "requirements.lock"
     expected = {
         normalize(n): v
         for n, v in re.findall(r"^([\w.-]+)==([^\s\\]+)", lock.read_text(), re.MULTILINE)
     }
     expected["vaultkeep"] = version
-    if "trigger" in components:
-        expected["vaultkeep-trigger"] = version
     installed = {
         normalize(d.metadata["Name"]): d.version for d in importlib.metadata.distributions()
     }
@@ -365,20 +370,10 @@ def verify_environment(release: Path, version: str, components: list[str], sourc
     for module in ("vaultkeep", "pydantic", "pathspec", "ruamel.yaml"):
         importlib.import_module(module)
     commands = ["vaultkeep"]
-    if "trigger" in components:
-        importlib.import_module("vaultkeep_trigger")
-        importlib.import_module("psutil")
-        from vaultkeep_trigger.version import REVIEWED_VAULTKEEP_VERSION, TRIGGER_VERSION
-
-        if (version, version) != (REVIEWED_VAULTKEEP_VERSION, TRIGGER_VERSION):
-            fail("Trigger version/contract constants disagree with package metadata")
-        commands.append("vaultkeep-trigger")
-    elif (
-        (release / "venv/bin/vaultkeep-trigger").exists()
-        or importlib.util.find_spec("vaultkeep_trigger")
-        or importlib.util.find_spec("psutil")
-    ):
-        fail("unselected Trigger package, dependency or entry point in core environment")
+    importlib.import_module("vaultkeep.trigger")
+    importlib.import_module("psutil")
+    if (release / "venv/bin/vaultkeep-trigger").exists():
+        fail("obsolete standalone Trigger entry point in application environment")
     execute([sys.executable, "-m", "pip", "check"])
     for command in commands:
         executable = release / "venv/bin" / command
@@ -398,24 +393,7 @@ def verify_environment(release: Path, version: str, components: list[str], sourc
                 "--schema-only",
             ]
         )
-    if "trigger" in components:
-        text = (source / "components/trigger/examples/config.toml").read_text()
-        with tempfile.TemporaryDirectory(prefix="vaultkeep-example-") as directory:
-            example = Path(directory) / "config.toml"
-            example.write_text(
-                text.replace(
-                    'vaultkeep = "/usr/local/bin/vaultkeep"',
-                    "vaultkeep = " + json.dumps(str(release / "venv/bin/vaultkeep")),
-                )
-            )
-            execute(
-                [
-                    str(release / "venv/bin/vaultkeep-trigger"),
-                    "--config",
-                    str(example),
-                    "check-config",
-                ]
-            )
+    execute([str(release / "venv/bin/vaultkeep"), "trigger", "--help"])
 
 
 def normalize(name: str) -> str:
@@ -507,16 +485,30 @@ def properties(command: list[str], unit: str) -> dict[str, str]:
     return data
 
 
-def check_trigger_command(state: dict[str, str], unit: str, executable: Path, label: str) -> None:
+def check_trigger_command(
+    state: dict[str, str], unit: str, executable: Path, label: str, *, legacy: bool = False
+) -> None:
     value = state["ExecStart"]
     match = re.fullmatch(r"\{ path=(.+?) ; argv\[\]=(.+?) ; .*\}", value)
     if match is None or match[1] != str(executable):
         fail(f"{label}: unexpected ExecStart: {unit}")
     argv = shlex.split(match[2])
-    expected = [str(executable)]
-    if unit == "vaultkeep-trigger.service":
-        if len(argv) == 4 and argv[1] == "--config" and Path(argv[2]).is_absolute():
-            expected.extend(argv[1:3])
+    expected = [str(executable)] if legacy else [str(executable), "--user", "trigger"]
+    offset = len(expected)
+    if unit == "vaultkeep-trigger.service" or unit.startswith("vaultkeep-trigger@"):
+        if not legacy and (len(argv) < offset + 3 or argv[offset] != "--config"):
+            fail(f"{label}: unexpected ExecStart (monitor requires its job configuration): {unit}")
+        if (
+            len(argv) >= offset + 3
+            and argv[offset] == "--config"
+            and Path(argv[offset + 1]).is_absolute()
+        ):
+            expected.extend(argv[offset : offset + 2])
+            offset += 2
+        if not legacy:
+            while len(argv) > offset + 2 and argv[offset] == "--param" and "=" in argv[offset + 1]:
+                expected.extend(argv[offset : offset + 2])
+                offset += 2
         expected.append("monitor")
     else:
         expected.extend(["exec-worker", "%i" if "@." in unit else unit.split("@", 1)[1][:-8]])
@@ -531,11 +523,13 @@ def check_manager(
     uninstall: bool,
     trigger_bin: Path,
     validate_trigger: bool = True,
+    legacy_trigger: bool = False,
 ) -> None:
     patterns = [
         "vaultkeep@*.timer",
         "vaultkeep@*.service",
         "vaultkeep-trigger.service",
+        "vaultkeep-trigger@*.service",
         "vaultkeep-trigger-exec@*.service",
     ]
     output = execute(
@@ -579,13 +573,30 @@ def check_manager(
             and unit.startswith("vaultkeep-trigger")
             and state["LoadState"] == "loaded"
         ):
-            expected = Layout().monitor if unit == "vaultkeep-trigger.service" else Layout().worker
-            if state["FragmentPath"] != str(expected):
-                fail(f"{label}: migrate/review effective unit: {unit}")
+            if unit.startswith("vaultkeep-trigger@"):
+                fragment = Path(state["FragmentPath"])
+                marker = f"# Managed by Vaultkeep: {unit}\n"
+                if (
+                    not fragment.is_absolute()
+                    or fragment.name != unit
+                    or not fragment.is_file()
+                    or not fragment.read_text().startswith(marker)
+                ):
+                    fail(f"{label}: migrate/review effective monitor unit: {unit}")
+                if state.get("DropInPaths"):
+                    fail(f"{label}: monitor overrides require review: {unit}")
+            else:
+                expected = (
+                    Layout().monitor if unit == "vaultkeep-trigger.service" else Layout().worker
+                )
+                if state["FragmentPath"] != str(expected) or (
+                    unit == "vaultkeep-trigger.service" and not legacy_trigger
+                ):
+                    fail(f"{label}: migrate/review effective unit: {unit}")
             # A monitor config override is supported. A worker always uses its
             # frozen request and must keep the shared command without --config.
-            check_trigger_command(state, unit, trigger_bin, label)
-            expected_type = "simple" if unit == "vaultkeep-trigger.service" else "oneshot"
+            check_trigger_command(state, unit, trigger_bin, label, legacy=legacy_trigger)
+            expected_type = "oneshot" if unit.startswith("vaultkeep-trigger-exec@") else "simple"
             expected_restart = "on-failure" if expected_type == "simple" else "no"
             if (
                 state.get("Type") != expected_type
@@ -625,7 +636,7 @@ def relevant_unit(name: str) -> bool:
     return bool(
         re.fullmatch(
             r"vaultkeep@.+\.(?:service|timer)|vaultkeep-trigger\.service|"
-            r"vaultkeep-trigger-exec@.*\.service",
+            r"vaultkeep-trigger@.+\.service|vaultkeep-trigger-exec@.*\.service",
             name,
         )
     )
@@ -647,11 +658,15 @@ def check_lock(path: Path, label: str) -> None:
 
 
 def activity(layout: Layout, include_users: bool, uninstall: bool, components: list[str]) -> None:
+    data = read_manifest(layout) if layout.manifest.exists() else None
+    legacy = bool(data and data["schema_version"] < 3 and "trigger" in data["components"])
+    executable = layout.trigger_bin if legacy else layout.bin
     check_manager(
         ["systemctl"],
         "system manager",
         uninstall=uninstall,
-        trigger_bin=layout.trigger_bin,
+        trigger_bin=executable,
+        legacy_trigger=legacy,
         validate_trigger="trigger" in components,
     )
     managers = user_managers() if include_users else []
@@ -660,12 +675,15 @@ def activity(layout: Layout, include_users: bool, uninstall: bool, components: l
             manager_command(account, uid),
             account,
             uninstall=uninstall,
-            trigger_bin=layout.trigger_bin,
+            trigger_bin=executable,
+            legacy_trigger=legacy,
             validate_trigger="trigger" in components,
         )
         runtime = Path(f"/run/user/{uid}")
         home = Path(pwd.getpwuid(uid).pw_dir)
         check_lock(runtime / "vaultkeep-trigger/monitor.lock", account)
+        for path in (runtime / "vaultkeep-trigger/jobs").glob("*/monitor.lock"):
+            check_lock(path, account)
         for root in (runtime / "vaultkeep/locks", home / ".cache/vaultkeep/locks"):
             for path in root.glob("*.lock"):
                 check_lock(path, account)
@@ -686,7 +704,11 @@ def activity(layout: Layout, include_users: bool, uninstall: bool, components: l
             words = [os.fsdecode(word) for word in argv if word]
             names = [Path(word).name for word in words[:3]]
             if (
-                ("vaultkeep-trigger" in names or "vaultkeep_trigger" in names)
+                (
+                    "vaultkeep-trigger" in names
+                    or "vaultkeep_trigger" in names
+                    or "vaultkeep" in names
+                )
                 and ("monitor" in words or "exec-worker" in words)
             ) or ("vaultkeep" in names and any(w in words for w in ("run", "prune", "verify"))):
                 fail(f"foreground backup/monitor detected: PID {directory.name}")

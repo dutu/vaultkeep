@@ -21,7 +21,7 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **Core archive/configuration contracts remain schema 1. Release 0.2.0 adds the separately packaged optional Trigger component; external Debian release execution remains required.**
+Document status: **Core archive/configuration contracts remain schema 1. Shutdown Trigger is an optional per-job feature within the unified package; external Debian release execution remains required.**
 
 Specification revision: **2026-10-19**.
 
@@ -50,7 +50,7 @@ Future enhancements, excluded from v1:
 - encrypted-backup password rotation within an existing job and destination namespace;
 - support for package managers or operating systems beyond Debian.
 
-Core backup behavior remains unchanged in 0.2.0. The optional integration is specified in [Trigger integration](../plans/trigger-integration-0.2.0.md) and [Trigger design](trigger.md).
+Core backup behavior remains unchanged by shutdown triggering. The integration is specified in [Trigger integration](../plans/trigger-integration.md) and [Trigger design](trigger.md).
 
 ## 1.2 Capability status
 
@@ -69,8 +69,8 @@ Core backup behavior remains unchanged in 0.2.0. The optional integration is spe
 | Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
 | Systemd scheduling | v1 | Implemented |
-| Installer, atomic updates, rollback, and uninstallation | 0.2.0 | Component-aware deployment implemented; live Debian release validation remains required |
-| Optional Trigger distribution and shared user units | 0.2.0 | Integrated; per-instance process/writer and live-service deployment checks remain required |
+| Installer, atomic updates, rollback, and uninstallation | Current | Unified deployment with legacy manifest support; live Debian release validation remains required |
+| Optional shutdown triggering | Current | Built into the main package with per-job YAML, services and recovery state; app/writer and live-service validation remain required |
 
 Every change that implements, removes, or reclassifies a capability must update this table in the same commit.
 
@@ -218,7 +218,7 @@ Reasons:
 
 Bash is appropriate only for installation and small operational wrappers.
 
-Release 0.2.0 uses Debian 13's default Python 3.13. Both distributions declare
+Vaultkeep uses Debian 13's default Python 3.13. The unified distribution declares
 `requires-python = ">=3.13"`; CI uses Python 3.13. This ends Debian 12/Python 3.11
 support for new installs and updates. Existing 0.1.0 deployments must upgrade the OS
 before updating. The CLI uses standard-library `argparse`.
@@ -233,7 +233,7 @@ pathspec >=0.12.1,<1
 
 The `pathspec` upper bound preserves the v1 GitWildMatch contract. The `ruamel.yaml` upper bound preserves the reviewed 0.18 safe-loader API and pure-Python behavior. Hatchling `>=1.26,<2` is the build backend.
 
-Every release contains a fully resolved `requirements.lock` with hashes for every supported Python and machine-architecture combination. The installer selects that lock or `requirements-trigger.lock` for a combined deployment, installs binary dependencies with hash verification, then installs each selected local project with `--no-deps --no-build-isolation`. The combined input constrains core pins and adds `psutil>=6.1,<8`. A dependency update requires a new Vaultkeep version and the complete release test matrix.
+Every release contains a fully resolved `requirements.lock` with hashes for every supported Python and machine-architecture combination. The installer uses this single lock, including `psutil>=6.1,<8`, installs binary dependencies with hash verification, then installs the root project with `--no-deps --no-build-isolation`. A dependency update requires a new Vaultkeep version and the complete release test matrix.
 
 Development uses Ruff for linting and formatting, mypy in strict mode for static type checking, and pytest with pytest-cov for tests and coverage reporting. Development dependencies are locked separately in `requirements-dev.lock` and are never installed by the production installer.
 
@@ -2033,13 +2033,13 @@ The example is safe by default:
 Repository file:
 
 ```text
-examples/vaultkeep-job.yaml.example
+examples/vaultkeep-schedule.yaml.example
 ```
 
 Installed path:
 
 ```text
-/etc/vaultkeep/jobs/vaultkeep-job.yaml.example
+/etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example
 ```
 
 Example:
@@ -2195,30 +2195,28 @@ interpreter is provisioned. Apt package changes are outside rollback.
 
 ## 25.1 Installation paths
 
-Core uses `/opt/vaultkeep/releases/<version>`; combined deployments use
-`/opt/vaultkeep/releases/<version>-with-trigger`. Both distributions report the same
-package version. Every deployment contains `src`, one fresh `venv`, and
-`deployment.json`. `/opt/vaultkeep/current` is the single activation pointer.
+All installations use `/opt/vaultkeep/releases/<version>` and contain `src`, one
+fresh `venv`, and `deployment.json`. `/opt/vaultkeep/current` is the activation pointer;
+`/usr/local/bin/vaultkeep` points through `current/venv/bin`. Scheduling and Trigger
+share one package version and entry point.
 
-`/usr/local/bin/vaultkeep` and the optional `/usr/local/bin/vaultkeep-trigger` point
-through `current/venv/bin`. Core templates stay under `/etc/systemd/system`; optional
-Trigger templates use `/etc/systemd/user`. Core config/state/temp/registry remain
-under `/etc/vaultkeep` and `/var/lib/vaultkeep`. Trigger's user config, fixed state,
-and runtime paths are unchanged; see [Trigger design](trigger.md).
+Core system templates stay under `/etc/systemd/system`. The shared Trigger worker
+template uses `/etc/systemd/user`; monitor services are generated explicitly per job
+in the owning user's unit directory. The job YAML contains the optional trigger
+settings, mutually exclusive with scheduling. See [Trigger design](trigger.md).
 
 ## 25.2 Installer responsibilities
 
 The installer validates the host, source, schema-specific manifest, version/source
-policy, additive component selection and artifact ownership. It locks installer
+policy and artifact ownership. It locks installer
 transactions and checks that relevant schedules are paused and work is drained.
 It never starts/stops/enables/disables schedules during install/update.
 
-The selected hash-locked dependencies install with `--require-hashes --only-binary=:all:`.
-Selected local projects install with `--no-deps --no-build-isolation`. Staged checks
-cover versions, selected/absent distributions and imports, pip check, script paths,
-core schema-only examples and a temporary disabled Trigger example pointing at the
-candidate core. Synthetic systemd copies validate units without starting services.
-After relocation, every selected package is reinstalled to repair console scripts.
+The hash-locked dependencies install with `--require-hashes --only-binary=:all:`.
+The root project installs with `--no-deps --no-build-isolation`. Staged checks
+cover the application version, distribution inventory, imports, pip check, script
+paths, all job examples and the built-in Trigger CLI. Synthetic systemd copies validate units without starting services.
+After relocation, the root package is reinstalled to repair console scripts.
 
 Synchronizing source excludes Git/editor metadata, venvs, caches, build output and
 local environment/agent/credential directories. The input checkout is never changed.
@@ -2228,38 +2226,38 @@ inactive; actual jobs and credentials require explicit operator validation.
 ## 25.3 Installer command modes
 
 ```sh
-sudo ./install.sh install [--with-trigger] [--dry-run]
-sudo ./install.sh update [--with-trigger] [--dry-run]
+sudo ./install.sh install [--dry-run]
+sudo ./install.sh update [--dry-run]
 sudo /opt/vaultkeep/current/src/install.sh uninstall [--dry-run] [--purge]
 ```
 
-`--with-trigger` adds the component; omitting it preserves persisted selection. A
-same-version addition stages a complete second deployment. `update` requires a
+All installations include Trigger support without enabling monitoring. `update` requires a
 manifest and accepts a newer version or an identical version/source; changed source
 at the same version requires `install`. `install` allows a same-version source
 refresh but refuses a different installed version. Downgrades are refused.
 
-Exact version/source/component matches verify the environment; damage triggers a
+Exact version/source matches verify the environment; damage triggers a
 protected complete rebuild. Missing owned links/templates reconcile after ownership
 and quiescence checks. A healthy match makes no deployment changes. Modified units,
 unrelated links, masks and conflicting overrides require explicit operator resolution.
 Inventory checks do not establish arbitrary installed-file integrity.
 
-Dry runs inspect metadata/ownership and print selections, dependencies, paths,
+Dry runs inspect metadata/ownership and print dependencies, paths,
 activity checks, retained release and preserved data without apt, writes, locks,
 builds, manager reloads or service actions. They are not a live quiescence guarantee.
 
 ## 25.4 Installation ownership manifest
 
-`install-manifest.json` records version/source, actual active/retained paths, fixed
-core paths and typed `owned_artifacts`. Schema 2 adds normalized `components`, either
-`["core"]` or `["core", "trigger"]`, and records the optional command/user templates.
-Schema 1 is explicitly core-only. Per-release `deployment.json` also records selection.
-Unknown schemas, fields, components, duplicate or missing artifacts, unsafe paths,
-unconfined release paths, inconsistent metadata and invalid artifact types/targets
-are errors. Manifest contents cannot extend the compiled allowlist or authorize
-home-directory deletion. Unit content hashes and command targets detect ownership
-conflicts. The core timer registry remains a separate core-managed file.
+`install-manifest.json` records version/source, active/retained paths, fixed paths
+and typed owned artifacts. Schema 3 describes the unified package without component
+selection. Readers retain strict validation for schema 1 (legacy core) and schema 2
+(legacy core or combined deployments), including their original release suffixes,
+command links and templates. A migration replaces these artifacts transactionally;
+old metadata never expands the deletion allowlist into user homes.
+
+Unknown fields/schemas, duplicate or missing artifacts, unsafe paths, inconsistent
+metadata and invalid artifact targets are refused. Hashes and exact link targets
+detect local ownership conflicts. The timer registry remains a separate managed file.
 
 ## 25.5 Update and rollback safety
 
@@ -2278,7 +2276,7 @@ release. Exact-match reconciliation does not rotate retention. There is no relea
 garbage collector.
 
 After relocation and command repair, install templates/links, switch `current`, write
-schema-2 metadata, reload the system and applicable running user managers, and
+schema-3 metadata, reload the system and applicable running user managers, and
 perform read-only post-activation checks. Commit only after those checks succeed.
 ERR exits and handled INT/TERM/HUP clean staging or restore snapshots and the replaced
 release. Restoration attempts continue after individual errors; failed recovery
@@ -2289,15 +2287,15 @@ loss is not an atomic rollback guarantee. Apt changes cannot be rolled back here
 ## 25.6 Config preservation
 
 Existing YAML/TOML, secrets, user state and archives are never rewritten by the
-installer. Packaged `.example` files may be refreshed. Trigger's disabled TOML example
-stays in the release; copying it to a user's config is an explicit operation.
+installer. Packaged `.example` files may be refreshed. Complete disabled YAML examples for scheduling and the three supported apps ship
+with the release; copying one into a user's configuration is explicit.
 Enablement links, user overrides and persistent timer timestamps remain in place.
 After validation, operators resume only previously active schedules; calendar timers
 may legitimately catch up. The installer directly replays no completed backup attempt.
 
 ## 25.7 Uninstallation
 
-Whole-deployment uninstall validates schema-1/schema-2 ownership, requires paused and
+Whole-deployment uninstall validates schema-1/schema-2/schema-3 ownership, requires paused and
 disabled schedules and drained services/workers/jobs, repeats live checks, removes
 selected managed command links/shared templates and reloads managers, then removes
 the managed prefix, core temp and registry. It does not recursively edit user homes,
@@ -2313,7 +2311,7 @@ Operators must review offline accounts' enablement before a later reinstall.
 
 ## 26. Repository structure
 
-Repository layout (core and optional Trigger):
+Repository layout (one package with optional Trigger behavior):
 
 ```text
 vaultkeep/
@@ -2330,21 +2328,22 @@ vaultkeep/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
-├── components/
-│   └── trigger/                 # independent package, tests, examples and units
-├── requirements-trigger.in
-├── requirements-trigger.lock
 ├── src/
-│   └── vaultkeep/
+│   └── vaultkeep/              # includes trigger/
 ├── tests/
 │   ├── unit/
 │   ├── integration/
+│   ├── trigger/
 │   └── fixtures/
 ├── examples/
-│   └── vaultkeep-job.yaml.example
+│   ├── vaultkeep-schedule.yaml.example
+│   ├── electrum-trigger.yaml.example
+│   ├── bisq-trigger.yaml.example
+│   └── wasabi-trigger.yaml.example
 ├── systemd/
 │   ├── vaultkeep@.service
-│   └── vaultkeep@.timer
+│   ├── vaultkeep@.timer
+│   └── vaultkeep-trigger-exec@.service
 ├── scripts/
 └── docs/
     └── design/
@@ -2362,7 +2361,7 @@ Use `pytest`.
 
 Testing must mirror the modular design.
 
-Every continuous-integration run executes Ruff format/lint, core strict mypy, root pytest including installed cross-package tests, Trigger pytest in a separate process, and distribution build/isolation checks. See [development/testing](../development/testing.md). Release integration gates remain additional to these per-commit checks.
+Every continuous-integration run executes Ruff format/lint, core strict mypy, one root pytest suite including Trigger and installed-worker tests, and unified distribution checks. See [development/testing](../development/testing.md). Release integration gates remain additional to these per-commit checks.
 
 Core test areas:
 

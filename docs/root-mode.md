@@ -49,7 +49,7 @@ Copy an installed example to a real job file:
 
 ```bash
 sudo cp \
-  /etc/vaultkeep/jobs/vaultkeep-job.yaml.example \
+  /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example \
   /etc/vaultkeep/jobs/app.yaml
 ```
 
@@ -88,6 +88,12 @@ sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune
 ```
 
 ## Configure root-mode automatic backups
+
+Root-mode automatic backups use systemd timers. Shutdown Trigger is user-mode only
+and rejects root execution. To use it, create a user-mode job and run
+`vaultkeep --user trigger` as the application owner, without sudo. See the
+[Trigger guide](../README.md#optional-trigger). Root-mode scheduled jobs and
+user-mode Trigger jobs can run independently on the same host.
 
 Enable scheduling in the job:
 

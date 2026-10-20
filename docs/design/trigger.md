@@ -25,26 +25,26 @@ validation/development work.
 
 ## Objective and boundaries
 
-The separately packaged Python 3.13+ application monitors independently configured Electrum,
+The built-in Python 3.13+ Trigger feature monitors configured Electrum,
 Bisq desktop/daemon, and Wasabi GUI/daemon instances and invokes their VaultKeep jobs
 after confirmed process disappearance. Application-specific enablement still depends
 on installed process-model validation.
 
-Use a `src/vaultkeep_trigger` package, `pyproject.toml`, standard-library facilities where practical, and `psutil` for process inspection. One foreground monitor owns lifecycle and instance state. Independently supervised workers execute backups and write receipts. Keep the monitoring loop responsive while workers, systemctl commands, and notification deliveries are pending.
+Use `src/vaultkeep/trigger`, the root package metadata and dependency lock, standard-library facilities where practical, and `psutil` for process inspection. Each job has its own foreground monitor, lock and recovery namespace. The job YAML contains its optional trigger settings; scheduling and shutdown triggering cannot both be enabled. Independently supervised workers execute backups and write receipts. Keep the monitoring loop responsive while workers, systemctl commands, and notification deliveries are pending.
 
 **Platform and scope.** Linux with a systemd user manager; user-mode VaultKeep only (`--user`), with no root operation, sudo, or privilege elevation. Each job covers the selected instance's reviewed source scope, including all related writer processes; offline operation only. Independent instances can back up concurrently, bounded by the number of enabled instances, with no global concurrency setting. Each instance permits one active attempt and one pending request.
 
 **Deployment requirement.** Enabled instances' jobs must use distinct effective destination roots and must not depend on shared mutable resources that require serialization. Account for runtime parameters and path aliases when reviewing destinations, and include external timers/direct runs in the review. This is a conservative v1 requirement, not a universal VaultKeep prohibition. Trigger does not parse job internals or enforce destination ownership/source scope through the current CLI.
 
-**Deferred.** Manual `run`, socket or manual spool submission, online backups, multi-instance jobs, live reload, global concurrency controls, conflict groups, per-instance notification overrides, and VaultKeep compromise-marking extensions. V1 provides no operator-initiated backup or explicit replay command for an uncertain request; manual review and direct VaultKeep operation remain operator actions.
+**Deferred.** Manual `run`, socket or manual spool submission, online backups, multi-instance jobs, live reload, global concurrency controls, conflict groups, and VaultKeep compromise-marking extensions. V1 provides no operator-initiated backup or explicit replay command for an uncertain request; manual review and direct VaultKeep operation remain operator actions.
 
-**Other non-goals.** Changes to wallet applications or their startup procedures; private VaultKeep imports; a backup engine or restore; credential duplication; a network API; Bisq 2, Windows, macOS, or non-systemd init. No VaultKeep source changes are planned. Document a public contract and scope before any later extension.
+**Other non-goals.** Changes to wallet applications or their startup procedures; private VaultKeep imports; a backup engine or restore; credential duplication; a network API; Bisq 2, Windows, macOS, or non-systemd init. The backup workflow remains behind the normal Vaultkeep CLI; process isolation and durable worker receipts are retained within the unified application.
 
 Operational procedures belong in the [user guide](../../README.md); remaining validation work belongs in the [implementation plan](../plans/trigger-validation.md).
 
 ## Verified integration findings
 
-The source-review baseline is 2026-10-13, with the CLI/validation/locking behavior rechecked locally during this documentation update. This is source evidence, not installed-deployment validation. The neighboring project was found at `../vaultkeep`. Its package uses `src/vaultkeep` and exposes the `vaultkeep` CLI entry point.
+The source-review baseline is 2026-10-13, with the CLI/validation/locking behavior rechecked locally during this documentation update. This is source evidence, not installed-deployment validation. The application uses `src/vaultkeep` and exposes the `vaultkeep` CLI entry point, including `vaultkeep --user trigger` for monitoring.
 
 | Area | Observed source behavior | Integration consequence |
 | --- | --- | --- |
@@ -87,9 +87,9 @@ Codes 4 (source), 8 (verification), and 9 (retention) from an earlier VaultKeep 
 
 VaultKeep resolves user-mode paths from the XDG environment: locks below `$XDG_RUNTIME_DIR/vaultkeep/locks` (or `${XDG_CACHE_HOME:-~/.cache}/vaultkeep/locks`), state below `${XDG_STATE_HOME:-~/.local/state}/vaultkeep`, and temporary workspaces below `${XDG_CACHE_HOME:-~/.cache}/vaultkeep`. Its lock directory therefore depends on the effective runtime/cache paths, and its job identity depends only on the canonical configuration path, the YAML job id, and the runtime parameters; `PATH` affects neither.
 
-Resolve Trigger's home from the operating system account record for its effective UID. Trigger's own fixed state root is `<account-home>/.local/state/vaultkeep-trigger`; neither `HOME` nor `XDG_STATE_HOME` overrides it.
+Resolve Trigger's home from the operating system account record for its effective UID. Trigger's own fixed state root is `<account-home>/.local/state/vaultkeep-trigger/jobs/<identity>`; neither `HOME` nor `XDG_STATE_HOME` overrides it.
 
-For the VaultKeep child, validate and snapshot an explicit environment: `HOME` set to account home, the user's own `XDG_RUNTIME_DIR` passed unmodified so VaultKeep's `vaultkeep/locks` namespace matches manual and timer-driven runs, `XDG_STATE_HOME` and `XDG_CACHE_HOME` using absolute values from the monitor's environment or account-home defaults, and the fixed `PATH=/usr/local/bin:/usr/bin:/bin`. `LANG` is copied when present. Trigger's own `<XDG_RUNTIME_DIR>/vaultkeep-trigger/` subdirectory holds only `monitor.lock` and is never passed as the child's `XDG_RUNTIME_DIR`. The runtime directory is required for `monitor.lock` and VaultKeep's preferred lock namespace. Fail closed if it cannot be resolved. Record these values in each request and pass the mapping explicitly to the VaultKeep subprocess, without inheriting arbitrary worker-unit variables. The absolute resolved VaultKeep executable is recorded in the request; do not resolve it through the worker's `PATH`.
+For the VaultKeep child, validate and snapshot an explicit environment: `HOME` set to account home, the user's own `XDG_RUNTIME_DIR` passed unmodified so VaultKeep's `vaultkeep/locks` namespace matches manual and timer-driven runs, `XDG_STATE_HOME` and `XDG_CACHE_HOME` using absolute values from the monitor's environment or account-home defaults, and the fixed `PATH=/usr/local/bin:/usr/bin:/bin`. `LANG` is copied when present. Trigger's own `<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<identity>/` subdirectory holds only `monitor.lock` and is never passed as the child's `XDG_RUNTIME_DIR`. The runtime directory is required for `monitor.lock` and VaultKeep's preferred lock namespace. Fail closed if it cannot be resolved. Record these values in each request and pass the mapping explicitly to the VaultKeep subprocess, without inheriting arbitrary worker-unit variables. The absolute resolved VaultKeep executable is recorded in the request; do not resolve it through the worker's `PATH`.
 
 VaultKeep continues to honor the selected XDG paths even though Trigger's own state root is fixed. Manual and timer-driven VaultKeep runs must use the same HOME/runtime lock namespace to share its job lock. Trigger does not control those external runs.
 
@@ -101,7 +101,7 @@ The command shape is already supported:
 /absolute/path/vaultkeep --user --config /absolute/path/job.yaml [--param KEY=VALUE ...] run
 ```
 
-Construct an argument array without a shell. Basic integration requires no VaultKeep code change. If later evidence establishes a necessary extension, document its public contract and scope before changing the neighboring project. JSON output is optional, not a prerequisite.
+Construct an argument array without a shell. Keep backup execution behind this CLI boundary so worker lifetimes and result receipts remain independent of monitor state. JSON output is optional, not a prerequisite.
 
 ## Process-model validation
 
@@ -116,7 +116,7 @@ Each monitor tick first reconciles disabled/removed instances. For each enabled 
 
 ### Configuration and matchers
 
-The closed TOML schema, defaults, inheritance, path handling, and disabled-instance
+The closed job YAML schema, defaults, path handling, and disabled-trigger
 rules are specified in [configuration](../trigger/configuration.md). Strong identity,
 entrypoint forms, directory predicates, metadata races, and validation limitations
 are specified in [process detection](../trigger/process-detection.md). These references
@@ -135,7 +135,7 @@ separate implemented parser/matcher behavior from deployment requirements.
 
 ### Fixed state and durable ownership
 
-Resolve account home from the effective UID's operating system account record. All commands and workers use `<account-home>/.local/state/vaultkeep-trigger`; `HOME`, `XDG_STATE_HOME`, and configuration cannot relocate it. Runtime holds only `<XDG_RUNTIME_DIR>/vaultkeep-trigger/monitor.lock`.
+Resolve account home from the effective UID's operating system account record. All commands and workers use `<account-home>/.local/state/vaultkeep-trigger/jobs/<identity>`; `HOME`, `XDG_STATE_HOME`, and configuration cannot relocate it. Runtime holds only `<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<identity>/monitor.lock`.
 
 ```text
 <state-root>/
@@ -168,7 +168,7 @@ For each eligible pending request:
 1. Allocate a fresh attempt UUID and durably write its immutable request.
 2. Durably associate the attempt with the instance and clear only its matching pending request. Reconciliation adopts a request written before this association, preventing a second allocation for the same request.
 3. Durably write `launch.json` before the potentially irreversible start call.
-4. Submit `systemctl --user start --no-block vaultkeep-trigger-exec@<attempt-id>.service` without a shell. Submission success is not worker start or backup completion. The adapter classifies exit 0 as accepted, spawn failure and codes 4/5/6 as rejected, code 2 as an integration error, and other results as inconclusive. The monitor immediately persists/requeues classified rejections and retains inconclusive associations for receipt/unit/job reconciliation. Because systemctl can fail after queueing work, the design requires affirmative pre-queue rejection evidence; the current direct code mapping relies on deployment verification rather than a diagnostic check. A generic nonzero result followed by absent jobs/unit state alone never authorizes replay.
+4. Submit `systemctl --user start --no-block vaultkeep-trigger-exec@<identity>_<attempt-id>.service` without a shell. Submission success is not worker start or backup completion. The adapter classifies exit 0 as accepted, spawn failure and codes 4/5/6 as rejected, code 2 as an integration error, and other results as inconclusive. The monitor immediately persists/requeues classified rejections and retains inconclusive associations for receipt/unit/job reconciliation. Because systemctl can fail after queueing work, the design requires affirmative pre-queue rejection evidence; the current direct code mapping relies on deployment verification rather than a diagnostic check. A generic nonzero result followed by absent jobs/unit state alone never authorizes replay.
 5. Reconcile the worker's receipt, then release the instance's active slot once the worker and any queued start job have ended.
 
 Crash recovery must inspect all attempt records, including those not yet associated in instance state:
@@ -205,12 +205,12 @@ VaultKeep exit 10 records a deferred attempt. Retain its logical request for ret
 
 Ship an installation-resolved absolute Trigger console-script path in both unit files:
 
-- `vaultkeep-trigger.service`: foreground `monitor`, restart-on-failure, journald output, UMask 0077; installation records any selected `--config` path.
-- `vaultkeep-trigger-exec@.service`: `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`, UMask 0077, and `ExecStart=/usr/local/bin/vaultkeep-trigger exec-worker %i`. Keep it independent of the monitor's stop/restart lifecycle. No terminating execution runtime limit, socket activation, dynamically created units, or enablement of individual attempt instances.
+- `vaultkeep-trigger@<job-id>-<identity>.service`: foreground `vaultkeep --user trigger --config JOB.yaml monitor`, restart-on-failure, journald output, UMask 0077; explicit per-job service installation records the YAML path and parameters.
+- `vaultkeep-trigger-exec@.service`: `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`, UMask 0077, and `ExecStart=/usr/local/bin/vaultkeep --user trigger exec-worker %i`. Keep it independent of the monitor's stop/restart lifecycle. No terminating execution runtime limit, socket activation, dynamically created units, or enablement of individual attempt instances.
 
 Only the monitor submits worker starts. The worker reads and validates its request (including UUID and association checks), refuses to replay an existing terminal receipt, and performs the authoritative final process/identity recheck from the request snapshot. Reliable stopped evidence is required; running, ambiguous, or unavailable evidence yields a blocked receipt without invoking VaultKeep. The monitor then reconciles only the matching request.
 
-The worker invokes the recorded absolute VaultKeep executable with `--user --config <job> [--param KEY=VALUE ...] run` using an argv array, no shell, and the request's explicit validated environment. Capture the actual VaultKeep version immediately before invocation and include it in the receipt; compare it with the request/preflight version and the reviewed contract, logging a sanitized mismatch warning.
+The worker invokes the recorded absolute VaultKeep executable with `--user --config <job> [--param KEY=VALUE ...] run` using an argv array, no shell, and the request's explicit validated environment. Capture the actual VaultKeep version immediately before invocation and include it in the receipt; compare it with the request/preflight version and the running Vaultkeep distribution, logging a sanitized mismatch warning.
 
 Always drain stdout/stderr even after the approximately 256 KiB combined diagnostics cap. Independently retain a bounded trailing stdout line for exact `run: created` / `run: unchanged` parsing, including when the result arrives after the log cap. Earlier markers or stderr markers do not determine success. After a normal final-recheck or child outcome, the worker writes and fsyncs its receipt before exit. An unreadable/malformed request can fail before receipt creation; conservative monitor recovery then applies.
 
@@ -246,7 +246,7 @@ Surviving monitor restart differs from surviving logout, user-manager terminatio
 
 ### Preflight, CLI, notifications, and logging
 
-The package uses a `src/` layout and a `vaultkeep-trigger` console script. The
+The unified package uses a `src/` layout and the `vaultkeep --user trigger` subcommand. The
 [CLI reference](../trigger/cli.md) specifies public/internal commands, read-only validation,
 preflight limits, actual exit behavior, and persisted status. No manual submission
 protocol exists. The [notification reference](../trigger/notifications.md) specifies delivery,

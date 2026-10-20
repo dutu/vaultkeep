@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from vaultkeep.config import JobConfig, load_config
 from vaultkeep.config.models import HookConfig
 
-EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.example"
+EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-schedule.yaml.example"
 
 
 def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> None:

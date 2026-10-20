@@ -1,105 +1,103 @@
-# Command-line interface
+# Trigger commands
+
+Trigger is part of the `vaultkeep` command:
 
 ```text
-vaultkeep-trigger [--config PATH] {monitor,check-config,status}
-vaultkeep-trigger --version
-vaultkeep-trigger --help
-vaultkeep-trigger exec-worker <attempt-id>      # internal worker entry point
+vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] monitor
+vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] check-config [--runtime]
+vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] status
+vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] install
+vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] update
+vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] disable
+vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] remove
+vaultkeep --user trigger --version
 ```
 
-Place `--config PATH` before the subcommand. It selects configuration only for
-`monitor` and `check-config`; `status` and workers always use the fixed state root and
-do not read current TOML. `--version` prints the Trigger version without reading config.
-Use `vaultkeep-trigger check-config --help` for command-specific arguments.
+All operational Trigger commands require `--user` before `trigger` and must run as
+a non-root application owner. Root execution is rejected before configuration,
+state or services are accessed. `--help` and `--version` remain available to root.
+Root-mode backup jobs use manual execution or system timers.
 
-## `monitor`
+`--config` selects the complete YAML job. Options may also precede `trigger`, as in
+`vaultkeep --user --config JOB.yaml trigger status`. Trigger always uses the systemd
+user manager and user-mode backups. Use one `--config` selection, before or after
+`trigger`. Parameters override the job's `trigger.params` defaults.
 
-Runs the foreground monitor: acquire `monitor.lock`, run runtime preflight, reconcile
-existing attempts, then observe instances and dispatch eligible requests. `SIGTERM`/`SIGINT`
-stop monitoring without terminating running workers. Configuration is read once.
+## Monitoring and checks
 
-## Configuration checks
+`monitor` runs the selected job's foreground monitor. It requires an enabled trigger,
+acquires that job's lifetime lock, performs runtime preflight, reconciles saved
+attempts, and starts observation. SIGTERM/SIGINT stop the monitor while workers
+continue. Configuration is read once. A second monitor for the same identity is
+refused before backup validation runs. Different jobs have independent locks.
 
-The command is `check-config [--runtime]`: omit the flag for static/job schema checks.
+`check-config` validates the job YAML and process matcher and performs schema-only
+backup validation for an enabled trigger. Disabled triggers are structurally checked
+without probing their backup sources. `--runtime` additionally checks user-manager
+reachability, worker-template readiness, runtime/state parent permissions, and full
+backup validation. It does not start a service or initialize recovery state. Full
+backup validation may create and remove a temporary destination writability probe.
 
-Static checks validate the TOML, matchers, and the configured executable, then run
-`vaultkeep --user --config <job> [--param KEY=VALUE ...] validate --schema-only` for
-each **enabled** instance.
+Neither check certifies wallet process identity, writer coverage, matcher overlap,
+or destination independence. Version checks compare the configured invocation with
+the current Vaultkeep distribution; mismatches produce a warning. Validation/version
+calls have a 60-second timeout; systemd probes are bounded and synchronous.
 
-`--runtime` adds read-only `systemctl --user show-environment` reachability checks,
-installed template and executable checks, runtime-directory and state-location checks,
-and runs full `validate` per enabled instance. It also obtains `vaultkeep --version`,
-reports the baseline, and warns when it differs from the reviewed contract. It is the
-pre-restart gate. Validation never calls `run`, creates a probe
-unit, initializes state, or alters user services. Schema-only checks do not certify
-parameter-template semantics, source availability, destination writability, hooks, or
-backup consistency.
+## Service management
 
-The monitor acquires its lifetime lock before performing full runtime preflight or
-creating persistent state. It creates its runtime lock directory/file as needed.
-A second monitor is refused before any VaultKeep validation is spawned.
-The separate `check-config --runtime` command checks absent state/runtime subdirectories through existing
-parents without creating probes there. Template checks inspect installed unit
-files and their fixed `oneshot` worker command; the Trigger console script must exist
-at an executable absolute path. Full job validation creates, writes, atomically renames,
-and removes a temporary destination probe. It still skips hook-shell checks.
+`install` performs runtime checks, writes this job's user service, reloads the user
+manager, and explicitly enables/starts its monitor. `update` requires an existing
+managed service, refreshes its command and restarts the monitor. Both require
+`trigger.enabled: true`. Monitor units are named
+`vaultkeep-trigger@<job-id>-<identity>.service`; `status` prints the exact unit name.
 
-Runtime checks do not inspect wallet identities, identify related writers, detect
-cross-instance matcher overlap, or enforce destination independence. VaultKeep's
-reviewed contract version is `0.2.0`; a mismatch is warning-only. The version lookup
-can report `unknown` when it has no successful result; it does not certify compatibility.
-VaultKeep validation/version calls have a 60-second timeout per call. Systemctl calls
-have a 15-second timeout each and run synchronously, including during monitor
-reconciliation; delayed calls can delay polling. See [safety](consistency.md).
+`disable` stops and disables this monitor. `remove` also removes its generated unit.
+Both preserve recovery state and leave workers running. Drain workers and review
+outcomes before switching to scheduled execution. For maintenance pauses that should
+preserve enablement, use `systemctl --user stop <monitor-unit>` directly.
 
-For a custom configuration:
+Service management refuses an unrelated file, symlink, or locally overridden monitor
+unit rather than adopting or overwriting it. Job changes require explicit validation
+and `update`; there is no automatic reload. Identity changes require retiring the old
+service separately. See [service operation](service-operation.md).
 
-```sh
-vaultkeep-trigger --config /absolute/path/config.toml check-config
-vaultkeep-trigger --config /absolute/path/config.toml check-config --runtime
-```
+## Status
 
-Job validation failures normally exit 2. A child spawn failure or VaultKeep validation
-exit 2 is an integration error (Trigger exit 6). Captured validation output may include
-job-specific details; review it before sharing logs.
+`status` reads the selected job's recovery namespace. It prints its service name,
+state root, lock status, observation/update ages, pending and active attempt IDs,
+latest result, and review/block diagnostics. It creates no state or runtime files.
+It requires the YAML job so it can resolve the identity, even if the trigger is disabled.
 
-## `status [<instance-id>]`
-
-Read-only. Reports persisted instance state, the monitor's lock status, observation age,
-pending/active IDs, last attempt outcome, submission-rejection count, blocked reporting,
-and `review_required` warnings. It does not create
-or modify the runtime lock or any state. Ages are printed independently of lock
-ownership; there is no separate stale-state health flag or unhealthy exit code. An
-unknown instance is a selection error when some instances are recorded. With no
-recorded instances, the command prints `state: no recorded instances` and returns 0
-even when an instance ID was supplied. Disabled/removed instances' saved records
-remain visible; an enabled instance need not have a record before the monitor runs.
-
-Persisted per-instance state-error blocks are shown as `dispatch blocked` with their
-diagnostic reason. Corrupt records are reported while other readable instances are
-still displayed; any corrupt or incompatible record makes the status query exit 2.
+Exit 0 means a readable report, including when the last backup failed. It does not
+prove that monitoring is responsive or backups are healthy. Corrupt/incompatible
+records produce exit 2; review warnings and unknown outcomes require evidence review.
 
 ## Exit codes
 
 | Code | Meaning |
 | ---: | --- |
-| 0 | Command succeeded. Successful-execution vocabulary includes created, unchanged, and result_unknown. |
-| 1 | Reserved usage-error vocabulary; normal argparse errors currently exit 2. Unhandled Python errors can also exit 1. |
-| 2 | Argument/usage error, Trigger/job configuration or instance-selection error, or corrupt/incompatible state for `status`. |
-| 3 | Blocked or unsafe, including a required runtime manager/environment being unavailable. |
-| 4 | Internal worker reports backup failure or deferred lock contention. |
-| 5 | Reserved outcome-unknown vocabulary; monitor persists this outcome rather than exiting 5, and `status` reports it with exit 0. |
-| 6 | Integration error. |
+| 0 | Command succeeded or status was readable. |
+| 1 | Reserved usage-error vocabulary; an unhandled Python error may also exit 1. |
+| 2 | Argument, job/trigger configuration, selection, or recovery-state error. |
+| 3 | Blocked runtime prerequisite or failed service-manager action. |
+| 4 | Internal worker's backup failed or was deferred. |
+| 5 | Unknown-outcome vocabulary. |
+| 6 | Trigger/backup integration error. |
 
-`status` returns 0 when it successfully reports valid state, even when that state
-includes backup failures, warnings, or a down monitor. A second monitor refusing startup
-exits 3 with a message naming the lock owner. Original VaultKeep exit codes are stored
-separately in receipts and are never substituted for a Trigger exit code.
+Worker receipts preserve the actual backup exit code separately. These Trigger
+command codes do not change the normal backup CLI's exit codes.
 
-`monitor` returns 0 after an orderly signal-driven stop; individual backup failures
-do not stop it with a backup exit code. `exec-worker` is a systemd protocol command,
-not a supported manual retry mechanism. If a receipt already exists, it returns 0
-without rerunning, regardless of the original outcome. Invalid/unreadable requests
-can fail before writing a receipt; preserve evidence for [recovery](recovery.md).
+## Internal worker
 
-[User guide](../../README.md#configure-and-validate-trigger)
+The shared service template invokes:
+
+```text
+vaultkeep --user trigger exec-worker <identity>_<attempt-uuid>
+```
+
+The identity selects the job's recovery directory; the attempt selects its frozen
+request. Workers do not load current YAML or infer paths from arbitrary strings.
+Namespaces and UUIDs are validated before reading state. Do not start workers or
+enable individual attempt units manually.
+
+[User guide](../../README.md#optional-trigger)

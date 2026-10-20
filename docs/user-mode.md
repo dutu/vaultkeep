@@ -52,7 +52,7 @@ mkdir -p ~/.local/share/backups/app
 Optionally start from a packaged example, then edit `job.id`, sources, destination, and retention:
 
 ```bash
-cp /opt/vaultkeep/current/src/examples/vaultkeep-job.yaml.example \
+cp /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml.example \
   ~/.config/vaultkeep/jobs/app.yaml
 ```
 
@@ -146,6 +146,13 @@ vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml prune
 ```
 
 ## Configure user-mode automatic backups
+
+Each job may use a systemd user timer or a shutdown trigger. Scheduling and triggering
+cannot both be enabled for one job. Trigger supports user mode only: use
+`vaultkeep --user trigger` as the application owner, without sudo.
+Root-mode scheduled jobs can continue independently on the same host. Follow the
+[Trigger procedure](../README.md#configure-and-validate-trigger) for its app-specific
+YAML examples, validation and explicit per-job monitor activation.
 
 Enable scheduling in the job:
 

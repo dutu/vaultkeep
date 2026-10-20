@@ -1,9 +1,9 @@
 # Troubleshooting
 
 Use the executable and config path selected during [installation](../../README.md#install-the-application).
-The examples below assume `vaultkeep-trigger` is on your `PATH`; otherwise use the
+The examples below assume `vaultkeep` is on your `PATH`; otherwise use the
 absolute installed console-script path. For nondefault config, put `--config PATH`
-before `check-config` or `monitor`. `status` does not read configuration.
+before `check-config`, `monitor`, or `status`. The job YAML selects its recovery namespace.
 
 ## Installer reports `inconclusive unit properties`
 
@@ -11,7 +11,7 @@ Installer failures are written to stderr with an explicit `ERROR:` prefix, shown
 in red on terminals. Redirected logs stay plain text. Set `NO_COLOR=1` to disable
 color; terminals with `TERM=dumb` also use plain text.
 
-When adding Trigger to a core-only installation, the user manager can report the
+Before the worker template has been installed, the user manager can report the
 worker instance as `not-found`, `inactive`, and `dead` without an `ExecStart`
 property. This is normal before Trigger's shared units are installed. The corrected
 installer accepts that confirmed absence; it still requires command properties for
@@ -25,7 +25,7 @@ systemctl --user show vaultkeep-trigger-exec@installer-check.service --all --no-
 ```
 
 If an older installer refuses that absent-unit response, use the corrected checkout
-and repeat `sudo ./install.sh install --with-trigger`. This preflight refusal leaves
+and repeat `sudo ./install.sh install`. This preflight refusal leaves
 the existing core deployment active; no unit or state cleanup is needed. Other
 responses, especially active work or an unreachable user manager, require resolving
 the reported condition before retrying.
@@ -33,9 +33,9 @@ the reported condition before retrying.
 ## First checks
 
 ```sh
-systemctl --user status --no-pager vaultkeep-trigger.service
-journalctl --user -u vaultkeep-trigger.service -n 100 --no-pager
-vaultkeep-trigger status
+systemctl --user status --no-pager 'vaultkeep-trigger@<job-id>-<identity>.service'
+journalctl --user -u 'vaultkeep-trigger@<job-id>-<identity>.service' -n 100 --no-pager
+vaultkeep --user trigger --config /absolute/path/job.yaml status
 systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
 systemctl --user list-jobs --no-pager
 ```
@@ -63,7 +63,7 @@ namespace depends on the runtime directory.
 
 ```sh
 systemctl --user is-system-running
-systemctl --user cat vaultkeep-trigger.service vaultkeep-trigger-exec@.service
+systemctl --user cat 'vaultkeep-trigger@<job-id>-<identity>.service' vaultkeep-trigger-exec@.service
 test -n "$XDG_RUNTIME_DIR" && test -d "$XDG_RUNTIME_DIR" && test -O "$XDG_RUNTIME_DIR"
 ```
 
@@ -104,8 +104,7 @@ running before its shutdown. Starting the monitor while an app is already stoppe
 creates no request. An `ambiguous` or `inspection_unavailable` observation blocks
 automatic dispatch — see [process detection](process-detection.md).
 There is no directory-default inference or built-in writer discovery. Config checks
-cannot turn an illustrative matcher into a verified preset. A global poll interval
-also limits how quickly per-instance polls occur; service probes can add delays.
+cannot turn an illustrative matcher into a verified preset. Each job uses its own poll interval; synchronous service probes can add delays.
 
 ## A backup is "blocked"
 
@@ -136,7 +135,7 @@ dedicated status reason. See [retention](service-operation.md#internal-constants
 
 ## Notifications do not appear
 
-A user service may lack `DBUS_SESSION_BUS_ADDRESS`. Check global notification
+A user service may lack `DBUS_SESSION_BUS_ADDRESS`. Check this job's notification
 enablement, the configured command, and the graphical session. The notifier silently
 ignores delivery errors and does not log success/failure. See
 [session setup](notifications.md#session-bus).

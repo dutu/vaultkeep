@@ -39,7 +39,7 @@ jobs:
           -r requirements-dev.lock
 
       - name: Install Vaultkeep
-        run: python -m pip install --no-deps --no-build-isolation --editable . --editable components/trigger
+        run: python -m pip install --no-deps --no-build-isolation --editable .
 
       - name: Check formatting
         run: ruff format --check .
@@ -53,13 +53,9 @@ jobs:
       - name: Prepare offline installer test dependencies
         run: >-
           python -m pip download --require-hashes --only-binary=:all:
-          -r requirements-trigger.lock -d /tmp/vaultkeep-wheelhouse
+          -r requirements.lock -d /tmp/vaultkeep-wheelhouse
 
-      - name: Test core and installed contract
-        run: pytest -vv
-
-      - name: Test Trigger separately
-        working-directory: components/trigger
+      - name: Test jobs, triggers and installed contract
         run: pytest -vv
 
       - name: Build and verify distributions

@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 JobId = Annotated[
@@ -98,6 +106,105 @@ class ScheduleConfig(StrictConfigModel):
     persistent: bool = True
 
 
+TriggerSeconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+
+
+class TriggerEntrypointConfig(StrictConfigModel):
+    """Application entrypoint used as strong process identity."""
+
+    kind: Literal["script", "jar", "java_main"]
+    value: NonEmptyString
+
+    @model_validator(mode="after")
+    def _absolute_entrypoint(self) -> Self:
+        if self.kind != "java_main" and not self.value.startswith(("/", "~/")):
+            raise ValueError("script and jar entrypoints must be absolute paths or start with ~/")
+        return self
+
+
+class TriggerMatcherConfig(StrictConfigModel):
+    """Strong application identity and optional supporting process predicates."""
+
+    entrypoint: TriggerEntrypointConfig
+    exe_realpath: NonEmptyString | None = None
+    argv_tokens: list[Annotated[str, StringConstraints(min_length=1, max_length=4096)]] = Field(
+        default_factory=list
+    )
+    cmdline_regex: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
+    env_eq: dict[NonEmptyString, NonEmptyString] = Field(default_factory=dict)
+
+    @field_validator("exe_realpath")
+    @classmethod
+    def _absolute_executable(cls, value: str | None) -> str | None:
+        if value is not None and not value.startswith(("/", "~/")):
+            raise ValueError("exe_realpath must be an absolute path or start with ~/")
+        return value
+
+    @field_validator("cmdline_regex")
+    @classmethod
+    def _valid_regex(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                re.compile(value)
+            except re.error as error:
+                raise ValueError(f"invalid process regex: {error}") from error
+        return value
+
+
+class TriggerNotificationsConfig(StrictConfigModel):
+    """Best-effort desktop notifications for one triggered job."""
+
+    enabled: bool = False
+    command: NonEmptyString = "notify-send"
+    timeout_ms: Annotated[int, Field(gt=0)] = 5000
+
+
+class TriggerConfig(StrictConfigModel):
+    """Optional application shutdown trigger for this job."""
+
+    enabled: bool = False
+    app: Literal["electrum", "bisq", "wasabi"] | None = None
+    data_dir: NonEmptyString | None = None
+    matcher: TriggerMatcherConfig | None = None
+    poll_seconds: TriggerSeconds = 2.0
+    confirm_seconds: TriggerSeconds = 5.0
+    deadline_seconds: TriggerSeconds | None = None
+    params: dict[str, str] = Field(default_factory=dict)
+    notifications: TriggerNotificationsConfig = Field(default_factory=TriggerNotificationsConfig)
+
+    @field_validator("data_dir")
+    @classmethod
+    def _absolute_data_dir(cls, value: str | None) -> str | None:
+        if value is not None and not (value == "~" or value.startswith(("/", "~/"))):
+            raise ValueError("data_dir must be an absolute path or start with ~/")
+        return value
+
+    @field_validator("params")
+    @classmethod
+    def _valid_params(cls, value: dict[str, str]) -> dict[str, str]:
+        from vaultkeep.config.runtime import parse_runtime_parameters
+        from vaultkeep.errors import ConfigurationError
+
+        try:
+            return parse_runtime_parameters([f"{key}={item}" for key, item in value.items()])
+        except ConfigurationError as error:
+            raise ValueError(str(error)) from error
+
+    @model_validator(mode="after")
+    def _valid_trigger(self) -> Self:
+        if self.enabled and (self.app is None or self.data_dir is None or self.matcher is None):
+            raise ValueError("enabled triggers require app, data_dir, and matcher.entrypoint")
+        if self.matcher is not None:
+            allowed = {"electrum": {"ELECTRUMDIR"}, "wasabi": {"WASABI_DATADIR"}, "bisq": set()}
+            unknown = set(self.matcher.env_eq) - allowed.get(self.app or "", set())
+            if unknown:
+                raise ValueError(
+                    "trigger.matcher.env_eq contains unsupported keys: "
+                    + ", ".join(sorted(unknown))
+                )
+        return self
+
+
 class HookConfig(StrictConfigModel):
     """One shell lifecycle-hook command."""
 
@@ -136,5 +243,12 @@ class JobConfig(StrictConfigModel):
     encryption: EncryptionConfig
     retention: RetentionConfig
     schedule: ScheduleConfig
+    trigger: TriggerConfig = Field(default_factory=TriggerConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)
     logging: LoggingConfig
+
+    @model_validator(mode="after")
+    def _exclusive_automatic_execution(self) -> Self:
+        if self.schedule.enabled and self.trigger.enabled:
+            raise ValueError("schedule.enabled and trigger.enabled are mutually exclusive")
+        return self

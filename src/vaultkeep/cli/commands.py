@@ -41,6 +41,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(installed_version())
         return 0
 
+    if namespace.command == "trigger":
+        from vaultkeep.trigger.cli import run
+
+        return run(namespace, parser)
+
     if namespace.command is None:
         parser.error("a command is required")
     if namespace.command != "timers" and namespace.config is None:

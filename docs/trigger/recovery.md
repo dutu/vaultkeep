@@ -115,7 +115,7 @@ deployment assumption and a remaining validation gap, not a diagnostic proof eng
 
 ## Operator review and repair
 
-1. Inspect `vaultkeep-trigger status`, the monitor journal, the selected worker unit/job,
+1. Inspect `vaultkeep --user trigger --config JOB.yaml status`, the monitor journal, the selected worker unit/job,
    and private attempt records. A stopped monitor is not evidence that its workers
    stopped. If the user manager is unreachable, retain the active association and
    wait for reliable evidence rather than assuming absence.

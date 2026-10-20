@@ -1,0 +1,54 @@
+# Bisq shutdown-triggered backup example.
+# User mode only: run vaultkeep --user as the application owner, without sudo.
+# Copy to your user jobs directory as bisq-main.yaml; replace every example path.
+# Confirm the process identity, data-directory identity and all related writers
+# against the installed application before enabling this trigger.
+# Bisq directory identity is not resolvable from argv alone; leave it disabled
+# unless a reliable identity can be established. See docs/trigger/process-detection.md.
+config_version: 1
+job:
+  id: bisq-main
+sources:
+  - path: /home/user/.local/share/Bisq
+    archive_path_mode: prefix
+    archive_prefix: bisq
+source_options:
+  follow_symlinks: false
+  cross_filesystems: false
+  ignore_missing: false
+destination:
+  root: /mnt/backups/bisq-main
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+archive:
+  format: tar.zst
+  compression_level: 6
+encryption:
+  mode: none
+retention:
+  hourly: 24
+  daily: 7
+  weekly: 8
+  monthly: 12
+  yearly: 3
+schedule:
+  enabled: false
+trigger:
+  enabled: false
+  app: bisq
+  data_dir: /home/user/.local/share/Bisq
+  matcher:
+    entrypoint:
+      kind: java_main
+      value: bisq.desktop.app.BisqAppMain
+    argv_tokens: []
+  poll_seconds: 2
+  confirm_seconds: 5
+  # Optional advisory deadline; never terminates a backup.
+  # deadline_seconds: 3600
+  notifications:
+    enabled: false
+    command: notify-send
+    timeout_ms: 5000
+logging:
+  level: info
+  include_command_output: false

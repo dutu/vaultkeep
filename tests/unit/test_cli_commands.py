@@ -14,7 +14,7 @@ from vaultkeep.config import JobConfig
 from vaultkeep.destination import finalize as finalize_module
 from vaultkeep.errors import DestinationError
 
-EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.example"
+EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-schedule.yaml.example"
 
 
 def test_version_does_not_require_a_command(capsys: Any) -> None:

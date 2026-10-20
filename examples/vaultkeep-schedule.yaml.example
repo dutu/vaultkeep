@@ -1,0 +1,171 @@
+# Vaultkeep job example.
+# Copy to /etc/vaultkeep/jobs/<job-id>.yaml or a user-mode jobs directory.
+# The file stem must match job.id, for example app.yaml with job.id: app.
+
+# Supported value: 1.
+config_version: 1
+
+job:
+  # Unique job ID. Values: letters, digits, _ and -; max 128 chars.
+  id: example
+
+sources:
+  # Source file or directory. Value: absolute path.
+  - path: /path/to/source
+
+    # Archive member path mode. Values: prefix, preserve.
+    archive_path_mode: prefix
+
+    # Required with archive_path_mode: prefix.
+    # Empty string stores source contents directly at the archive root.
+    archive_prefix: source
+
+    # Optional source-only excludes. Values: gitwildmatch patterns.
+    # exclude:
+    #   - cache/
+    #   - "*.tmp"
+    #   - "**/node_modules/**"
+
+# Optional global excludes. Values: gitwildmatch patterns.
+# exclude:
+#   - "*.swp"
+#   - "**/.cache/**"
+
+source_options:
+  # Follow symlink targets. Values: true, false.
+  follow_symlinks: false
+
+  # Descend into mounted filesystems below sources. Values: true, false.
+  cross_filesystems: false
+
+  # Ignore missing source paths. Values: true, false.
+  ignore_missing: false
+
+destination:
+  # Backup destination directory. Value: absolute local/CIFS/NFS path.
+  root: /mnt/backups/example
+
+  # Backup base name. Must include {timestamp} or {timestamp_utc}.
+  # Built-ins: {job}, {hostname}, {timestamp}, {timestamp_utc}, {source_hash}, {format}.
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+
+  # Optional marker required below destination.root. Value: relative path.
+  # marker_file: ".vaultkeep-target"
+
+  # Optional mount check. Value: absolute mount path at or above destination.root.
+  # mount_point: /mnt/backups
+
+archive:
+  # Archive format. Values: tar.zst, tar.7z.
+  format: tar.zst
+
+  # Compression level. Values: 1-19 for tar.zst, 1-9 for tar.7z.
+  # compression_level: 6
+
+encryption:
+  # Encryption mode. Values: none for tar.zst, password for tar.7z.
+  mode: none
+
+  # Required with mode: password. Value: absolute password-file path.
+  # password_file: /etc/vaultkeep/secrets/example.passphrase
+
+retention:
+  # Retention counts. Values: integers >= 0; at least one tier must be > 0.
+  hourly: 24
+  daily: 7
+  weekly: 8
+  monthly: 12
+  yearly: 3
+
+schedule:
+  # Enable systemd timer. Values: true, false.
+  enabled: false
+
+  # Required when enabled. Values: hourly, daily, weekly, monthly.
+  interval: daily
+
+  # Required when enabled: exactly one of window or at.
+  # window value: "HH:MM-HH:MM"; at value: "HH:MM".
+  window: "01:00-05:00"
+  # at: "03:30"
+
+  # Required with interval: weekly. Values: monday through sunday.
+  # day: sunday
+
+  # Required with interval: monthly. Values: 1-28.
+  # day: 1
+
+  # Run one catch-up activation after downtime. Values: true, false.
+  persistent: true
+
+# Scheduling and shutdown triggering cannot both be enabled for one job.
+# Trigger is optional and disabled when omitted; see the app-specific examples.
+trigger:
+  enabled: false
+
+hooks:
+  # Hook phases. Values: null or {command: 'shell command', timeout_seconds: 1-3600}.
+  # Commands run with /bin/sh -c; shell built-ins and $VAULTKEEP_* variables are available.
+  # Built-ins: {job}, {hostname}, {timestamp}, {timestamp_utc}, {source_hash}, {format}.
+  # Date formats: {timestamp_utc:%Y%m%dT%H%M%SZ}. Hash truncation: {source_hash:.12}.
+  # Quote messages with shell double quotes. Shell single quotes keep placeholders literal.
+  # {source_hash} is empty until hashing completes.
+  before_check: null
+  before_archive: null
+  after_archive: null
+  on_success: null
+  on_failure: null
+  on_unchanged: null
+
+  # Example hook:
+  # before_check:
+  #   command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
+  #   timeout_seconds: 300
+  # on_failure:
+  #   command: 'telegram-notify --level error "Backup failed for {job} on {hostname}"'
+  #   timeout_seconds: 60
+
+  # Alternative examples below. Choose one command per phase.
+  # Set $HOSTNAME explicitly; Vaultkeep does not inherit your shell's environment.
+  # >- joins equally indented lines with spaces, so no trailing backslashes are needed.
+  # Keep all lines of the folded command at the same indentation.
+  # $VAULTKEEP_* variables are provided.
+  # on_failure:
+  #   command: >-
+  #     HOSTNAME=$(hostname) &&
+  #     export HOSTNAME &&
+  #     telegram-notify --level error
+  #     "Backup failed for $VAULTKEEP_JOB on $HOSTNAME: $VAULTKEEP_ERROR"
+  #   timeout_seconds: 60
+
+  # Call your own POSIX shell or Bash script. Replace the paths with your scripts.
+  # The job ID is passed as $1; scripts also receive the $VAULTKEEP_* environment.
+  # Placeholders are expanded in command, not in the script's contents.
+  # on_success:
+  #   command: '/bin/sh /usr/local/libexec/vaultkeep/notify-backup.sh "{job}"'
+  #   timeout_seconds: 60
+  # on_failure:
+  #   command: '/bin/bash /usr/local/libexec/vaultkeep/notify-backup.bash "{job}"'
+  #   timeout_seconds: 60
+
+  # | preserves newlines, allowing several shell commands in one hook.
+  # A trailing \ continues the same command on the next line.
+  # The \ must be the last character on its line, with no spaces after it.
+  # Include the first global-scope local IPv4 address; requires iproute2 and awk.
+  # Missing addresses fall back to "unavailable" so the notification can still run.
+  # on_failure:
+  #   command: |
+  #     HOSTNAME=$(hostname) || HOSTNAME=unknown
+  #     IP=$(ip -4 -o addr show scope global 2>/dev/null |
+  #       awk '{split($4, address, "/"); print address[1]; exit}')
+  #     IP=${IP:-unavailable}
+  #     telegram-notify --level error \
+  #       "Backup failed for {job} on $HOSTNAME (IPv4: $IP): $VAULTKEEP_ERROR"
+  #   timeout_seconds: 60
+
+logging:
+  # Log level. Values: error, warning, info, debug.
+  level: info
+
+  # Include subprocess output in logs. Values: true, false.
+  # include_command_output: false

@@ -1,4 +1,4 @@
-# Vaultkeep 0.2.0 Release Gate Checklist
+# Vaultkeep Release Gate Checklist
 
 Use this checklist from a clean checkout of the candidate tag. Tick each item only
 after the command or manual check has completed on the stated host.
@@ -12,7 +12,7 @@ Record the candidate version and commit before testing:
 
 ## Summary Gate Checklist
 
-Do not publish 0.2.0 until every gate below is checked:
+Do not publish a release until every gate below is checked:
 
 - [ ] Source and version gate passed.
 - [ ] Local quality gate passed.
@@ -97,8 +97,8 @@ exercise real archive tools when available.
 
   ```bash
   python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock
-  python -m pip install --no-deps --no-build-isolation --editable . --editable components/trigger
-  python -m pip download --require-hashes --only-binary=:all: -r requirements-trigger.lock -d /tmp/vaultkeep-wheelhouse
+  python -m pip install --no-deps --no-build-isolation --editable .
+  python -m pip download --require-hashes --only-binary=:all: -r requirements.lock -d /tmp/vaultkeep-wheelhouse
   ```
 
   Acceptable result:
@@ -113,7 +113,6 @@ exercise real archive tools when available.
   ruff check .
   mypy
   pytest -vv
-  (cd components/trigger && pytest -vv)
   python scripts/check_packages.py
   ```
 
@@ -267,7 +266,7 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
   - `/usr/local/bin/vaultkeep` points to the active release executable.
   - `/etc/systemd/system/vaultkeep@.service` and
     `/etc/systemd/system/vaultkeep@.timer` exist.
-  - `/etc/vaultkeep/jobs/vaultkeep-job.yaml.example` exists and remains inactive.
+  - `/etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example` exists and remains inactive.
 
 - [ ] Verify installed command and timers.
 
@@ -656,7 +655,7 @@ Acceptable result:
       "requirements.lock",
       "systemd/vaultkeep@.service",
       "systemd/vaultkeep@.timer",
-      "examples/vaultkeep-job.yaml.example",
+      "examples/vaultkeep-schedule.yaml.example",
       "README.md",
       "RELEASE.md",
       "docs/design/architecture_and_design.md",
@@ -709,7 +708,7 @@ Acceptable result:
 
 Release decision:
 
-- [ ] Approved for 0.2.0 publication.
+- [ ] Candidate approved for publication.
 - [ ] Rejected; fixes required before retest.
 
 ## Trigger integration and transition gates
@@ -718,17 +717,19 @@ Use disposable users, fake wallet processes, and temporary backup jobs. Record t
 candidate/host/interpreter/commands/results for each test; production wallet
 activation is not part of this checklist.
 
-- [ ] Default core environment contains no Trigger distribution, psutil or Trigger command.
-- [ ] Combined fresh installation installs both 0.2.0 commands and shared user templates;
+- [ ] The unified package contains Trigger modules and psutil, exposing only the vaultkeep entry point.
+- [ ] Fresh installation installs the unified command and inactive user worker template;
       works without logged-in users and never starts/enables/presets services or lingering.
-- [ ] Both independent wheels and sdists pass `python scripts/check_packages.py`; root
-      sdist supports an applied core and combined install without a neighboring checkout.
+- [ ] The unified wheel and source archive pass `python scripts/check_packages.py`;
+      the archive supports installation without a neighboring checkout.
 - [ ] Debian 12 and an incompatible existing interpreter are rejected before apt/staging.
       A clean Debian 13 host missing Python can bootstrap Debian Python, then checks >=3.13.
-- [ ] Actual schema-1 0.1.0 core upgrades to core and combined on Debian 13, preserving data
+- [ ] Actual schema-1 0.1.0 core and schema-2 combined deployments upgrade to the unified package on Debian 13, preserving data
       and retaining the old deployment. Debian 12 is upgraded before this transition.
-- [ ] Same-version addition via install/update, plain selection-preserving reinstall/update,
-      later-version core/combined upgrades and version/source guards pass.
+- [ ] Same-version reinstall, later-version upgrade and version/source guards pass.
+- [ ] Per-job monitor service, lock, recovery and worker namespaces stay isolated.
+- [ ] YAML validation rejects simultaneously enabled scheduling and shutdown triggering.
+- [ ] Legacy recovery evidence blocks new monitors until reviewed and archived.
 - [ ] Damaged packages/dependencies/entry points rebuild safely; missing owned artifacts
       reconcile; modified units, masks, overrides and unrelated links are preserved/refused.
 - [ ] Root and multiple/lingering user managers are inventoried twice; paused schedules,
@@ -758,5 +759,5 @@ activation is not part of this checklist.
       notifications and logout/shutdown limits. Keep unverified example instances disabled.
 
 Current local execution and remaining limits are recorded in
-[development/testing](docs/development/testing.md#validation-record). Automated
+[development/testing](docs/development/testing.md#validation-limits). Automated
 fake-manager success does not satisfy the live Debian release matrix.

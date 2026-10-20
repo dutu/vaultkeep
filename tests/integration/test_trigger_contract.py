@@ -19,8 +19,8 @@ def test_installed_worker_core_contract(tmp_path: Path, valid_config: dict) -> N
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
     python = str(venv / "bin/python")
     for args in (
-        ["--require-hashes", "--only-binary=:all:", "-r", str(root / "requirements-trigger.lock")],
-        ["--no-deps", "--no-build-isolation", str(root), str(root / "components/trigger")],
+        ["--require-hashes", "--only-binary=:all:", "-r", str(root / "requirements.lock")],
+        ["--no-deps", "--no-build-isolation", str(root)],
     ):
         subprocess.run(
             [python, "-m", "pip", "install", *args],
@@ -64,17 +64,17 @@ import json
 import os
 import sys
 from dataclasses import replace
+from importlib.metadata import version
 from pathlib import Path
 
 from vaultkeep.state.identity import job_identity_hash
-from vaultkeep_trigger.childproc import RealChildRunner
-from vaultkeep_trigger.config import JobSpec, load_config
-from vaultkeep_trigger.errors import ConfigurationError
-from vaultkeep_trigger.executor import exec_worker
-from vaultkeep_trigger.models import AttemptOutcome, Request, new_uuid, utc_now
-from vaultkeep_trigger.preflight import validate_jobs, runtime_preflight
-from vaultkeep_trigger.state import StateStore
-from vaultkeep_trigger.version import REVIEWED_VAULTKEEP_VERSION, TRIGGER_VERSION
+from vaultkeep.trigger.childproc import RealChildRunner
+from vaultkeep.trigger.config import JobSpec, load_config
+from vaultkeep.trigger.errors import ConfigurationError
+from vaultkeep.trigger.executor import exec_worker
+from vaultkeep.trigger.models import AttemptOutcome, Request, new_uuid, utc_now
+from vaultkeep.trigger.preflight import validate_jobs, runtime_preflight
+from vaultkeep.trigger.state import StateStore
 
 base, job, binary = map(Path, sys.argv[1:])
 runtime = base / 'runtime'
@@ -85,8 +85,9 @@ env = {'HOME': str(base), 'XDG_RUNTIME_DIR': str(runtime),
 params = {'NETWORK': 'testnet'}
 argv = [str(binary), *JobSpec(config=job, params=params).argv()]
 runner = RealChildRunner()
-assert (TRIGGER_VERSION, REVIEWED_VAULTKEEP_VERSION) == ('0.2.0', '0.2.0')
-assert runner.run([str(binary), '--version'], env=env).stdout_tail == '0.2.0'
+core_version = version('vaultkeep')
+assert runner.run([str(binary), 'trigger', '--version'], env=env).stdout_tail == core_version
+assert runner.run([str(binary), '--version'], env=env).stdout_tail == core_version
 schema = runner.run([*argv, 'validate', '--schema-only'], env=env)
 assert schema.exit_code == 0, schema
 validation = runner.run([*argv, 'validate'], env=env)
@@ -116,7 +117,7 @@ request = Request(request_id=new_uuid(), attempt_id=new_uuid(), instance_id='tes
     matcher={'exe_realpath': None, 'entrypoint': {'kind': 'script', 'value': '/disposable/wallet'},
              'argv_tokens': [], 'cmdline_regex': None, 'env_eq': {}},
     job_config=str(job), job_params=params, vaultkeep=str(binary), environment=env,
-    preflight_version='0.2.0', deadline_seconds=None)
+    preflight_version=core_version, deadline_seconds=None)
 
 def attempt(expected):
     current = replace(request, request_id=new_uuid(), attempt_id=new_uuid())
@@ -124,7 +125,7 @@ def attempt(expected):
     result = exec_worker(current.attempt_id, store=store, provider=NoProcesses())
     receipt = store.read_receipt(current.attempt_id)
     assert result.outcome == expected, (result, receipt)
-    assert receipt.vaultkeep_version == '0.2.0'
+    assert receipt.vaultkeep_version == core_version
     return current, receipt
 
 current, receipt = attempt(AttemptOutcome.CREATED)

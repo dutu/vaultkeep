@@ -25,6 +25,11 @@ def test_version_matches_project_metadata() -> None:
     assert installed_version() == project_version()
 
 
+def test_trigger_reports_the_application_version(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--user", "trigger", "--version"]) == 0
+    assert capsys.readouterr().out == f"{installed_version()}\n"
+
+
 def test_version_cli_prints_only_version(capsys: pytest.CaptureFixture[str]) -> None:
     exit_code = main(["--version"])
 

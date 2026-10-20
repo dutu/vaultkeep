@@ -1,0 +1,53 @@
+# Electrum shutdown-triggered backup example.
+# User mode only: run vaultkeep --user as the application owner, without sudo.
+# Copy to your user jobs directory as electrum-main.yaml; replace every example path.
+# Confirm the process identity, data-directory identity and all related writers
+# against the installed application before enabling this trigger.
+# See docs/trigger/process-detection.md for identity and consistency limits.
+config_version: 1
+job:
+  id: electrum-main
+sources:
+  - path: /home/user/.electrum
+    archive_path_mode: prefix
+    archive_prefix: electrum
+source_options:
+  follow_symlinks: false
+  cross_filesystems: false
+  ignore_missing: false
+destination:
+  root: /mnt/backups/electrum-main
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+archive:
+  format: tar.zst
+  compression_level: 6
+encryption:
+  mode: none
+retention:
+  hourly: 24
+  daily: 7
+  weekly: 8
+  monthly: 12
+  yearly: 3
+schedule:
+  enabled: false
+trigger:
+  enabled: false
+  app: electrum
+  data_dir: /home/user/.electrum
+  matcher:
+    entrypoint:
+      kind: script
+      value: /home/user/.local/opt/electrum/current/run_electrum
+    argv_tokens: ["--dir", "/home/user/.electrum"]
+  poll_seconds: 2
+  confirm_seconds: 5
+  # Optional advisory deadline; never terminates a backup.
+  # deadline_seconds: 3600
+  notifications:
+    enabled: false
+    command: notify-send
+    timeout_ms: 5000
+logging:
+  level: info
+  include_command_output: false

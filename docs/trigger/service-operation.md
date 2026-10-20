@@ -2,45 +2,53 @@
 
 ## Units
 
-- `vaultkeep-trigger.service` — foreground monitor, restart-on-failure, journald output,
-  `UMask=0077`. The [configuration procedure](../../README.md#configure-and-validate-trigger) uses default config resolution or an explicit per-user `--config` drop-in.
-- `vaultkeep-trigger-exec@.service` — `Type=oneshot`, `Restart=no`,
-  `TimeoutStartSec=infinity`, `UMask=0077`, `ExecStart=... exec-worker %i`. It is
-  independent of the monitor's stop/restart lifecycle. Do not enable individual
-  attempt instances.
+Each enabled job has its own explicitly installed monitor service:
+`vaultkeep-trigger@<job-id>-<identity>.service`, stored in
+`${XDG_CONFIG_HOME:-<account-home>/.config}/systemd/user/`. It runs
+`/usr/local/bin/vaultkeep --user trigger --config <job.yaml> [--param ...] monitor`, with
+restart-on-failure, journald output, and `UMask=0077`.
 
-Only the monitor submits worker starts, using
-`systemctl --user start --no-block vaultkeep-trigger-exec@<attempt-id>.service`
-without a shell.
+The installer supplies the shared `/etc/systemd/user/vaultkeep-trigger-exec@.service`
+worker template. It uses `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`,
+`UMask=0077`, and `ExecStart=/usr/local/bin/vaultkeep --user trigger exec-worker %i`.
+Workers remain independent of monitor stop/restart. Do not add monitor lifecycle
+dependencies or enable individual attempt instances.
 
-The shared installer installs templates at `/etc/systemd/user` with the fixed
-`/usr/local/bin/vaultkeep-trigger` command. Installing the Python distribution alone
-does not install these units. Workers use saved requests,
-so their fixed command has no `--config` argument. Custom configuration belongs on
-the monitor command only. Keep both units' executable paths consistent.
+Only a monitor submits workers, via
+`systemctl --user start --no-block vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service`.
+The shared template reads frozen requests, so it takes no current configuration.
+Installing Vaultkeep starts/enables no monitor. The explicit per-job `trigger install`
+command creates and enables that job's monitor; `update` refreshes and restarts it.
+`disable` and `remove` preserve recovery evidence and never stop workers.
 
 ## State and runtime locations
 
-Trigger's own state root is fixed at `<account-home>/.local/state/vaultkeep-trigger`,
-resolved from the operating-system account record for the effective UID. `HOME`,
-`XDG_STATE_HOME`, and configuration cannot relocate it, so the monitor, CLI, and
-workers agree on it. State directories use mode `0700` and files `0600`.
+Each job has a fixed recovery root:
+`<account-home>/.local/state/vaultkeep-trigger/jobs/<identity>`. Account home comes
+from the operating-system record, independently of `HOME` and `XDG_STATE_HOME`.
+The identity is the existing Vaultkeep 16-hex hash of canonical configuration path,
+job ID and selected runtime parameters. Directories use `0700`, files `0600`.
 
 ```text
-<state-root>/
-  instances/<instance-id>.json
-  blocked/<instance-id>.json       # durable state-error diagnostic, when needed
-  attempts/<attempt-id>/
+<job-state-root>/
+  instances/<job-id>.json
+  blocked/<job-id>.json
+  attempts/<attempt-uuid>/
     request.json
     launch.json
     receipt.json
     log.txt
 ```
 
-Runtime holds only `<XDG_RUNTIME_DIR>/vaultkeep-trigger/monitor.lock`. VaultKeep's own
-user-mode paths continue to follow its validated `HOME`/XDG environment; Trigger passes
-the user's own runtime directory to VaultKeep unmodified so its job lock is shared with
-manual and timer-driven runs.
+The monitor lock is
+`<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<identity>/monitor.lock`. Each monitor only
+reconciles its own job's state. Separate jobs and parameter selections can hold their
+locks concurrently. A duplicate monitor for the same identity is refused.
+
+The backup child receives the user's original `XDG_RUNTIME_DIR`, so its normal job
+lock is shared with manual and timer-driven backups. Moving the job or changing its
+ID/parameters creates a new identity; stop and drain the old identity first. Legacy
+shared recovery evidence requires explicit [migration](migration.md).
 
 The worker's VaultKeep child environment is frozen in its request: `HOME` is the
 account home; absolute `XDG_STATE_HOME`/`XDG_CACHE_HOME` values are kept, otherwise

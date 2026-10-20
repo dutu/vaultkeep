@@ -1,94 +1,108 @@
-# Configuration
+# Trigger configuration
 
-Trigger reads one TOML file **once at startup**. Edits require a monitor restart,
-preceded by `check-config --runtime`. There is no live reload, SIGHUP reload, or
-config-file watcher.
+Trigger settings belong in the same YAML file as the backup sources, destination,
+retention, and schedule. There is no separate Trigger configuration file. Each
+monitor reads one job once at startup; validate and restart after edits.
 
-Default location: `<absolute-XDG_CONFIG_HOME>/vaultkeep-trigger/config.toml`, falling
-back to `<account-home>/.config/vaultkeep-trigger/config.toml` when `XDG_CONFIG_HOME`
-is unset, empty, or relative. `--config PATH` overrides it for `monitor` and
-`check-config`; place the option before the subcommand. A disabled example lives at
-[`examples/config.toml`](../../components/trigger/examples/config.toml).
+`trigger` is optional and defaults to disabled. `schedule.enabled` and
+`trigger.enabled` cannot both be true. Both may be false for manual-only jobs.
+Disable the old timer/monitor and drain running work before changing mechanisms.
 
-The configuration schema is closed: unknown keys are rejected at every level.
-
-## `[trigger]`
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `poll_seconds` | `2` | Monitor loop sleep and default per-instance poll interval. |
-| `confirm_seconds` | `5` | Continuous reliable absence required before a shutdown is confirmed. |
-| `deadline_seconds` | absent | Optional advisory overdue deadline; absent means no deadline. |
-| `log_level` | `INFO` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
-| `vaultkeep` | required | Absolute path to the VaultKeep executable. |
-
-All timing values must be finite positive numbers (booleans are rejected).
-An instance's poll override controls when it becomes due, but cannot make the main
-loop wake faster than the global interval. Synchronous service probes and scheduling
-also add latency. Deadlines are advisory and never terminate a backup.
-
-## `[trigger.notifications]`
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `enabled` | `false` | Enable best-effort desktop notifications. |
-| `command` | `notify-send` | Nonempty executable name/path; invoked directly, without shell arguments. |
-| `timeout_ms` | `5000` | Delivery timeout, a positive integer in milliseconds. |
-
-See [notifications](notifications.md).
-
-## `[[instance]]`
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `id` | required | Unique safe filename component matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. |
-| `app` | required | `electrum`, `bisq`, or `wasabi`. |
-| `enabled` | `false` | Disabled instances are structurally validated but not dispatched. |
-| `data_dir` | required | Absolute instance data-directory path; canonicalized when comparing process evidence. |
-| `matcher` | required | Application entrypoint, with optional executable and supporting predicates (see [process detection](process-detection.md)). |
-| `job` | required | `{ config = "<absolute job.yaml>", params = { KEY = "VALUE" } }`; `params` defaults to an empty string-to-string mapping. |
-| `poll_seconds` | inherits | Optional per-instance override. |
-| `confirm_seconds` | inherits | Optional per-instance override. |
-| `deadline_seconds` | inherits | Optional per-instance override; v1 has no switch to disable an inherited global deadline. |
-
-Instance IDs must be unique; `enabled` must be a boolean. There may be zero instances.
-Disabled entries still need structurally valid required fields, matchers, and paths;
-their job files and installed process models are not probed. `check-config` always
-checks that the configured VaultKeep executable is a runnable file.
-
-Path fields accept `~` or a leading `~/`, expanded from the operating-system account
-home (not `$HOME`); paths must then be absolute. `~otheruser` is not expanded.
-`$VAR`, command substitution, and shell expressions are not evaluated. The parser does
-not reject every shell-looking string inside an absolute path: such text remains
-literal. There is no arbitrary shell-command/template execution setting. File
-existence is not a structural path check; enabled jobs are validated separately.
-
-### Job selection
-
-`job.config` is the YAML job file selected by the external VaultKeep CLI, not a Trigger
-profile. Parameters are passed in sorted key order as repeated `--param KEY=VALUE`
-arguments; values must be TOML strings. For example:
-
-```toml
-[instance.job]
-config = "/home/user/.config/vaultkeep/jobs/wasabi-main.yaml"
-params = { NETWORK = "mainnet" }
+```yaml
+schedule:
+  enabled: false
+trigger:
+  enabled: true
+  app: electrum
+  data_dir: /home/alice/.electrum
+  matcher:
+    entrypoint:
+      kind: script
+      value: /home/alice/.local/opt/electrum/current/run_electrum
+    argv_tokens: ["--dir", "/home/alice/.electrum"]
+  poll_seconds: 2
+  confirm_seconds: 5
 ```
 
-The source job must actually support these parameters. Schema-only validation does
-not resolve parameter-template semantics. See [validation limits](cli.md#configuration-checks).
+This fragment supplements a complete job. Copy and customize one of the complete,
+disabled examples: [Electrum](../../examples/electrum-trigger.yaml.example),
+[Bisq](../../examples/bisq-trigger.yaml.example), or
+[Wasabi](../../examples/wasabi-trigger.yaml.example). Use the
+[schedule example](../../examples/vaultkeep-schedule.yaml.example) for other jobs.
+Process support and directory-identification limitations are documented in
+[process detection](process-detection.md); examples do not certify installed app versions.
 
-Changing configuration does not rewrite an active worker's saved request. The
-[recovery rules](recovery.md#boot-and-configuration-fingerprints) describe pending-work
-invalidation and frozen attempts. Review job-file edits and executable replacements
-with the same care: requests freeze their paths and parameters, not file contents or
-an immutable binary copy.
+## Fields
 
-Removed settings that do not exist in v1: `state_dir`, `max_concurrent`,
-`conflict_groups`, `requires_instances`, `consistency`, `online_note`, and per-instance
-notification fields.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Opt this job into shutdown monitoring; service activation is explicit. |
+| `app` | absent | `electrum`, `bisq`, or `wasabi`; required when enabled. |
+| `data_dir` | absent | App instance's absolute data directory; required when enabled. |
+| `matcher` | absent | Strong process identity; required when enabled. |
+| `poll_seconds` | `2` | Observation interval in seconds. |
+| `confirm_seconds` | `5` | Continuous reliable absence required to confirm shutdown. |
+| `deadline_seconds` | absent | Advisory overdue threshold; never terminates a backup. |
+| `params` | `{}` | String runtime parameters passed to this same backup job. |
+| `notifications` | disabled | Best-effort desktop notification settings. |
 
-The Trigger state root is fixed at `<account-home>/.local/state/vaultkeep-trigger` and
-cannot be configured; see [service operation](service-operation.md).
+Unknown keys are rejected. Booleans must be booleans; timing values must be finite
+positive numbers. A disabled block may contain only `enabled: false`. Fields supplied
+in disabled blocks still undergo structural validation. An enabled block requires
+`app`, `data_dir`, and `matcher.entrypoint`.
+
+The backup job's `job.id` identifies the monitored instance. Its `logging.level`
+controls monitor logging. The monitor invokes this installation's own `vaultkeep`
+entry point; there is no separately configured core executable.
+
+## Matcher
+
+| Key | Meaning |
+| --- | --- |
+| `entrypoint` | Required `{kind, value}`; kind is `script`, `jar`, or `java_main`. |
+| `exe_realpath` | Optional absolute interpreter/executable identity. |
+| `argv_tokens` | Additional exact argv tokens; each 1–4096 characters. |
+| `cmdline_regex` | Optional valid regex, at most 200 characters. |
+| `env_eq` | Allowed environment predicates: Electrum `ELECTRUMDIR`, Wasabi `WASABI_DATADIR`; none for Bisq. |
+
+Script/jar entrypoints, executable paths, and data directories must be absolute or
+start with `~/`. Home expansion uses the operating-system account record, not an
+arbitrary `HOME`. Shell expressions and environment-variable expansion are not
+performed. Executable identity alone is insufficient; an entrypoint is required.
+See [process detection](process-detection.md) for ambiguity and writer coverage.
+
+## Parameters and identity
+
+For a shared job with a destination such as `/mnt/backups/{NETWORK}`:
+
+```yaml
+trigger:
+  # Other trigger fields omitted here.
+  params:
+    NETWORK: mainnet
+```
+
+Parameter names and values follow the normal `--param KEY=VALUE` rules. Command-line
+parameters may override these defaults. Use the same parameter selection for monitor
+installation, update, status, disable, and remove. Pass matching `--param` arguments
+to manual backup commands. Do not enable two monitors for the same application/data
+directory under different parameter selections without reviewing matcher overlap and
+backup destination independence.
+
+The canonical job path, `job.id`, and selected parameters determine a 16-hex identity.
+Each identity has its own monitor unit, runtime lock, and recovery directory. Moving
+or renaming a job, changing `job.id`, or changing parameters creates another identity:
+disable/drain the old service and review its recovery evidence first.
+
+## Notifications
+
+`trigger.notifications` accepts `enabled` (default `false`), `command` (default
+`notify-send`), and positive integer `timeout_ms` (default `5000`). The command is
+invoked directly without a shell. Notifications are optional; delivery failure never
+changes the backup outcome. See [notifications](notifications.md).
+
+Requests freeze matcher settings, job paths, parameters and environment, rather than
+job contents or executable bytes. Review live file replacements with the same care as
+configuration edits. See [recovery](recovery.md#boot-and-configuration-fingerprints).
 
 [User guide](../../README.md#configure-and-validate-trigger)

@@ -10,12 +10,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "install.sh"
+CANDIDATE_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 
 
 def executable(path: Path, content: str) -> None:
@@ -172,7 +174,7 @@ def wheelhouse_available(host: dict[str, str]) -> None:
     [
         (["invalid"], 2, "unknown mode: invalid"),
         (["install", "--unknown"], 2, "unknown option: --unknown"),
-        (["uninstall", "--with-trigger"], 1, "--with-trigger is valid only with install/update"),
+        (["install", "--with-trigger"], 2, "unknown option: --with-trigger"),
     ],
 )
 def test_installer_errors_have_explicit_prefix_in_plain_logs(
@@ -212,7 +214,7 @@ def test_installer_error_prefix_on_a_terminal(
     master, slave = pty.openpty()
     try:
         result = subprocess.run(
-            ["bash", str(INSTALLER), "uninstall", "--with-trigger"],
+            ["bash", str(INSTALLER), "invalid"],
             env=host,
             stdout=subprocess.PIPE,
             stderr=slave,
@@ -235,9 +237,9 @@ def test_installer_error_prefix_on_a_terminal(
             output += chunk
     finally:
         os.close(master)
-    assert result.returncode == 1
+    assert result.returncode == 2
     prefix = "\033[1;31mERROR:\033[0m" if colored else "ERROR:"
-    assert output.decode().startswith(f"{prefix} install.sh: --with-trigger is valid only")
+    assert output.decode().startswith(f"{prefix} install.sh: unknown mode: invalid")
     if not colored:
         assert b"\033[" not in output
 
@@ -338,12 +340,10 @@ def test_bash_syntax() -> None:
     subprocess.run(["bash", "-n", str(INSTALLER)], check=True)
 
 
-@pytest.mark.parametrize("combined", [False, True])
-def test_dry_run_is_read_only(host: dict[str, str], combined: bool) -> None:
+def test_dry_run_is_read_only(host: dict[str, str]) -> None:
     before = snapshot(host)
-    result = run_installer(host, "install", "--dry-run", *(["--with-trigger"] if combined else []))
-    assert "previous components: none" in result.stdout
-    assert "desired components: core" + (",trigger" if combined else "") in result.stdout
+    result = run_installer(host, "install", "--dry-run")
+    assert "Trigger is included; monitoring remains opt-in" in result.stdout
     assert "PLAN stage release" in result.stdout
     assert "activity checks are not a live quiescence guarantee" in result.stdout
     assert snapshot(host) == before
@@ -353,7 +353,7 @@ def test_dry_run_is_read_only(host: dict[str, str], combined: bool) -> None:
 
 @pytest.mark.parametrize("mode", ["install", "update"])
 def test_same_version_source_guard(host: dict[str, str], mode: str) -> None:
-    legacy_fixture(host, "0.2.0")
+    legacy_fixture(host, CANDIDATE_VERSION)
     result = run_installer(host, mode, "--dry-run", check=False)
     if mode == "update":
         assert result.returncode != 0
@@ -369,53 +369,33 @@ def test_update_needs_manifest(host: dict[str, str]) -> None:
     assert "update requires an existing installation manifest" in result.stderr
 
 
-@pytest.mark.parametrize("combined", [False, True])
-def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str], combined: bool) -> None:
+def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> None:
     wheelhouse_available(host)
-    run_installer(host, "install", *(["--with-trigger"] if combined else []))
+    run_installer(host, "install")
     data = manifest(host)
-    assert data["schema_version"] == 2
-    assert data["components"] == (["core", "trigger"] if combined else ["core"])
+    assert data["schema_version"] == 3
+    assert "components" not in data
     release = Path(data["active_release"])
-    assert release.name == "0.2.0" + ("-with-trigger" if combined else "")
-    assert json.loads((release / "deployment.json").read_text())["components"] == data["components"]
-    assert (
-        subprocess.check_output([host["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == "0.2.0"
-    )
-    if combined:
+    assert release.name == CANDIDATE_VERSION
+    assert "components" not in json.loads((release / "deployment.json").read_text())
+    for prefix in ([], ["trigger"]):
         assert (
             subprocess.check_output(
-                [host["VAULTKEEP_TRIGGER_BIN_LINK"], "--version"], text=True
+                [host["VAULTKEEP_BIN_LINK"], *prefix, "--version"], text=True
             ).strip()
-            == "0.2.0"
+            == CANDIDATE_VERSION
         )
-        worker = Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service"
-        assert "TimeoutStartSec=infinity" in worker.read_text()
-        assert "PartOf=" not in worker.read_text()
-    else:
-        assert not Path(host["VAULTKEEP_TRIGGER_BIN_LINK"]).exists()
-        assert not Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]).exists()
+    worker = Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service"
+    assert "TimeoutStartSec=infinity" in worker.read_text()
+    assert "PartOf=" not in worker.read_text()
+    assert "vaultkeep --user trigger exec-worker %i" in worker.read_text()
+    assert not Path(host["VAULTKEEP_TRIGGER_BIN_LINK"]).exists()
     first = snapshot(host)
     run_installer(host, "update")
     assert snapshot(host) == first
 
 
-@pytest.mark.parametrize("mode", ["install", "update"])
-def test_same_version_addition_preserved_by_plain_update(
-    installed: dict[str, str], mode: str
-) -> None:
-    old = manifest(installed)
-    run_installer(installed, mode, "--with-trigger")
-    data = manifest(installed)
-    assert data["retained_release"] == old["active_release"]
-    assert data["components"] == ["core", "trigger"]
-    run_installer(installed, "install")
-    run_installer(installed, "update", "--with-trigger")
-    assert manifest(installed) == data
-
-
-def test_trigger_addition_with_running_user_manager_and_absent_units(
+def test_refresh_with_running_user_manager_and_absent_units(
     installed: dict[str, str], tmp_path: Path
 ) -> None:
     source = tmp_path / "candidate-source"
@@ -449,15 +429,15 @@ os.execvp('systemctl', args)
     )
     previous = manifest(installed)
 
-    run_installer(installed, "install", "--with-trigger", source=source)
+    run_installer(installed, "install", source=source)
 
-    assert manifest(installed)["components"] == ["core", "trigger"]
-    assert manifest(installed)["retained_release"] == previous["active_release"]
+    assert "components" not in manifest(installed)
+    assert manifest(installed)["retained_release"] == previous["retained_release"]
     assert (
         subprocess.check_output(
-            [installed["VAULTKEEP_TRIGGER_BIN_LINK"], "--version"], text=True
+            [installed["VAULTKEEP_BIN_LINK"], "trigger", "--version"], text=True
         ).strip()
-        == "0.2.0"
+        == CANDIDATE_VERSION
     )
     calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
     assert any(
@@ -467,15 +447,14 @@ os.execvp('systemctl', args)
     assert ["--user", "daemon-reload"] in calls
 
 
-@pytest.mark.parametrize("combined", [False, True])
-def test_legacy_upgrade_preserves_previous_and_data(host: dict[str, str], combined: bool) -> None:
+def test_legacy_upgrade_preserves_previous_and_data(host: dict[str, str]) -> None:
     wheelhouse_available(host)
     old = legacy_fixture(host)
     secrets = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "secrets"
     secrets.mkdir(parents=True)
     marker = secrets / "test.password"
     marker.write_bytes(b"preserved secret\n")
-    run_installer(host, "update", *(["--with-trigger"] if combined else []))
+    run_installer(host, "update")
     assert manifest(host)["retained_release"] == old["active_release"]
     assert marker.read_bytes() == b"preserved secret\n"
     assert Path(old["active_release"]).is_dir()
@@ -492,7 +471,7 @@ def test_invalid_components_never_fall_back_to_core(
     prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
     (prefix / "install-manifest.json").write_text(json.dumps(data))
     before = snapshot(host)
-    result = run_installer(host, "update", "--with-trigger", check=False)
+    result = run_installer(host, "update", check=False)
     assert result.returncode != 0
     assert "invalid components" in result.stderr
     assert snapshot(host) == before
@@ -517,13 +496,20 @@ def test_ownership_conflicts_refuse_before_staging(installed: dict[str, str], ki
         path.unlink()
         path.symlink_to("/unrelated")
     before = snapshot(installed)
-    result = run_installer(installed, "update", "--with-trigger", check=False)
+    result = run_installer(installed, "update", check=False)
     assert result.returncode != 0
     assert snapshot(installed) == before
 
 
 @pytest.mark.parametrize(
-    "damage", ["missing-package", "entry-point", "extra-package", "missing-unit", "missing-link"]
+    "damage",
+    [
+        "missing-package",
+        "entry-point",
+        "missing-trigger-dependency",
+        "missing-unit",
+        "missing-link",
+    ],
 )
 def test_exact_match_repairs_environment_or_missing_artifacts(
     installed: dict[str, str], damage: str
@@ -538,18 +524,9 @@ def test_exact_match_repairs_environment_or_missing_artifacts(
         )
     elif damage == "entry-point":
         (release / "venv/bin/vaultkeep").write_text("#!/nonexistent/python\n")
-    elif damage == "extra-package":
+    elif damage == "missing-trigger-dependency":
         subprocess.run(
-            [
-                str(release / "venv/bin/python"),
-                "-m",
-                "pip",
-                "install",
-                "--no-index",
-                "--find-links",
-                installed["PIP_FIND_LINKS"],
-                "psutil",
-            ],
+            [str(release / "venv/bin/python"), "-m", "pip", "uninstall", "-y", "psutil"],
             check=True,
             capture_output=True,
         )
@@ -561,7 +538,7 @@ def test_exact_match_repairs_environment_or_missing_artifacts(
     assert manifest(installed) == data
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == "0.2.0"
+        == CANDIDATE_VERSION
     )
 
 
@@ -579,21 +556,23 @@ def test_active_or_ambiguous_work_refuses_without_mutation(
 ) -> None:
     control(installed, **setting)
     before = snapshot(installed)
-    result = run_installer(installed, "update", "--with-trigger", check=False)
+    result = run_installer(installed, "update", check=False)
     assert result.returncode != 0
     assert snapshot(installed) == before
 
 
-@pytest.mark.parametrize("combined", [False, True])
-def test_reload_failure_rolls_back_addition_or_fresh_install(
-    host: dict[str, str], combined: bool
+@pytest.mark.parametrize("fresh", [False, True])
+def test_reload_failure_rolls_back_refresh_or_fresh_install(
+    host: dict[str, str], fresh: bool
 ) -> None:
     wheelhouse_available(host)
-    if not combined:
+    if not fresh:
         run_installer(host, "install")
+    if not fresh:
+        (Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service").unlink()
     before = snapshot(host)
     control(host, reload_fail_once=True)
-    result = run_installer(host, "install", "--with-trigger", check=False)
+    result = run_installer(host, "install", check=False)
     assert result.returncode != 0
     assert "ERROR: install.sh: installer transaction failed (exit 1);" in result.stderr
     after = snapshot(host)
@@ -603,27 +582,28 @@ def test_reload_failure_rolls_back_addition_or_fresh_install(
         k: v for k, v in before.items() if not k.endswith(ignored)
     }
     assert not Path(host["VAULTKEEP_TRIGGER_BIN_LINK"]).exists()
-    if not combined:
-        assert manifest(host)["components"] == ["core"]
+    if not fresh:
+        assert "components" not in manifest(host)
         assert (
             subprocess.check_output([host["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-            == "0.2.0"
+            == CANDIDATE_VERSION
         )
 
 
 @pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
 def test_handled_signal_rolls_back_at_reload(installed: dict[str, str], signum: int) -> None:
+    (Path(installed["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service").unlink()
     before = snapshot(installed)
     control(installed, signal=signum)
-    result = run_installer(installed, "install", "--with-trigger", check=False)
+    result = run_installer(installed, "install", check=False)
     assert result.returncode != 0
     assert snapshot(installed) == before
 
 
 @pytest.mark.parametrize("purge", [False, True])
-def test_combined_uninstall_preserves_user_evidence(host: dict[str, str], purge: bool) -> None:
+def test_uninstall_preserves_user_evidence(host: dict[str, str], purge: bool) -> None:
     wheelhouse_available(host)
-    run_installer(host, "install", "--with-trigger")
+    run_installer(host, "install")
     evidence = (
         Path(host["HOST_LOG"]).parent
         / "home/user/.local/state/vaultkeep-trigger/attempts/receipt.json"
@@ -666,7 +646,7 @@ if sys.argv[1:3] == ['-m', 'venv']:
 os.execv({sys.executable!r}, ['python3', *sys.argv[1:]])
 """,
     )
-    result = run_installer(host, "install", "--with-trigger", check=False)
+    result = run_installer(host, "install", check=False)
     assert result.returncode != 0
     prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
     assert not list((prefix / ".staging").iterdir())
@@ -678,7 +658,7 @@ os.execv({sys.executable!r}, ['python3', *sys.argv[1:]])
 def test_existing_older_python_rejected_before_lock_or_host_actions(host: dict[str, str]) -> None:
     fake = Path(host["PATH"].split(":")[0])
     executable(fake / "python3", "#!/bin/sh\nexit 1\n")
-    result = run_installer(host, "install", "--with-trigger", check=False)
+    result = run_installer(host, "install", check=False)
     assert result.returncode != 0
     assert "python3 >=3.13" in result.stderr
     assert not Path(host["VAULTKEEP_INSTALL_PREFIX"]).exists()
@@ -698,7 +678,7 @@ def test_same_version_refresh_failure_restores_replaced_directory(
     assert snapshot(installed) == before
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == "0.2.0"
+        == CANDIDATE_VERSION
     )
 
 
@@ -717,7 +697,7 @@ def test_failure_after_move_restores_core_and_removes_trigger(
         )
     )
     before = snapshot(installed)
-    result = run_installer(installed, "install", "--with-trigger", check=False, source=source)
+    result = run_installer(installed, "install", check=False, source=source)
     assert result.returncode != 0
     assert "injected post-move" in result.stderr
     assert snapshot(installed) == before
@@ -737,7 +717,7 @@ def test_manifest_replace_failure_cleans_temporary_file_and_restores_deployment(
     )
     before = snapshot(installed)
 
-    result = run_installer(installed, "install", "--with-trigger", check=False, source=source)
+    result = run_installer(installed, "install", check=False, source=source)
 
     assert result.returncode != 0
     assert "injected manifest replacement failure" in result.stderr
@@ -746,26 +726,19 @@ def test_manifest_replace_failure_cleans_temporary_file_and_restores_deployment(
     assert snapshot(installed) == before
 
 
-@pytest.mark.parametrize("combined", [False, True])
-def test_later_version_preserves_selection_and_retains_previous(
-    host: dict[str, str], tmp_path: Path, combined: bool
-) -> None:
+def test_later_version_retains_previous(host: dict[str, str], tmp_path: Path) -> None:
     wheelhouse_available(host)
-    run_installer(host, "install", *(["--with-trigger"] if combined else []))
+    run_installer(host, "install")
     before = manifest(host)
     source = tmp_path / "later-source"
     shutil.copytree(CANDIDATE_SOURCE, source)
-    for file in (
-        "pyproject.toml",
-        "components/trigger/pyproject.toml",
-        "components/trigger/src/vaultkeep_trigger/version.py",
-    ):
+    for file in ("pyproject.toml",):
         path = source / file
-        path.write_text(path.read_text().replace('"0.2.0"', '"0.3.0"'))
+        path.write_text(path.read_text().replace(f'"{CANDIDATE_VERSION}"', '"0.3.0"'))
     run_installer(host, "update", source=source)
     data = manifest(host)
     assert data["version"] == "0.3.0"
-    assert data["components"] == before["components"]
+    assert "components" not in data
     assert data["retained_release"] == before["active_release"]
     assert Path(before["active_release"]).is_dir()
 
@@ -785,8 +758,91 @@ def test_paused_enabled_timer_keeps_enablement_and_timestamp(installed: dict[str
         properties="LoadState=loaded\nActiveState=inactive\nSubState=dead\n"
         f"FragmentPath={system}/vaultkeep@.timer\nDropInPaths=\nExecStart=\nUnitFileState=enabled\n",
     )
-    run_installer(installed, "install", "--with-trigger")
+    run_installer(installed, "install")
     assert (os.readlink(enabled), stamp.read_bytes(), stamp.stat().st_mtime_ns) == before
     result = run_installer(installed, "uninstall", check=False)
     assert result.returncode != 0
     assert "disable" in result.stderr
+
+
+def component_fixture(host: dict[str, str], combined: bool) -> dict:
+    """Reproduce the schema-2 deployment that predates the unified package."""
+    data = legacy_fixture(host, "0.2.0")
+    prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
+    old_release = Path(data["active_release"])
+    release = old_release.with_name(old_release.name + ("-with-trigger" if combined else ""))
+    if combined:
+        old_release.rename(release)
+        current = prefix / "current"
+        current.unlink()
+        current.symlink_to("releases/" + release.name)
+        for record in data["owned_artifacts"]:
+            if record["path"] == str(old_release):
+                record["path"] = str(release)
+            if record["path"] == str(current):
+                record["target"] = "releases/" + release.name
+        binary = Path(host["VAULTKEEP_TRIGGER_BIN_LINK"])
+        binary.symlink_to(current / "venv/bin/vaultkeep-trigger")
+        data["owned_artifacts"].append(
+            {"path": str(binary), "type": "symlink", "target": os.readlink(binary)}
+        )
+        for name, command in (
+            ("vaultkeep-trigger.service", "monitor"),
+            ("vaultkeep-trigger-exec@.service", "exec-worker %i"),
+        ):
+            unit = Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / name
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            unit.write_text(f"[Service]\nExecStart=/usr/local/bin/vaultkeep-trigger {command}\n")
+            unit.chmod(0o644)
+            data["owned_artifacts"].append(
+                {
+                    "path": str(unit),
+                    "type": "file",
+                    "mode": "0o644",
+                    "sha256": hashlib.sha256(unit.read_bytes()).hexdigest(),
+                }
+            )
+    data.update(
+        schema_version=2,
+        components=["core", "trigger"] if combined else ["core"],
+        active_release=str(release),
+    )
+    (prefix / "install-manifest.json").write_text(json.dumps(data))
+    (release / "deployment.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "version": "0.2.0",
+                "source_digest": data["source_digest"],
+                "components": data["components"],
+            }
+        )
+    )
+    return data
+
+
+@pytest.mark.parametrize("combined", [False, True])
+def test_component_deployment_upgrades_to_unified_package(
+    host: dict[str, str], combined: bool
+) -> None:
+    old = component_fixture(host, combined)
+    run_installer(host, "update")
+    current = manifest(host)
+    assert current["schema_version"] == 3 and "components" not in current
+    assert current["retained_release"] == old["active_release"]
+    assert Path(old["active_release"]).is_dir()
+    assert not Path(host["VAULTKEEP_TRIGGER_BIN_LINK"]).exists()
+    assert not (Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger.service").exists()
+
+
+def test_failed_legacy_combined_upgrade_restores_old_links_and_units(host: dict[str, str]) -> None:
+    component_fixture(host, True)
+    before = snapshot(host)
+    control(host, reload_fail_once=True)
+    result = run_installer(host, "update", check=False)
+    assert result.returncode != 0
+    after = snapshot(host)
+    ignored = ("install.lock", ".example")
+    assert {key: value for key, value in after.items() if not key.endswith(ignored)} == {
+        key: value for key, value in before.items() if not key.endswith(ignored)
+    }
