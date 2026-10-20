@@ -1354,6 +1354,15 @@ vaultkeep --config job.yaml validate --schema-only
 
 `validate` performs schema, semantic, and runtime validation.
 
+Full `validate`, `run` preflight, and non-dry-run `prune` check destination access by
+creating a private temporary directory, writing a small file, atomically renaming the
+nonempty directory with the same no-overwrite operation used for backup finalization,
+and removing the probe. Mount and marker checks precede probe creation. Failures name
+the operation and destination; cleanup failures report the remaining probe path and
+preserve any preceding probe error. A rename collision never removes the existing
+target. The probe checks current access under the calling identity, not future access
+or the durability of a completed backup.
+
 `validate --schema-only` does not require sources or destinations to be mounted.
 
 Command-specific runtime validation is:

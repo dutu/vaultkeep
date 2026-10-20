@@ -2,7 +2,7 @@
 
 from vaultkeep.destination.creation import commit_archive_artifact
 from vaultkeep.destination.discovery import DiscoveredBackup, DiscoveryResult, discover_backups
-from vaultkeep.destination.finalize import finalize_backup_directory
+from vaultkeep.destination.finalize import finalize_backup_directory, probe_destination_writability
 from vaultkeep.destination.manifest import BackupManifest, load_manifest, write_manifest
 from vaultkeep.destination.pruning import (
     DestinationPrunePlan,
@@ -30,6 +30,7 @@ __all__ = [
     "execute_prune_plan",
     "finalize_backup_directory",
     "load_manifest",
+    "probe_destination_writability",
     "render_backup_base_name",
     "write_manifest",
 ]

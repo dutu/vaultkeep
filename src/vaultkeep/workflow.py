@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import socket
-import tempfile
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -22,6 +21,7 @@ from vaultkeep.destination import (
     create_staging_directory,
     discover_backups,
     execute_prune_plan,
+    probe_destination_writability,
 )
 from vaultkeep.errors import DestinationError
 from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_executable
@@ -106,7 +106,7 @@ def validate_job(
         return CommandResult("validate", "valid")
 
     config = load_validated_config(config_path, runtime_params=runtime_params)
-    _validate_runtime(config, require_sources=True, require_writable_destination=False)
+    _validate_runtime(config, require_sources=True, require_writable_destination=True)
     return CommandResult("validate", "valid")
 
 
@@ -456,13 +456,13 @@ def _validate_runtime(
         raise DestinationError(f"Destination root is not an accessible directory: {root}")
     if config.destination.mount_point is not None:
         _assert_configured_mount_point(root, Path(config.destination.mount_point))
-    if require_writable_destination:
-        _assert_writable_destination(root)
     if (
         config.destination.marker_file is not None
         and not (root / config.destination.marker_file).is_file()
     ):
         raise DestinationError("Configured destination marker is missing")
+    if require_writable_destination:
+        probe_destination_writability(root)
     if require_sources:
         for source in config.sources:
             if not Path(source.path).exists() and not config.source_options.ignore_missing:
@@ -493,14 +493,6 @@ def _path_is_relative_to(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _assert_writable_destination(root: Path) -> None:
-    try:
-        with tempfile.TemporaryFile(prefix=".vaultkeep-write-test-", dir=root):
-            pass
-    except OSError as error:
-        raise DestinationError(f"Destination root is not writable: {root}") from error
 
 
 def _runtime_owner(user_mode: bool) -> tuple[int, int | None]:

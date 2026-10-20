@@ -157,7 +157,9 @@ consistency warning. Preserve state and follow [manual review](recovery.md#opera
 
 ## Runtime config checks pass but backup fails
 
-Full validation does not check destination writability or configured hook executables.
+Full validation checks destination creation, writing, atomic directory rename, and
+cleanup using a temporary probe. Permissions or mount conditions can change afterward.
+It does not check configured hook executables.
 The service's selected XDG paths, fixed child `PATH`, credentials, and helper locations
 can differ from an interactive shell. Requests freeze paths and parameters, not job
 contents. Review the [child environment](service-operation.md#state-and-runtime-locations),

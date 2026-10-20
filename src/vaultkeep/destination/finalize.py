@@ -7,15 +7,48 @@ import errno
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from vaultkeep.errors import (
     DestinationCommitDurabilityError,
+    DestinationError,
     DestinationFinalizeError,
 )
 
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
+
+
+def probe_destination_writability(root: Path) -> None:
+    """Check create, write, atomic directory rename, and removal using private probes."""
+    probe: Path | None = None
+    failure: OSError | None = None
+    operation = "create a probe directory"
+    try:
+        probe = Path(tempfile.mkdtemp(prefix=".vaultkeep-write-test-", dir=root))
+        operation = "write a probe file"
+        (probe / "probe").write_bytes(b"vaultkeep destination probe\n")
+        operation = "atomically rename a probe directory"
+        renamed = probe.with_name(f"{probe.name}-renamed")
+        _rename_noreplace(probe, renamed)
+        probe = renamed
+    except OSError as error:
+        failure = error
+    finally:
+        if probe is not None:
+            try:
+                (probe / "probe").unlink(missing_ok=True)
+                probe.rmdir()
+            except OSError as error:
+                detail = f"; could not {operation}: {failure}" if failure is not None else ""
+                raise DestinationError(
+                    f"Cannot remove destination probe {probe}: {error}{detail}"
+                ) from error
+    if failure is not None:
+        raise DestinationError(
+            f"Destination probe failed at {root}: cannot {operation}: {failure}"
+        ) from failure
 
 
 def finalize_backup_directory(staging_path: Path, final_path: Path) -> None:

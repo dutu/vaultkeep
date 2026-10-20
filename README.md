@@ -448,6 +448,17 @@ vaultkeep [--user] --config <job.yaml> validate
 
 Use schema-only validation for quick YAML structure checks. Use complete validation before running a backup or installing a timer.
 
+Complete validation creates a temporary directory and file in the destination, checks
+the same atomic directory rename used to finalize backups, then removes the probe.
+Backup runs and destructive pruning perform this check before creating archives or
+deleting backups. Failures identify the operation and path; if cleanup is denied,
+remove the reported probe after correcting destination permissions. Schema-only
+validation does not access the destination.
+
+Run validation as the account that runs the backup, using `--user` for user-mode jobs.
+Successful validation confirms access at that moment; permissions and mount conditions
+can change afterward.
+
 ### Update a job configuration
 
 After changing a job configuration:

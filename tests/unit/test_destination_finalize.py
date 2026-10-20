@@ -2,16 +2,112 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
 
 from vaultkeep.destination import finalize as finalize_module
-from vaultkeep.destination import finalize_backup_directory
+from vaultkeep.destination import finalize_backup_directory, probe_destination_writability
 from vaultkeep.errors import (
     DestinationCommitDurabilityError,
+    DestinationError,
     DestinationFinalizeError,
 )
+
+
+def test_destination_probe_checks_nonempty_directory_rename_and_preserves_existing_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = tmp_path / "operator-data"
+    existing.write_bytes(b"preserve")
+    original = finalize_module._rename_noreplace
+    renames: list[tuple[Path, Path]] = []
+
+    def record_rename(source: Path, destination: Path) -> None:
+        assert source.parent == destination.parent == tmp_path
+        assert (source / "probe").read_bytes()
+        renames.append((source, destination))
+        original(source, destination)
+
+    monkeypatch.setattr(finalize_module, "_rename_noreplace", record_rename)
+
+    probe_destination_writability(tmp_path)
+
+    assert len(renames) == 1
+    assert list(tmp_path.iterdir()) == [existing]
+    assert existing.read_bytes() == b"preserve"
+
+
+@pytest.mark.parametrize("operation", ["mkdir", "write", "rename", "unlink", "rmdir"])
+def test_destination_probe_reports_permission_failures_and_cleanup_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    def denied(*args: object, **kwargs: object) -> None:
+        raise PermissionError(errno.EACCES, "denied")
+
+    with monkeypatch.context() as patch:
+        if operation == "mkdir":
+            patch.setattr(finalize_module.tempfile, "mkdtemp", denied)
+        elif operation == "write":
+            patch.setattr(Path, "write_bytes", denied)
+        elif operation == "rename":
+            patch.setattr(finalize_module, "_rename_noreplace", denied)
+        else:
+            patch.setattr(Path, operation, denied)
+
+        with pytest.raises(DestinationError) as caught:
+            probe_destination_writability(tmp_path)
+
+    message = str(caught.value)
+    assert str(tmp_path) in message
+    assert "denied" in message
+    leftovers = list(tmp_path.iterdir())
+    if operation in {"unlink", "rmdir"}:
+        assert len(leftovers) == 1
+        assert f"Cannot remove destination probe {leftovers[0]}" in message
+    else:
+        assert leftovers == []
+
+
+def test_destination_probe_preserves_rename_error_when_cleanup_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def deny_rename(source: Path, destination: Path) -> None:
+        raise PermissionError("rename denied")
+
+    def deny_removal(path: Path) -> None:
+        raise PermissionError("removal denied")
+
+    monkeypatch.setattr(finalize_module, "_rename_noreplace", deny_rename)
+    monkeypatch.setattr(Path, "rmdir", deny_removal)
+
+    with pytest.raises(DestinationError) as caught:
+        probe_destination_writability(tmp_path)
+
+    assert "removal denied" in str(caught.value)
+    assert "could not atomically rename a probe directory: rename denied" in str(caught.value)
+
+
+def test_destination_probe_never_removes_an_existing_rename_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = finalize_module._rename_noreplace
+    collisions: list[Path] = []
+
+    def collide(source: Path, destination: Path) -> None:
+        destination.mkdir()
+        (destination / "operator-data").write_bytes(b"preserve")
+        collisions.append(destination)
+        original(source, destination)
+
+    monkeypatch.setattr(finalize_module, "_rename_noreplace", collide)
+
+    with pytest.raises(DestinationError, match="atomically rename"):
+        probe_destination_writability(tmp_path)
+
+    assert list(tmp_path.iterdir()) == collisions
+    assert (collisions[0] / "operator-data").read_bytes() == b"preserve"
 
 
 def _staging(tmp_path: Path) -> Path:
