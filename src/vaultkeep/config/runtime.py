@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import string
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 
 from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import ConfigurationError, IssuePathPart, ValidationIssue
@@ -17,6 +18,25 @@ DESTINATION_NAME_FIELDS = frozenset(
 RESERVED_PARAMETER_NAMES = DESTINATION_NAME_FIELDS | {"backup_id"}
 
 _FORMATTER = string.Formatter()
+
+
+def builtin_template_values(
+    *,
+    job_id: str,
+    hostname: str,
+    timestamp: datetime,
+    source_hash: str,
+    archive_format: str,
+) -> dict[str, str | datetime]:
+    """Return the built-in values shared by destination and hook templates."""
+    return {
+        "job": job_id,
+        "hostname": hostname,
+        "timestamp": timestamp,
+        "timestamp_utc": timestamp.astimezone(UTC),
+        "source_hash": source_hash,
+        "format": archive_format,
+    }
 
 
 def parse_runtime_parameters(arguments: Sequence[str]) -> dict[str, str]:

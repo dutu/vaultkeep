@@ -50,7 +50,7 @@ Future enhancements, excluded from v1:
 - encrypted-backup password rotation within an existing job and destination namespace;
 - support for package managers or operating systems beyond Debian.
 
-Core backup behavior remains unchanged in 0.2.0. The optional integration is specified in [Trigger integration](docs/plans/trigger-integration-0.2.0.md) and [Trigger design](docs/design/trigger.md).
+Core backup behavior remains unchanged in 0.2.0. The optional integration is specified in [Trigger integration](../plans/trigger-integration-0.2.0.md) and [Trigger design](trigger.md).
 
 ## 1.2 Capability status
 
@@ -1106,16 +1106,19 @@ A configured hook is a strict object:
 ```yaml
 hooks:
   before_check:
-    command:
-      - /usr/local/sbin/prepare-app-backup
-      - --job
-      - app
+    command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
     timeout_seconds: 300
 ```
 
-`command` is a non-empty list of strings. The first element is an absolute executable path. `timeout_seconds` is an integer from 1 through 3600 and defaults to `300`.
+`command` is a non-blank shell command string with no null characters. Argument lists are not accepted. `timeout_seconds` is an integer from 1 through 3600 and defaults to `300`.
 
-V1 does not support shell command strings, pipelines, redirection, variable expansion, configurable hook environments, multiple commands per phase, or configurable failure policies. An administrator combines operations in a separately managed executable when a phase requires more than one action.
+Commands use POSIX shell syntax and support shell built-ins, pipelines, redirection, variable expansion, command substitution, and command sequences. Configurable hook environments and configurable failure policies are not supported. Each phase starts a separate shell, so changes made by `cd` or `export` do not persist across phases.
+
+Hook templates use the same built-in value mapping as destination names: `{job}`, `{hostname}`, `{timestamp}`, `{timestamp_utc}`, `{source_hash}`, and `{format}`. Timestamp fields accept datetime format specifiers; `source_hash` accepts positive precision truncation such as `{source_hash:.12}` and omits the `sha256:` prefix. Other fields do not accept formatting. Conversions and nested fields are rejected during semantic validation, before any hook runs.
+
+Recognized placeholders expand in unquoted text and double-quoted shell arguments. Single-quoted shell text, escaped placeholders, comments, and quoted here-document bodies remain literal. Unquoted here-document bodies allow expansion. Existing `${VAR}` expressions and other shell braces retain their meaning; unknown template fields remain literal text. Template values are passed through private environment variables and referenced from the compiled command; their contents never become shell source. Authors still quote expansions to avoid shell word splitting and globbing.
+
+The workflow captures the hostname once per run and uses it for hook templates, destination naming, and the manifest. Before the archive timestamp is assigned, hook timestamps use the lifecycle start time. Later hooks use the archive creation timestamp, or the unchanged-check timestamp for `on_unchanged`; `{timestamp_utc}` is the same instant converted to UTC. `{source_hash}` is empty before hashing succeeds and is retained in the failure context immediately after hashing, including failures before archive allocation. `{format}` is available in every phase.
 
 ## 15.1 Phase semantics
 
@@ -1147,24 +1150,23 @@ V1 does not support shell command strings, pipelines, redirection, variable expa
 
 When `before_check` creates state that requires cleanup, the job configures the cleanup executable in `on_success`, `on_failure`, and `on_unchanged`. Vaultkeep does not infer or synthesize that cleanup.
 
-Hook lifecycle execution starts only after CLI, schema, semantic, runtime, hook-executable, and lock validation succeed. Invalid configuration, failed runtime preflight, or lock contention does not execute any hook. Operating-system termination, process kill, kernel failure, and power loss cannot guarantee terminal-hook execution.
+Hook lifecycle execution starts only after CLI, schema, semantic, runtime, hook-shell, and lock validation succeed. Invalid configuration, failed runtime preflight, or lock contention does not execute any hook. Shell syntax errors and missing commands are reported when the corresponding hook runs. Operating-system termination, process kill, kernel failure, and power loss cannot guarantee terminal-hook execution.
 
 ## 15.2 Execution contract
 
-Vaultkeep executes hooks directly with an argument-list subprocess call and `shell=False`.
+Vaultkeep executes each command as `/bin/sh -c <command>`. The subprocess call passes these three arguments explicitly with `shell=False`; `/bin/sh` interprets the command string.
 
-Before execution, Vaultkeep resolves and validates the executable:
+Before execution, Vaultkeep resolves and validates `/bin/sh`:
 
-- the configured path is absolute;
-- every configured and resolved path component is owned by root;
+- the configured and resolved shell paths and their parent components are owned by root in root mode, or by root or the calling user in user mode;
 - every traversed directory is not writable by group or other users;
-- every symbolic link is root-owned and resolves to a path that passes the same checks;
-- the resolved target exists, is a regular executable file, and is owned by root;
-- the target is not writable by group or other users;
-- a script's absolute shebang interpreter and interpreter path pass the same checks;
-- indirect `/usr/bin/env` shebangs are rejected.
+- symbolic links have trusted ownership and resolve to a path that passes the same checks; their permission bits are not treated as file writability;
+- the resolved shell target exists and is a regular executable file;
+- the target is not writable by group or other users.
 
-Hooks inherit Vaultkeep's root privileges and are trusted administrator code.
+The shell resolves commands using the fixed hook `PATH` or explicit paths. Vaultkeep does not parse arbitrary shell code to validate individual commands, scripts, or shebang interpreters. Hook authors must securely manage all invoked code. Hooks are trusted code running under the job's execution identity.
+
+The shell's exit status determines hook success. A command sequence normally returns the last command's status, and a pipeline normally returns the last pipeline command's status. Authors use `&&` or explicit error handling when earlier failures must stop execution.
 
 Execution uses:
 
@@ -1209,7 +1211,7 @@ VAULTKEEP_VERSION
 
 Passwords, password-file paths, password-derived values, inherited environment variables, and arbitrary configuration values are absent from the hook environment.
 
-Hook arguments are visible through the operating-system process list. Hook command lists must not contain passwords, tokens, or other secrets; a hook reads required secrets from a separately managed root-readable file.
+Hook command strings and arguments are visible through the operating-system process list. They must not contain passwords, tokens, or other secrets; a hook reads required secrets from a separately managed file readable by the job's execution identity. Context values are passed as environment data and expanded by the shell; Vaultkeep does not substitute their contents into shell source. Authors quote expansions such as `"$VAULTKEEP_ERROR"` to preserve them as single arguments.
 
 ## 15.4 Failure semantics
 
@@ -1283,8 +1285,8 @@ Check cross-field relationships:
 - when `schedule.enabled` is true, exactly one of `schedule.at` and `schedule.window` is set;
 - when `schedule.enabled` is true, schedule weekday and month-day fields match the selected interval;
 - each configured hook is null or contains only `command` and `timeout_seconds`;
-- each hook command is a non-empty list of strings whose first element is absolute;
-- hook command elements contain no null characters;
+- each hook command is a non-blank shell command string;
+- hook command strings contain no null characters;
 - hook timeouts are integers from 1 through 3600;
 - future-enhancement fields from metadata extensions are absent.
 
@@ -2152,7 +2154,7 @@ schedule:
   persistent: true
 
 hooks:
-  # Each phase is null or one direct argv-based command.
+  # Each phase is null or one shell command string executed with /bin/sh -c.
   before_check: null
   before_archive: null
   after_archive: null
@@ -2162,10 +2164,7 @@ hooks:
 
   # Example hook:
   # before_check:
-  #   command:
-  #     - /usr/local/sbin/prepare-app-backup
-  #     - --job
-  #     - example
+  #   command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
   #   timeout_seconds: 300
 
 logging:
@@ -2205,7 +2204,7 @@ package version. Every deployment contains `src`, one fresh `venv`, and
 through `current/venv/bin`. Core templates stay under `/etc/systemd/system`; optional
 Trigger templates use `/etc/systemd/user`. Core config/state/temp/registry remain
 under `/etc/vaultkeep` and `/var/lib/vaultkeep`. Trigger's user config, fixed state,
-and runtime paths are unchanged; see [Trigger design](docs/design/trigger.md).
+and runtime paths are unchanged; see [Trigger design](trigger.md).
 
 ## 25.2 Installer responsibilities
 
@@ -2325,7 +2324,6 @@ vaultkeep/
 ├── requirements-dev.lock
 ├── .gitignore
 ├── README.md
-├── architecture_and_design.md
 ├── LICENSE
 ├── CHANGELOG.md
 ├── install.sh
@@ -2349,9 +2347,12 @@ vaultkeep/
 │   └── vaultkeep@.timer
 ├── scripts/
 └── docs/
+    └── design/
+        ├── architecture_and_design.md
+        └── trigger.md
 ```
 
-`architecture_and_design.md` remains the authoritative design and implementation specification.
+`docs/design/architecture_and_design.md` remains the authoritative design and implementation specification.
 
 ---
 
@@ -2361,7 +2362,7 @@ Use `pytest`.
 
 Testing must mirror the modular design.
 
-Every continuous-integration run executes Ruff format/lint, core strict mypy, root pytest including installed cross-package tests, Trigger pytest in a separate process, and distribution build/isolation checks. See [development/testing](docs/development/testing.md). Release integration gates remain additional to these per-commit checks.
+Every continuous-integration run executes Ruff format/lint, core strict mypy, root pytest including installed cross-package tests, Trigger pytest in a separate process, and distribution build/isolation checks. See [development/testing](../development/testing.md). Release integration gates remain additional to these per-commit checks.
 
 Core test areas:
 
@@ -2508,11 +2509,11 @@ Encrypted-archive integration tests inspect `/proc/<pid>/cmdline` and the captur
 - Validate generated systemd instance names and modify only files recorded in the ownership registry.
 - Resolve and verify every destructive installer target before synchronization or old-version cleanup.
 - Validate the installation manifest against a fixed allowlist before uninstall and preserve ownership-conflicting paths.
-- Treat hook configuration as root-code configuration: require secure config and executable ownership and modes.
-- Execute hooks without a shell, inherited environment, inherited standard input, or password-related context.
+- Treat hook configuration as trusted executable code for the job's execution identity; securely manage the configuration and all code it invokes.
+- Execute hook command strings with a validated `/bin/sh`, a fixed environment, no inherited standard input, and no password-related context.
 - Terminate and reap the complete hook process group on timeout or Vaultkeep cancellation.
 
-Hook programs execute as trusted administrator code with Vaultkeep's root privileges.
+Hook commands execute as trusted code with the job's execution privileges.
 
 ---
 
@@ -2611,7 +2612,7 @@ The v1 decisions are closed:
 2. Exclusions use the documented GitWildMatch subset without negation.
 3. TAR preserves modification times, while the source digest excludes modification time. ACLs, extended attributes, and SELinux attributes are excluded.
 4. Every backup uses its own backup-ID-suffixed directory; its archive, checksum, and JSON manifest share the rendered base name without the backup ID.
-5. V1 lifecycle hooks are `before_check`, `before_archive`, `after_archive`, `on_success`, `on_failure`, and `on_unchanged`; they use direct argument-list execution, a controlled environment, bounded output, timeouts, and fixed failure semantics.
+5. V1 lifecycle hooks are `before_check`, `before_archive`, `after_archive`, `on_success`, `on_failure`, and `on_unchanged`; they use shell command strings executed by `/bin/sh -c`, a controlled environment, bounded output, timeouts, and fixed failure semantics.
 6. A matching but malformed backup blocks destructive pruning and is never automatically deleted.
 7. A source change during hashing or archiving fails immediately without an automatic retry.
 8. Scheduling uses one systemd timer instance per job, native calendar timers, persistent catch-up, and deterministic fixed random delay for configured windows.

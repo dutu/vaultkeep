@@ -100,45 +100,83 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
     assert not progress_threads[0].is_alive()
 
 
-def test_captured_run_has_no_progress_or_background_thread(
+def test_terminal_verify_reports_progress_and_heartbeat_and_preserves_final_stdout(
     monkeypatch: pytest.MonkeyPatch, capsys: Any, progress_threads: list[Thread]
 ) -> None:
-    def run(config: Path, **kwargs: Any) -> CommandResult:
+    output = TerminalOutput()
+    monkeypatch.setattr(progress_module.sys, "stderr", output)
+    monkeypatch.setattr(progress_module, "_HEARTBEAT_SECONDS", 0.01)
+
+    def verify(config: Path, **kwargs: Any) -> CommandResult:
+        assert config == Path("app.yaml")
+        assert kwargs["runtime_params"] == {"wallet": "app"}
+        kwargs["progress"]("Verifying backup manifests and checksums")
+        assert output.heartbeat_seen.wait(timeout=2)
+        return CommandResult("verify", "verified", backups=2)
+
+    monkeypatch.setattr(commands, "verify_backups", verify)
+
+    assert commands.main(["--config", "app.yaml", "--param", "wallet=app", "verify"]) == 0
+    assert capsys.readouterr().out == "verify: verified\n"
+    assert "[00:00] Verifying backup manifests and checksums\n" in output.getvalue()
+    assert "Verifying backup manifests and checksums (still running)\n" in output.getvalue()
+    assert len(progress_threads) == 1
+    assert not progress_threads[0].is_alive()
+
+
+@pytest.mark.parametrize(
+    ("command", "handler", "result"),
+    [("run", "run_backup", "created"), ("verify", "verify_backups", "verified")],
+)
+def test_captured_command_has_no_progress_or_background_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+    progress_threads: list[Thread],
+    command: str,
+    handler: str,
+    result: str,
+) -> None:
+    def execute(config: Path, **kwargs: Any) -> CommandResult:
         assert kwargs["progress"] is None
         return CommandResult(
-            "run", "created", archive_path=Path("/backups/app.tar.zst"), archive_size=1536
+            command, result, archive_path=Path("/backups/app.tar.zst"), archive_size=1536
         )
 
-    monkeypatch.setattr(commands, "run_backup", run)
+    monkeypatch.setattr(commands, handler, execute)
 
-    assert commands.main(["--config", "app.yaml", "run"]) == 0
+    assert commands.main(["--config", "app.yaml", command]) == 0
     captured = capsys.readouterr()
-    assert captured.out == "run: created\n"
+    assert captured.out == f"{command}: {result}\n"
     assert captured.err == ""
     assert progress_threads == []
 
 
 @pytest.mark.parametrize("error", [DestinationError("unavailable"), KeyboardInterrupt()])
-def test_failed_or_interrupted_run_stops_progress_before_error_handling(
+@pytest.mark.parametrize(
+    ("command", "handler"), [("run", "run_backup"), ("verify", "verify_backups")]
+)
+def test_failed_or_interrupted_command_stops_progress_before_error_handling(
     monkeypatch: pytest.MonkeyPatch,
     capsys: Any,
     progress_threads: list[Thread],
     error: BaseException,
+    command: str,
+    handler: str,
 ) -> None:
     output = TerminalOutput()
     monkeypatch.setattr(progress_module.sys, "stderr", output)
 
-    def run(config: Path, **kwargs: Any) -> CommandResult:
+    def execute(config: Path, **kwargs: Any) -> CommandResult:
         kwargs["progress"]("Checking existing backups")
         raise error
 
-    monkeypatch.setattr(commands, "run_backup", run)
+    monkeypatch.setattr(commands, handler, execute)
 
     if isinstance(error, KeyboardInterrupt):
         with pytest.raises(KeyboardInterrupt):
-            commands.main(["--config", "app.yaml", "run"])
+            commands.main(["--config", "app.yaml", command])
     else:
-        assert commands.main(["--config", "app.yaml", "run"]) == 5
+        assert commands.main(["--config", "app.yaml", command]) == 5
         assert output.getvalue().endswith("unavailable\n")
 
     assert capsys.readouterr().out == ""

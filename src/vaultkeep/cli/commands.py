@@ -70,7 +70,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif namespace.command == "list":
             result, _ = list_backups(namespace.config, runtime_params=runtime_params)
         elif namespace.command == "verify":
-            result = verify_backups(namespace.config, runtime_params=runtime_params)
+            with terminal_progress() as progress:
+                result = verify_backups(
+                    namespace.config, runtime_params=runtime_params, progress=progress
+                )
         elif namespace.command == "prune":
             result = prune_backups(
                 namespace.config, dry_run=namespace.dry_run, runtime_params=runtime_params

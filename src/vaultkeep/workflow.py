@@ -24,7 +24,7 @@ from vaultkeep.destination import (
     probe_destination_writability,
 )
 from vaultkeep.errors import DestinationError
-from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_executable
+from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_shell
 from vaultkeep.locking import JobLock, job_lock_path
 from vaultkeep.sources import (
     calculate_config_fingerprint,
@@ -136,12 +136,19 @@ def prune_backups(
 
 
 def verify_backups(
-    config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    config_path: Path,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> CommandResult:
     """Discovery already verifies sidecars; command exposes its structural result."""
+    report = progress if progress is not None else lambda message: None
     parameters = dict(runtime_params or {})
+    report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
+    report("Checking destination")
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
+    report("Verifying backup manifests and checksums")
     discovered = discover_backups(config, runtime_params=parameters)
     if discovered.malformed:
         raise DestinationError(
@@ -194,7 +201,13 @@ def run_backup(
     reconciliation = None
     latest_state: LocalState | None = None
     loaded_password = None
-    failure_context = HookContext(config.job.id, config_path, destination=config.destination.root)
+    base_hook_context = HookContext(
+        config.job.id,
+        config_path,
+        hostname=socket.gethostname(),
+        archive_format=config.archive.format,
+    )
+    failure_context = replace(base_hook_context, destination=config.destination.root)
     terminal_hook_failed = False
 
     try:
@@ -202,7 +215,7 @@ def run_backup(
             "before_check",
             config,
             config_path,
-            HookContext(config.job.id, config_path),
+            base_hook_context,
             hook_outcomes,
             **hook_kwargs,
         )
@@ -210,6 +223,7 @@ def run_backup(
         snapshot = discover_sources(config)
         report("Hashing source files")
         source_digest = calculate_source_digest(snapshot)
+        failure_context = replace(failure_context, source_digest=source_digest)
         config_fingerprint = calculate_config_fingerprint(config, runtime_params=parameters)
         report("Checking existing backups")
         discovered = discover_backups(config, runtime_params=parameters)
@@ -240,6 +254,7 @@ def run_backup(
             destination_backups=discovered.state_records,
         )
         now = datetime.now().astimezone()
+        failure_context = replace(failure_context, timestamp=now)
         if decision.unchanged:
             report("Sources unchanged; skipping archive creation")
             terminal_hook_failed = True
@@ -247,11 +262,8 @@ def run_backup(
                 "on_unchanged",
                 config,
                 config_path,
-                HookContext(
-                    config.job.id,
-                    config_path,
-                    source_digest=source_digest,
-                    destination=config.destination.root,
+                replace(
+                    failure_context,
                     result="unchanged",
                     version=installed_version(),
                 ),
@@ -283,19 +295,16 @@ def run_backup(
             config.destination,
             job_id=config.job.id,
             backup_id=backup_id,
-            hostname=socket.gethostname(),
+            hostname=base_hook_context.hostname,
             created_at=now,
             source_digest=source_digest,
             archive_format=config.archive.format,
             runtime_params=parameters,
         )
         create_staging_directory(allocated)
-        hook_context = HookContext(
-            config.job.id,
-            config_path,
+        hook_context = replace(
+            failure_context,
             backup_id=backup_id,
-            source_digest=source_digest,
-            destination=config.destination.root,
             archive=str(allocated.final_directory / allocated.archive_path.name),
             backup_directory=str(allocated.final_directory),
             version=installed_version(),
@@ -358,7 +367,7 @@ def run_backup(
             artifact,
             application_version=installed_version(),
             job_id=config.job.id,
-            hostname=socket.gethostname(),
+            hostname=base_hook_context.hostname,
             created_at=now,
             config_fingerprint=config_fingerprint,
         )
@@ -527,8 +536,7 @@ def _validate_configured_hooks(config: JobConfig, *, user_mode: bool = False) ->
     ):
         hook = getattr(config.hooks, phase)
         if hook is not None:
-            validate_hook_executable(
-                hook.command,
+            validate_hook_shell(
                 owner_uid=owner_uid,
                 owner_gid=owner_gid,
                 allow_root_owned=user_mode,

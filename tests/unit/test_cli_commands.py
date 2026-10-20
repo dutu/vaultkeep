@@ -142,6 +142,29 @@ def test_read_only_commands_never_probe_destination(
     assert list((local_job.parent / "destination").iterdir()) == []
 
 
+@pytest.mark.parametrize("malformed", [False, True])
+def test_verify_reports_stages_without_changing_verification_result(
+    local_job: Path, malformed: bool
+) -> None:
+    if malformed:
+        (local_job.parent / "destination" / ("backup-app-20260724T120000Z-" + "0" * 32)).mkdir()
+    stages: list[str] = []
+
+    if malformed:
+        with pytest.raises(DestinationError, match="malformed"):
+            workflow.verify_backups(local_job, progress=stages.append)
+    else:
+        assert workflow.verify_backups(local_job, progress=stages.append) == workflow.CommandResult(
+            "verify", "verified", backups=0
+        )
+
+    assert stages == [
+        "Loading and validating configuration",
+        "Checking destination",
+        "Verifying backup manifests and checksums",
+    ]
+
+
 def test_runtime_validation_checks_marker_before_writing_probe(
     tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -99,9 +99,9 @@ class ScheduleConfig(StrictConfigModel):
 
 
 class HookConfig(StrictConfigModel):
-    """One direct lifecycle-hook command."""
+    """One shell lifecycle-hook command."""
 
-    command: list[NonEmptyString] = Field(min_length=1)
+    command: NonEmptyString
     timeout_seconds: HookTimeout = 300
 
 

@@ -2,7 +2,7 @@
 
 Vaultkeep 0.2.0 is a backup application for Debian 13 systems. It creates independent archive files from one or more files and directories, skips unchanged sources, applies calendar-based retention, and runs either manually or through managed systemd timers.
 
-This file is the shared user guide for both operating modes. For mode-specific setup and command examples, see the [root mode guide](docs/root-mode.md) or [user mode guide](docs/user-mode.md). For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](architecture_and_design.md).
+This file is the shared user guide for both operating modes. For mode-specific setup and command examples, see the [root mode guide](docs/root-mode.md) or [user mode guide](docs/user-mode.md). For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](docs/design/architecture_and_design.md).
 
 ## Table of contents
 
@@ -522,11 +522,14 @@ vaultkeep [--user] --config <job.yaml> verify
 Verification checks:
 
 - the backup manifest and filenames;
-- the SHA-256 checksum;
-- the complete Zstandard or 7-Zip stream;
-- TAR member paths and structure.
+- the backup directory layout;
+- the SHA-256 checksum against the sidecar and manifest.
 
-Encrypted verification reads the configured password file.
+When stderr is a terminal, `verify` displays configuration validation, destination
+checks, and backup verification stages with elapsed time. Long stages repeat every
+10 seconds with a `still running` message, as with `run`. Progress is omitted when
+stderr is redirected or captured. The final result remains on stdout as
+`verify: verified`.
 
 ### Prune job backups
 
@@ -719,28 +722,46 @@ V1 uses one password for a job and destination namespace. Password rotation requ
 
 ### Lifecycle hooks
 
-Hooks run under the job's execution identity: root in root mode, or the calling user in user mode. Hooks are trusted code for that mode. Each hook phase accepts one hook object. The `command` field is one command expressed as an argument vector: the first item is the executable path, and the remaining items are arguments passed to that executable. It is split across YAML lines for readability; it is not several commands and it is not a shell script.
+Hooks run under the job's execution identity: root in root mode, or the calling user in user mode. Each hook phase accepts one hook object. Its `command` is a shell command string executed with `/bin/sh -c`.
 
 ```yaml
 hooks:
   before_check:
-    command:
-      - /usr/local/sbin/prepare-app-backup
-      - --job
-      - app
+    command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
     timeout_seconds: 300
 
   before_archive: null
   after_archive: null
-  on_success: null
-  on_failure: null
+  on_success:
+    command: 'telegram-notify --level info "Backup completed for {job} on {hostname}"'
+    timeout_seconds: 60
+  on_failure:
+    command: 'telegram-notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
+    timeout_seconds: 60
   on_unchanged: null
 ```
 
 The supported hook fields are:
 
-- `command`: required non-empty list of strings. `command[0]` must be an absolute executable path.
+- `command`: required non-blank shell command string. YAML lists are not accepted. Shell built-ins such as `cd`, `export`, and `printf`, variable expansion, command substitution, pipelines, redirection, and command sequences are supported. Use POSIX shell syntax; Bash-specific syntax requires explicitly invoking Bash.
 - `timeout_seconds`: optional integer from 1 through 3600. The default is 300 seconds. If the hook does not finish before the timeout, Vaultkeep terminates the hook process group and treats the hook as failed.
+
+Hook commands support the same built-in values as destination names:
+
+| Placeholder | Value |
+| --- | --- |
+| `{job}` | Job ID. |
+| `{hostname}` | Hostname used for this run. |
+| `{timestamp}` | Time in the local timezone; supports formats such as `{timestamp:%Y-%m-%d %H:%M:%S%z}`. |
+| `{timestamp_utc}` | The same time in UTC; for example `{timestamp_utc:%Y%m%dT%H%M%SZ}`. |
+| `{source_hash}` | Source SHA-256 without the `sha256:` prefix; `{source_hash:.12}` takes the first 12 characters. Empty until hashing completes. |
+| `{format}` | Configured archive format: `tar.zst` or `tar.7z`. |
+
+Placeholders expand in unquoted text and shell double quotes. Use double quotes around messages to keep each message as one argument. Shell single quotes keep placeholders literal: `printf '%s' '{job}'` prints `{job}`. The single quotes around the complete YAML `command` value in the example are YAML quoting; they do not prevent shell expansion.
+
+Existing `${VAR}` expressions and shell braces are preserved. Only recognized placeholders are expanded; other brace text stays literal. Placeholder conversions and nested format fields are not supported. Quoted here-document delimiters disable expansion in their bodies, following shell behavior.
+
+For a created backup, timestamps match the backup filename and manifest. Before that timestamp is assigned, hooks use the time the hook lifecycle started; an unchanged run uses its check time. A failure hook receives the source hash if hashing completed before the failure.
 
 Available phases:
 
@@ -753,7 +774,57 @@ Available phases:
 
 Hook failures stop the current workflow phase. If `before_check` fails, source discovery does not start. If `before_archive` fails, archive creation does not start; Vaultkeep still attempts `after_archive` so partially applied quiescing can be released, then runs `on_failure`. If archive creation fails after `before_archive` succeeds, Vaultkeep also attempts `after_archive` and then runs `on_failure`.
 
-Hook executables and their paths must satisfy the ownership and writability rules for the selected mode. Shell strings, pipelines, inherited environments, secret arguments, and multiple commands per phase are not supported. Use a securely managed wrapper executable for multi-step actions.
+The notification example requires `telegram-notify` to be installed and configured. Other hooks can use any installed command. Commands without an absolute path are found using the fixed `PATH` of `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`.
+
+Hooks start in `/` with no standard input. They receive `LANG=C.UTF-8` and Vaultkeep's context variables, including `VAULTKEEP_JOB`, `VAULTKEEP_RESULT`, `VAULTKEEP_STAGE`, `VAULTKEEP_FAILED_STAGE`, and `VAULTKEEP_ERROR`. Other environment variables and shell startup files are not inherited. Quote variable expansions as in the example above.
+
+The hook's result is the shell's exit status. Use `&&` to stop a sequence when an earlier command fails; a pipeline normally reports the last command's status. Each phase starts a separate shell, so `cd` and `export` affect only that hook.
+
+Hook configuration is trusted executable code. Vaultkeep validates the ownership and writability of the shell and its path; commands and scripts invoked by the shell must be managed securely by the job owner. Missing commands and shell syntax errors are reported when the hook runs. Keep passwords and tokens out of command strings and arguments because they can appear in the process list.
+
+Set variables inside a hook when they are needed. For example, `$HOSTNAME` is not supplied by Vaultkeep; assign it before using it alongside the provided `$VAULTKEEP_*` variables:
+
+```yaml
+on_failure:
+  command: >-
+    HOSTNAME=$(hostname) &&
+    export HOSTNAME &&
+    telegram-notify --level error
+    "Backup failed for $VAULTKEEP_JOB on $HOSTNAME: $VAULTKEEP_ERROR"
+  timeout_seconds: 60
+```
+
+The YAML `>-` joins equally indented lines with spaces, so no trailing backslashes are needed. Keep all command lines at the same indentation. Double quotes allow variable expansion and keep the message as one argument. `export HOSTNAME` makes the variable available to child processes, including scripts called by the hook. Variables set in one hook are not available in another hook.
+
+Call your own scripts with an explicit interpreter. These examples pass the job ID as the script's first argument (`$1`):
+
+```yaml
+on_success:
+  command: '/bin/sh /usr/local/libexec/vaultkeep/notify-backup.sh "{job}"'
+  timeout_seconds: 60
+
+on_failure:
+  command: '/bin/bash /usr/local/libexec/vaultkeep/notify-backup.bash "{job}"'
+  timeout_seconds: 60
+```
+
+Replace these paths with your scripts. Use `/bin/sh` for a POSIX shell script and `/bin/bash` for a script using Bash features. With an explicit interpreter, the script must be readable by the job's execution user; executable permission on the script is not required. Scripts also receive the `$VAULTKEEP_*` environment variables. Vaultkeep expands placeholders in `command`; inside the script, use `$1` or `$VAULTKEEP_JOB` to access the job ID.
+
+For longer commands, YAML `|` preserves newlines, allowing several shell commands in one hook. A trailing `\` continues the same command on the next line; it must be the last character on its line, with no spaces after it. This example uses a pipeline and command substitution to include the first global-scope IPv4 address reported by `ip`. It requires `ip` from `iproute2` and `awk`:
+
+```yaml
+on_failure:
+  command: |
+    HOSTNAME=$(hostname) || HOSTNAME=unknown
+    IP=$(ip -4 -o addr show scope global 2>/dev/null |
+      awk '{split($4, address, "/"); print address[1]; exit}')
+    IP=${IP:-unavailable}
+    telegram-notify --level error \
+      "Backup failed for {job} on $HOSTNAME (IPv4: $IP): $VAULTKEEP_ERROR"
+  timeout_seconds: 60
+```
+
+This reports a local interface address. If several interfaces have addresses, it uses the first one listed. If the lookup returns no address, the notification uses `unavailable`. The shell's `${IP:-unavailable}` expansion and the single-quoted `awk` program are preserved alongside Vaultkeep's `{job}` placeholder. Choose one command per phase when adapting these examples.
 
 ### Restore an unencrypted backup
 
@@ -1129,4 +1200,4 @@ gone and evidence reviewed; see [migration and cleanup](docs/trigger/migration.m
 
 This guide intentionally omits internal module boundaries, typed models, hashing encodings, atomic-commit mechanics, manifest validation algorithms, systemd rendering details, security rationale, and implementation milestones.
 
-The authoritative specification is [architecture_and_design.md](architecture_and_design.md).
+The authoritative specification is [architecture_and_design.md](docs/design/architecture_and_design.md).

@@ -99,7 +99,12 @@ schedule:
   persistent: true
 
 hooks:
-  # Hook phases. Values: null or {command: [absolute_executable, args...], timeout_seconds: 1-3600}.
+  # Hook phases. Values: null or {command: 'shell command', timeout_seconds: 1-3600}.
+  # Commands run with /bin/sh -c; shell built-ins and $VAULTKEEP_* variables are available.
+  # Built-ins: {job}, {hostname}, {timestamp}, {timestamp_utc}, {source_hash}, {format}.
+  # Date formats: {timestamp_utc:%Y%m%dT%H%M%SZ}. Hash truncation: {source_hash:.12}.
+  # Quote messages with shell double quotes. Shell single quotes keep placeholders literal.
+  # {source_hash} is empty until hashing completes.
   before_check: null
   before_archive: null
   after_archive: null
@@ -109,11 +114,49 @@ hooks:
 
   # Example hook:
   # before_check:
-  #   command:
-  #     - /usr/local/sbin/prepare-app-backup
-  #     - --job
-  #     - example
+  #   command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
   #   timeout_seconds: 300
+  # on_failure:
+  #   command: 'telegram-notify --level error "Backup failed for {job} on {hostname}"'
+  #   timeout_seconds: 60
+
+  # Alternative examples below. Choose one command per phase.
+  # Set $HOSTNAME explicitly; Vaultkeep does not inherit your shell's environment.
+  # >- joins equally indented lines with spaces, so no trailing backslashes are needed.
+  # Keep all lines of the folded command at the same indentation.
+  # $VAULTKEEP_* variables are provided.
+  # on_failure:
+  #   command: >-
+  #     HOSTNAME=$(hostname) &&
+  #     export HOSTNAME &&
+  #     telegram-notify --level error
+  #     "Backup failed for $VAULTKEEP_JOB on $HOSTNAME: $VAULTKEEP_ERROR"
+  #   timeout_seconds: 60
+
+  # Call your own POSIX shell or Bash script. Replace the paths with your scripts.
+  # The job ID is passed as $1; scripts also receive the $VAULTKEEP_* environment.
+  # Placeholders are expanded in command, not in the script's contents.
+  # on_success:
+  #   command: '/bin/sh /usr/local/libexec/vaultkeep/notify-backup.sh "{job}"'
+  #   timeout_seconds: 60
+  # on_failure:
+  #   command: '/bin/bash /usr/local/libexec/vaultkeep/notify-backup.bash "{job}"'
+  #   timeout_seconds: 60
+
+  # | preserves newlines, allowing several shell commands in one hook.
+  # A trailing \ continues the same command on the next line.
+  # The \ must be the last character on its line, with no spaces after it.
+  # Include the first global-scope local IPv4 address; requires iproute2 and awk.
+  # Missing addresses fall back to "unavailable" so the notification can still run.
+  # on_failure:
+  #   command: |
+  #     HOSTNAME=$(hostname) || HOSTNAME=unknown
+  #     IP=$(ip -4 -o addr show scope global 2>/dev/null |
+  #       awk '{split($4, address, "/"); print address[1]; exit}')
+  #     IP=${IP:-unavailable}
+  #     telegram-notify --level error \
+  #       "Backup failed for {job} on $HOSTNAME (IPv4: $IP): $VAULTKEEP_ERROR"
+  #   timeout_seconds: 60
 
 logging:
   # Log level. Values: error, warning, info, debug.

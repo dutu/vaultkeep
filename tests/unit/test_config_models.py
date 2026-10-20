@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from vaultkeep.config import JobConfig, load_config
+from vaultkeep.config.models import HookConfig
 
 EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-job.yaml.example"
 
@@ -108,12 +109,27 @@ def test_source_archive_prefix_matches_archive_path_mode(valid_config: dict[str,
 def test_hook_timeout_bounds_are_enforced(valid_config: dict[str, Any]) -> None:
     candidate = deepcopy(valid_config)
     candidate["hooks"]["before_check"] = {
-        "command": ["/usr/local/sbin/prepare-app-backup"],
+        "command": "/usr/local/sbin/prepare-app-backup",
         "timeout_seconds": 3601,
     }
 
     with pytest.raises(ValidationError, match="less than or equal to 3600"):
         JobConfig.model_validate(candidate)
+
+
+@pytest.mark.parametrize("command", [[], ["/bin/true"], "", None, 1, True])
+def test_hook_requires_a_non_empty_command_string(command: object) -> None:
+    with pytest.raises(ValidationError):
+        HookConfig.model_validate({"command": command})
+
+
+def test_hook_preserves_shell_command_text() -> None:
+    command = 'telegram-notify --level error "Backup failed for $VAULTKEEP_JOB on $(hostname)"'
+
+    hook = HookConfig(command=command)
+
+    assert hook.command == command
+    assert hook.timeout_seconds == 300
 
 
 def test_models_are_immutable(valid_config: dict[str, Any]) -> None:

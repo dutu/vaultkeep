@@ -659,7 +659,7 @@ Acceptable result:
       "examples/vaultkeep-job.yaml.example",
       "README.md",
       "RELEASE.md",
-      "architecture_and_design.md",
+      "docs/design/architecture_and_design.md",
   ]
   root = sdists[0].name.removesuffix(".tar.gz")
   for item in required:

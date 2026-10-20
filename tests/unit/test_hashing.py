@@ -384,7 +384,7 @@ def test_operational_configuration_is_excluded_from_fingerprint(
     elif section == "schedule":
         candidate[section]["window"] = "02:00-04:00"
     elif section == "hooks":
-        candidate[section]["on_success"] = {"command": ["/bin/true"]}
+        candidate[section]["on_success"] = {"command": "true"}
     else:
         candidate[section]["level"] = "debug"
 

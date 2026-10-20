@@ -42,7 +42,7 @@ The separate `check-config --runtime` command checks absent state/runtime subdir
 parents without creating probes there. Template checks inspect installed unit
 files and their fixed `oneshot` worker command; the Trigger console script must exist
 at an executable absolute path. Full job validation creates, writes, atomically renames,
-and removes a temporary destination probe. It still skips hook-executable checks.
+and removes a temporary destination probe. It still skips hook-shell checks.
 
 Runtime checks do not inspect wallet identities, identify related writers, detect
 cross-instance matcher overlap, or enforce destination independence. VaultKeep's

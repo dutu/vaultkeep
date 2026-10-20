@@ -262,15 +262,48 @@ def test_disabled_schedule_requires_only_enabled(valid_config: dict[str, Any]) -
     validate_semantics(_config(candidate))
 
 
-def test_hook_executable_must_be_absolute_and_arguments_cannot_contain_null(
-    valid_config: dict[str, Any],
+@pytest.mark.parametrize(
+    ("command", "expected_code"),
+    [(" \t\n", "hook_empty"), ("printf 'bad\0argument'", "hook_null")],
+)
+def test_hook_command_cannot_be_blank_or_contain_null(
+    valid_config: dict[str, Any], command: str, expected_code: str
 ) -> None:
     candidate = deepcopy(valid_config)
     candidate["hooks"]["before_check"] = {
-        "command": ["relative-command", "bad\0argument"],
+        "command": command,
     }
 
-    assert {"hook_path", "hook_null"} <= _issue_codes(_config(candidate))
+    assert expected_code in _issue_codes(_config(candidate))
+
+
+def test_hook_command_allows_shell_syntax(valid_config: dict[str, Any]) -> None:
+    valid_config["hooks"]["on_failure"] = {
+        "command": "telegram-notify --level error "
+        '"Backup failed for $VAULTKEEP_JOB on $(hostname)"',
+    }
+
+    validate_semantics(_config(valid_config))
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "{job!r}",
+        "{job:>10}",
+        "{source_hash:.0}",
+        "{source_hash:.x}",
+        "{timestamp:{job}}",
+        "{timestamp:%Y",
+        "{job",
+    ],
+)
+def test_invalid_hook_placeholder_is_rejected(
+    valid_config: dict[str, Any], placeholder: str
+) -> None:
+    valid_config["hooks"]["on_failure"] = {"command": f'printf "%s" "{placeholder}"'}
+
+    assert "hook_template" in _issue_codes(_config(valid_config))
 
 
 @pytest.mark.parametrize("pattern", ["!keep.txt", "dangling\\"])

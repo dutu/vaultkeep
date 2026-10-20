@@ -217,9 +217,11 @@ The password file must be owned by the user running `vaultkeep --user` and must 
 
 ## User-mode hooks
 
-User-mode hooks run as the calling user. Hook paths must be absolute, not writable by group or other users, and owned by either root or the user running Vaultkeep. This allows hooks in secure user-owned paths and also allows root-owned system interpreters such as `/usr/bin/python3`.
+User-mode hooks run as the calling user. Each `command` is a shell command string executed with `/bin/sh -c`. Built-in placeholders such as `{job}` and `{hostname}`, shell built-ins, `$VAULTKEEP_*` variables, and command substitution are supported. Commands can use absolute paths or the fixed hook `PATH`; the user's interactive shell environment is not inherited.
 
-Hooks still must not contain passwords or tokens in command arguments because arguments can be visible through the operating-system process list.
+Vaultkeep checks that the shell and its path are owned by root or the calling user and are not writable by group or other users. The user must securely manage any commands and scripts invoked by the shell; those commands are not individually checked by Vaultkeep. See [lifecycle hooks](../README.md#lifecycle-hooks) for examples and execution behavior.
+
+Hooks must not contain passwords or tokens in command strings or arguments because they can be visible through the operating-system process list.
 
 ## User-mode limitations
 

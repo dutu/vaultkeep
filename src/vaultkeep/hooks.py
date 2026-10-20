@@ -1,20 +1,31 @@
-"""Secure direct lifecycle-hook validation and execution."""
+"""Shell lifecycle-hook validation and execution."""
 
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import signal
+import socket
 import stat
 import subprocess
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path
 
 from vaultkeep.config.models import HookConfig
+from vaultkeep.config.runtime import DESTINATION_NAME_FIELDS, builtin_template_values
 from vaultkeep.errors import HookError
 from vaultkeep.state.models import HookOutcomeState, HookPhase
 
 _OUTPUT_LIMIT = 1024 * 1024
+_SHELL = Path("/bin/sh")
+_TEMPLATE_FIELD = re.compile(
+    r"\{(?P<field>" + "|".join(sorted(DESTINATION_NAME_FIELDS)) + r")(?![A-Za-z0-9_])"
+)
 _BASE_ENVIRONMENT = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "LANG": "C.UTF-8",
@@ -36,6 +47,9 @@ class HookContext:
     failed_stage: str = ""
     error: str = ""
     version: str = ""
+    hostname: str = field(default_factory=socket.gethostname)
+    timestamp: datetime = field(default_factory=lambda: datetime.now().astimezone())
+    archive_format: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,17 +61,14 @@ class HookExecution:
     stderr: bytes
 
 
-def validate_hook_executable(
-    command: tuple[str, ...] | list[str],
+def validate_hook_shell(
     *,
     owner_uid: int = 0,
     owner_gid: int | None = 0,
     allow_root_owned: bool = False,
 ) -> Path:
-    """Resolve one securely owned, non-writable executable and its parent path."""
-    if not command or not Path(command[0]).is_absolute():
-        raise HookError("Hook executable path must be absolute")
-    configured = Path(command[0])
+    """Resolve the securely owned, non-writable shell and its parent path."""
+    configured = _SHELL
     _validate_path_chain(
         configured,
         owner_uid=owner_uid,
@@ -65,6 +76,13 @@ def validate_hook_executable(
         allow_root_owned=allow_root_owned,
     )
     try:
+        _validate_secure_status(
+            configured.lstat(),
+            configured,
+            owner_uid=owner_uid,
+            owner_gid=owner_gid,
+            allow_root_owned=allow_root_owned,
+        )
         resolved = configured.resolve(strict=True)
         status = resolved.stat()
     except OSError as error:
@@ -84,12 +102,6 @@ def validate_hook_executable(
         owner_gid=owner_gid,
         allow_root_owned=allow_root_owned,
     )
-    _validate_shebang(
-        resolved,
-        owner_uid=owner_uid,
-        owner_gid=owner_gid,
-        allow_root_owned=allow_root_owned,
-    )
     return resolved
 
 
@@ -102,21 +114,22 @@ def run_hook(
     owner_gid: int | None = 0,
     allow_root_owned: bool = False,
 ) -> HookExecution:
-    """Execute one trusted hook directly with fixed environment and bounded output."""
+    """Execute one trusted shell hook with fixed environment and bounded output."""
     if owner_uid == 0 and owner_gid == 0 and not allow_root_owned:
-        executable = validate_hook_executable(hook.command)
+        executable = validate_hook_shell()
     else:
-        executable = validate_hook_executable(
-            hook.command,
+        executable = validate_hook_shell(
             owner_uid=owner_uid,
             owner_gid=owner_gid,
             allow_root_owned=allow_root_owned,
         )
     environment = _hook_environment(phase, context)
+    command, template_environment = render_hook_command(hook.command, context)
+    environment.update(template_environment)
     started = time.monotonic()
     try:
         process = subprocess.Popen(
-            hook.command,
+            [str(_SHELL), "-c", command],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -155,6 +168,170 @@ def require_success(execution: HookExecution) -> None:
         raise HookError(f"{outcome.phase} hook timed out")
     if outcome.exit_code != 0:
         raise HookError(f"{outcome.phase} hook exited with status {outcome.exit_code}")
+
+
+def validate_hook_template(command: str) -> None:
+    """Validate recognized placeholders without executing any shell code."""
+    render_hook_command(
+        command,
+        HookContext("job", Path("/"), hostname="host", timestamp=datetime(2026, 1, 1, tzinfo=UTC)),
+    )
+
+
+def render_hook_command(command: str, context: HookContext) -> tuple[str, dict[str, str]]:
+    """Compile built-ins to shell expansions, keeping their values out of shell source."""
+    values = builtin_template_values(
+        job_id=context.job_id,
+        hostname=context.hostname,
+        timestamp=context.timestamp,
+        source_hash=context.source_digest.removeprefix("sha256:"),
+        archive_format=context.archive_format,
+    )
+    environment: dict[str, str] = {}
+    return _render_hook_text(command, values, environment), environment
+
+
+def _render_hook_text(
+    command: str,
+    values: Mapping[str, str | datetime],
+    environment: dict[str, str],
+    *,
+    here_document: bool = False,
+) -> str:
+    """Keep shell quote boundaries while replacing recognized template fields."""
+    result: list[str] = []
+    quote = "heredoc" if here_document else ""
+    substitutions: list[tuple[str, str]] = []
+    heredocs: list[tuple[str, bool, bool]] = []
+    literal_until = 0
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if character == "\\":
+            result.append(command[index : index + 2])
+            index += 2
+            continue
+        if character == "'" and not quote:
+            end = command.find("'", index + 1)
+            end = len(command) if end == -1 else end + 1
+            result.append(command[index:end])
+            index = end
+            continue
+        if not quote and character == "#" and (index == 0 or command[index - 1] in " \t\n;|&()"):
+            end = command.find("\n", index)
+            end = len(command) if end == -1 else end
+            result.append(command[index:end])
+            index = end
+            continue
+        if character == '"' and quote in {"", '"'}:
+            quote = "" if quote == '"' else '"'
+        elif command.startswith("$((", index):
+            substitutions.append((quote, "arithmetic"))
+            quote = ""
+            result.append("$((")
+            index += 3
+            continue
+        elif command.startswith("$(", index):
+            substitutions.append((quote, ")"))
+            quote = ""
+            result.append("$(")
+            index += 2
+            continue
+        elif character == "(" and not quote:
+            substitutions.append((quote, ")"))
+        elif character == "`":
+            if substitutions and substitutions[-1][1] == "`" and not quote:
+                quote, _ = substitutions.pop()
+            else:
+                substitutions.append((quote, "`"))
+                quote = ""
+        elif (
+            not quote
+            and substitutions
+            and substitutions[-1][1] == "arithmetic"
+            and command.startswith("))", index)
+        ):
+            quote, _ = substitutions.pop()
+            result.append("))")
+            index += 2
+            continue
+        elif character == ")" and not quote and substitutions and substitutions[-1][1] == ")":
+            quote, _ = substitutions.pop()
+        elif command.startswith("${", index):
+            result.append("${")
+            index += 2
+            continue
+        elif (
+            not quote
+            and command.startswith("<<", index)
+            and not any(end == "arithmetic" for _, end in substitutions)
+        ):
+            strip_tabs = command.startswith("<<-", index)
+            start = index + (3 if strip_tabs else 2)
+            stream = StringIO(command[start:])
+            lexer = shlex.shlex(stream, posix=True, punctuation_chars=";&|()<>")
+            lexer.whitespace_split = True
+            try:
+                delimiter = lexer.get_token()
+            except ValueError:
+                delimiter = None  # Let the shell report malformed quoting.
+            if delimiter is not None:
+                literal_until = start + stream.tell()
+                expand = not any(char in command[start:literal_until] for char in "'\"\\")
+                heredocs.append((delimiter, strip_tabs, expand))
+        elif character == "\n" and heredocs:
+            result.append(character)
+            index += 1
+            for delimiter, strip_tabs, expand in heredocs:
+                body: list[str] = []
+                closing = ""
+                while index < len(command):
+                    end = command.find("\n", index)
+                    end = len(command) if end == -1 else end + 1
+                    line = command[index:end]
+                    index = end
+                    if (line.lstrip("\t") if strip_tabs else line).removesuffix("\n") == delimiter:
+                        closing = line
+                        break
+                    body.append(line)
+                text = "".join(body)
+                result.append(
+                    _render_hook_text(text, values, environment, here_document=True)
+                    if expand
+                    else text
+                )
+                result.append(closing)
+            heredocs.clear()
+            continue
+        match = _TEMPLATE_FIELD.match(command, index) if index >= literal_until else None
+        if match is not None:
+            end = command.find("}", match.end())
+            if end == -1:
+                raise HookError("Unclosed hook template placeholder")
+            suffix = command[match.end() : end]
+            if "{" in suffix or suffix.startswith("!"):
+                raise HookError("Hook template nesting and conversions are not supported")
+            field_name = match.group("field")
+            spec = suffix.removeprefix(":")
+            if spec and not (
+                field_name in {"timestamp", "timestamp_utc"}
+                or (field_name == "source_hash" and re.fullmatch(r"\.[1-9]\d*", spec))
+            ):
+                raise HookError(f"Invalid format specifier for hook placeholder {{{field_name}}}")
+            try:
+                value = format(values[field_name], spec)
+            except ValueError as error:
+                raise HookError(
+                    f"Cannot format hook placeholder {{{field_name}}}: {error}"
+                ) from error
+            name = f"VAULTKEEP_TEMPLATE_{len(environment)}"
+            environment[name] = value
+            result.append("${" + name + "}")
+            index = end + 1
+            continue
+        result.append(character)
+        index += 1
+    return "".join(result)
 
 
 def _hook_environment(phase: str, context: HookContext) -> dict[str, str]:
@@ -208,46 +385,8 @@ def _validate_secure_status(
     if not owner_matches and not root_matches:
         owner = _owner_label(owner_uid, owner_gid)
         raise HookError(f"Hook path must be owned by {owner}: {path}")
-    if stat.S_IMODE(status.st_mode) & 0o022:
+    if not stat.S_ISLNK(status.st_mode) and stat.S_IMODE(status.st_mode) & 0o022:
         raise HookError(f"Hook path must not be writable by group or other users: {path}")
-
-
-def _validate_shebang(
-    path: Path,
-    *,
-    owner_uid: int,
-    owner_gid: int | None,
-    allow_root_owned: bool,
-) -> None:
-    try:
-        with path.open("rb") as executable:
-            first_line = executable.readline(4096)
-    except OSError as error:
-        raise HookError(f"Cannot inspect hook executable {path}: {error}") from error
-    if not first_line.startswith(b"#!"):
-        return
-    interpreter = first_line[2:].strip().split(maxsplit=1)[0].decode("utf-8", errors="strict")
-    if interpreter == "/usr/bin/env":
-        raise HookError("Hook shebang must not use /usr/bin/env")
-    interpreter_path = Path(interpreter)
-    if not interpreter_path.is_absolute():
-        raise HookError("Hook shebang interpreter path must be absolute")
-    _validate_path_chain(
-        interpreter_path,
-        owner_uid=owner_uid,
-        owner_gid=owner_gid,
-        allow_root_owned=allow_root_owned,
-    )
-    try:
-        _validate_secure_status(
-            interpreter_path.stat(),
-            interpreter_path,
-            owner_uid=owner_uid,
-            owner_gid=owner_gid,
-            allow_root_owned=allow_root_owned,
-        )
-    except OSError as error:
-        raise HookError(f"Cannot inspect hook interpreter {interpreter_path}: {error}") from error
 
 
 def _owner_label(owner_uid: int, owner_gid: int | None) -> str:

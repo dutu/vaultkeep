@@ -62,7 +62,7 @@ Core references: [packaging](../../pyproject.toml), [installer](../../install.sh
 [release gates](../../tests/integration/test_release_gates.py),
 [CLI dispatch](../../src/vaultkeep/cli/commands.py),
 [workflow](../../src/vaultkeep/workflow.py), and
-[current architecture](../../architecture_and_design.md).
+[current architecture](../design/architecture_and_design.md).
 
 Trigger source references relative to its repository root are `pyproject.toml`,
 `src/vaultkeep_trigger/{cli,config,paths,environment,preflight,systemd,monitor,executor,state,models,version}.py`,
@@ -598,7 +598,7 @@ Supporting changes:
   Adapt installation paths and links while preserving technical detail and limitations.
   Put standalone-to-shared instructions in `docs/trigger/migration.md` and summarize
   the ordinary migration steps in README.
-- Update `architecture_and_design.md` in place for two distributions, component-aware
+- Update `docs/design/architecture_and_design.md` in place for two distributions, component-aware
   deployment/rollback, and the new platform. Import Trigger's architecture into
   `docs/design/trigger.md` and link the two designs. Replace obsolete standalone-only
   assumptions with the integrated public CLI contract; do not reorganize unrelated

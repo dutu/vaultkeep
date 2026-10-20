@@ -1,4 +1,4 @@
-"""Terminal-only stage reporting for manual backup runs."""
+"""Terminal-only stage reporting for manual backup commands."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def terminal_progress() -> Iterator[Callable[[str], None] | None]:
         try:
             print(f"[{minutes:02d}:{seconds:02d}] {message}", file=stream, flush=True)
         except OSError:
-            # Losing the progress stream must not interrupt the backup.
+            # Losing the progress stream must not interrupt the command.
             stopped.set()
 
     def report(message: str) -> None:

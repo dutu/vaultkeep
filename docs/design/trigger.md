@@ -58,7 +58,7 @@ The source-review baseline is 2026-10-13, with the CLI/validation/locking behavi
 | Concurrency | Per-job advisory locks; no general destination/shared-resource lock was found | Allow parallel independent instances; require reviewed distinct destination roots and serialize each instance |
 | Results | Human-readable stdout/stderr; no structured CLI result option or public execution-status API was found | Parse the trailing stdout result and retain an independent durable receipt |
 | Configuration | YAML jobs own sources, destinations, archive/encryption settings, retention, and hooks | Trigger does not copy or reinterpret backup configuration or credentials |
-| Validation | `validate --schema-only` loads YAML schema; full `validate` resolves parameters and checks source/destination conditions, but skips destination writability and hook-executable checks | Pass configured parameters; describe preflight's limited assurance |
+| Validation | `validate --schema-only` loads YAML schema; full `validate` resolves parameters and checks source/destination conditions, but skips destination writability and hook-shell checks | Pass configured parameters; describe preflight's limited assurance |
 | Version | `--version` prints the installed distribution version | Record preflight and execution versions; warn on a reviewed-contract mismatch |
 | Commit/retention | A created archive is committed and state is updated before pruning and the final CLI result | Trigger cannot undo retention or discard an archive safely by ignoring the result |
 | Cancellation | Hook timeouts exist; no documented safe whole-backup cancellation interface was found | Use advisory execution deadlines without forced termination |

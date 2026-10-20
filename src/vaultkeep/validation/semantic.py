@@ -11,7 +11,8 @@ from pathlib import Path, PurePosixPath
 
 from vaultkeep.config.models import JobConfig
 from vaultkeep.config.runtime import PARAMETER_NAME
-from vaultkeep.errors import ConfigurationError, IssuePathPart, ValidationIssue
+from vaultkeep.errors import ConfigurationError, HookError, IssuePathPart, ValidationIssue
+from vaultkeep.hooks import validate_hook_template
 from vaultkeep.sources.exclusions import InvalidExclusionPattern, compile_exclusions
 
 _SUPPORTED_TEMPLATE_FIELDS = frozenset(
@@ -536,21 +537,24 @@ def _validate_hooks(config: JobConfig, issues: list[ValidationIssue]) -> None:
         hook = getattr(config.hooks, phase)
         if hook is None:
             continue
-        if not PurePosixPath(hook.command[0]).is_absolute():
+        if not hook.command.strip():
             _issue(
                 issues,
-                ("hooks", phase, "command", 0),
-                "Hook executable path must be absolute.",
-                "hook_path",
+                ("hooks", phase, "command"),
+                "Hook command must not be blank.",
+                "hook_empty",
             )
-        for index, element in enumerate(hook.command):
-            if "\0" in element:
-                _issue(
-                    issues,
-                    ("hooks", phase, "command", index),
-                    "Hook command element contains a null character.",
-                    "hook_null",
-                )
+        if "\0" in hook.command:
+            _issue(
+                issues,
+                ("hooks", phase, "command"),
+                "Hook command contains a null character.",
+                "hook_null",
+            )
+        try:
+            validate_hook_template(hook.command)
+        except HookError as error:
+            _issue(issues, ("hooks", phase, "command"), str(error), "hook_template")
 
 
 def _validate_job_filename(

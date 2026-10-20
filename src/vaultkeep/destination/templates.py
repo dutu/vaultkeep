@@ -6,10 +6,11 @@ import os
 import string
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from vaultkeep.config.models import DestinationConfig
+from vaultkeep.config.runtime import builtin_template_values
 from vaultkeep.errors import DestinationTemplateError
 
 _FORMATTER = string.Formatter()
@@ -47,12 +48,13 @@ def render_backup_base_name(
     source_hash = _source_hash(source_digest)
     values = {
         **dict(runtime_params or {}),
-        "job": job_id,
-        "hostname": hostname,
-        "timestamp": created_at,
-        "timestamp_utc": created_at.astimezone(UTC),
-        "source_hash": source_hash,
-        "format": archive_format,
+        **builtin_template_values(
+            job_id=job_id,
+            hostname=hostname,
+            timestamp=created_at,
+            source_hash=source_hash,
+            archive_format=archive_format,
+        ),
     }
     try:
         fields = tuple(_FORMATTER.parse(template))

@@ -135,4 +135,4 @@ group: root
 mode: 0600
 ```
 
-Root-mode hooks are trusted administrator code. Hook paths, hook executables, and shebang interpreters must be root-owned and not writable by group or other users.
+Root-mode hooks are trusted administrator code, configured as shell command strings and executed with `/bin/sh -c`. Vaultkeep checks that the shell and its path are root-owned and not writable by group or other users. Administrators must securely manage the commands and scripts invoked by the shell; those commands are not individually checked by Vaultkeep. See [lifecycle hooks](../README.md#lifecycle-hooks) for examples and execution behavior.
