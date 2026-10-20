@@ -125,7 +125,7 @@ class TriggerEntrypointConfig(StrictConfigModel):
 class TriggerMatcherConfig(StrictConfigModel):
     """Strong application identity and optional supporting process predicates."""
 
-    entrypoint: TriggerEntrypointConfig
+    entrypoints: list[TriggerEntrypointConfig] = Field(min_length=1)
     exe_realpath: NonEmptyString | None = None
     argv_tokens: list[Annotated[str, StringConstraints(min_length=1, max_length=4096)]] = Field(
         default_factory=list
@@ -149,6 +149,16 @@ class TriggerMatcherConfig(StrictConfigModel):
             except re.error as error:
                 raise ValueError(f"invalid process regex: {error}") from error
         return value
+
+    @model_validator(mode="after")
+    def _valid_entrypoints(self) -> Self:
+        seen: set[tuple[str, str]] = set()
+        for entrypoint in self.entrypoints:
+            identity = (entrypoint.kind, entrypoint.value)
+            if identity in seen:
+                raise ValueError("matcher entrypoints must be unique")
+            seen.add(identity)
+        return self
 
 
 class TriggerNotificationsConfig(StrictConfigModel):
@@ -193,7 +203,7 @@ class TriggerConfig(StrictConfigModel):
     @model_validator(mode="after")
     def _valid_trigger(self) -> Self:
         if self.enabled and (self.app is None or self.data_dir is None or self.matcher is None):
-            raise ValueError("enabled triggers require app, data_dir, and matcher.entrypoint")
+            raise ValueError("enabled triggers require app, data_dir, and matcher.entrypoints")
         if self.matcher is not None:
             allowed = {"electrum": {"ELECTRUMDIR"}, "wasabi": {"WASABI_DATADIR"}, "bisq": set()}
             unknown = set(self.matcher.env_eq) - allowed.get(self.app or "", set())

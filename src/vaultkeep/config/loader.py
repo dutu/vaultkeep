@@ -49,13 +49,13 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
         "notifications",
     ),
     ("trigger", "matcher"): (
-        "entrypoint",
+        "entrypoints",
         "exe_realpath",
         "argv_tokens",
         "cmdline_regex",
         "env_eq",
     ),
-    ("trigger", "matcher", "entrypoint"): ("kind", "value"),
+    ("trigger", "matcher", "entrypoints"): ("kind", "value"),
     ("trigger", "notifications"): ("enabled", "command", "timeout_ms"),
     ("hooks",): (
         "before_check",

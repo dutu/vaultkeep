@@ -42,12 +42,34 @@ ownership metadata for the unified release.
    environments outside the managed prefix remain the operator's responsibility.
 
 2. Transfer each old TOML instance into the corresponding backup YAML's `trigger`
-   section. Map `instance.app`, `data_dir`, `matcher`, and timing fields directly;
-   map `instance.job.params` to `trigger.params`. Use the backup's `job.id` as the
-   instance name. Set `schedule.enabled: false`; leave `trigger.enabled: false` until
-   review is complete. Transfer notification settings to `trigger.notifications`
-   and use the job's `logging.level`. There is no executable setting: Trigger invokes
-   this Vaultkeep installation's own command.
+   section. Map `instance.app`, `data_dir`, and timing fields directly; map
+   `instance.job.params` to `trigger.params`. Do not copy `instance.matcher`
+   verbatim: the legacy singular `entrypoint` must become the required
+   `entrypoints` list.
+
+   Convert the legacy TOML form:
+
+   ```toml
+   entrypoint = { kind = "script", value = "/opt/app" }
+   ```
+
+   to this YAML form:
+
+   ```yaml
+   matcher:
+     entrypoints:
+       - kind: script
+         value: /opt/app
+   ```
+
+   Add more list items when the application has multiple verified launch
+   identities. Copy compatible supporting matcher predicates such as
+   `exe_realpath`, `argv_tokens`, `cmdline_regex`, and `env_eq`. Use the backup's
+   `job.id` as the instance name. Set `schedule.enabled: false`; leave
+   `trigger.enabled: false` until review is complete. Transfer notification
+   settings to `trigger.notifications` and use the job's `logging.level`. There
+   is no executable setting: Trigger invokes this Vaultkeep installation's own
+   command.
 
 3. After resolving old recovery work, archive the reviewed legacy `instances`,
    `attempts`, and `blocked` directories outside the active state root. Keep the

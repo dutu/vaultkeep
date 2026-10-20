@@ -118,9 +118,12 @@ Each monitor tick first reconciles disabled/removed instances. For each enabled 
 
 The closed job YAML schema, defaults, path handling, and disabled-trigger
 rules are specified in [configuration](../trigger/configuration.md). Strong identity,
-entrypoint forms, directory predicates, metadata races, and validation limitations
-are specified in [process detection](../trigger/process-detection.md). These references
-separate implemented parser/matcher behavior from deployment requirements.
+alternative entrypoint forms, directory predicates, metadata races, and validation
+limitations are specified in [process detection](../trigger/process-detection.md).
+The `matcher.entrypoints` list establishes identity when any configured entrypoint
+matches; all other matcher predicates remain mandatory. Application-specific guides
+under [docs/trigger/apps](../trigger/apps/) cover Bisq GUI/API daemon,
+Electrum, and Wasabi configuration.
 
 ### Observation and lifecycle
 

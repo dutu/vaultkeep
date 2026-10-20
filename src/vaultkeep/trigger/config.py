@@ -51,23 +51,23 @@ class MatcherSpec:
     """Strong process identity plus optional supporting predicates."""
 
     exe_realpath: str | None = None
-    entrypoint: Entrypoint | None = None
+    entrypoints: tuple[Entrypoint, ...] = ()
     argv_tokens: tuple[str, ...] = ()
     cmdline_regex: str | None = None
     env_eq: dict[str, str] = field(default_factory=dict)
 
     def canonical(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "exe_realpath": self.exe_realpath,
-            "entrypoint": (
-                {"kind": self.entrypoint.kind, "value": self.entrypoint.value}
-                if self.entrypoint
-                else None
-            ),
+            "entrypoints": [
+                {"kind": entrypoint.kind, "value": entrypoint.value}
+                for entrypoint in self.entrypoints
+            ],
             "argv_tokens": list(self.argv_tokens),
             "cmdline_regex": self.cmdline_regex,
             "env_eq": dict(sorted(self.env_eq.items())),
         }
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,11 +130,12 @@ class TriggerConfig:
 
 def matcher_from_canonical(data: dict[str, Any]) -> MatcherSpec:
     """Rebuild a :class:`MatcherSpec` from a frozen request snapshot."""
-    entry = data.get("entrypoint")
-    entrypoint = Entrypoint(kind=entry["kind"], value=entry["value"]) if entry else None
+    entrypoints = tuple(
+        Entrypoint(kind=item["kind"], value=item["value"]) for item in data.get("entrypoints", ())
+    )
     return MatcherSpec(
         exe_realpath=data.get("exe_realpath"),
-        entrypoint=entrypoint,
+        entrypoints=entrypoints,
         argv_tokens=tuple(data.get("argv_tokens") or ()),
         cmdline_regex=data.get("cmdline_regex"),
         env_eq=dict(data.get("env_eq") or {}),
@@ -157,17 +158,29 @@ def load_config(
     instances: tuple[InstanceConfig, ...] = ()
     if trigger.app is not None and trigger.data_dir is not None and trigger.matcher is not None:
         raw = trigger.matcher
-        entry = raw.entrypoint
-        value = entry.value
-        if entry.kind != "java_main":
-            value = str(resolve_absolute_path(value, what="trigger.matcher.entrypoint.value"))
+        entrypoints = tuple(
+            Entrypoint(
+                kind=entry.kind,
+                value=(
+                    entry.value
+                    if entry.kind == "java_main"
+                    else str(
+                        resolve_absolute_path(
+                            entry.value,
+                            what="trigger.matcher.entrypoints.value",
+                        )
+                    )
+                ),
+            )
+            for entry in raw.entrypoints
+        )
         matcher = MatcherSpec(
             exe_realpath=str(
                 resolve_absolute_path(raw.exe_realpath, what="trigger.matcher.exe_realpath")
             )
             if raw.exe_realpath
             else None,
-            entrypoint=Entrypoint(kind=entry.kind, value=value),
+            entrypoints=entrypoints,
             argv_tokens=tuple(raw.argv_tokens),
             cmdline_regex=raw.cmdline_regex,
             env_eq=dict(raw.env_eq),

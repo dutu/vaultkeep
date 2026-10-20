@@ -926,12 +926,12 @@ manager and a private, account-owned `XDG_RUNTIME_DIR`; a desktop session is opt
 
 1. Choose the complete YAML example for your application:
 
-   | Application | Example |
-   | --- | --- |
-   | Electrum | [`electrum-trigger.yaml.example`](examples/electrum-trigger.yaml.example) |
-   | Bisq | [`bisq-trigger.yaml.example`](examples/bisq-trigger.yaml.example) |
-   | Wasabi | [`wasabi-trigger.yaml.example`](examples/wasabi-trigger.yaml.example) |
-   | Scheduled/manual backup | [`vaultkeep-schedule.yaml.example`](examples/vaultkeep-schedule.yaml.example) |
+   | Application | Example | Configuration guide |
+   | --- | --- | --- |
+   | Electrum | [`electrum-trigger.yaml.example`](examples/electrum-trigger.yaml.example) | [Electrum](docs/trigger/apps/electrum.md) |
+   | Bisq | [`bisq-trigger.yaml.example`](examples/bisq-trigger.yaml.example) | [Bisq 1](docs/trigger/apps/bisq.md) |
+   | Wasabi | [`wasabi-trigger.yaml.example`](examples/wasabi-trigger.yaml.example) | [Wasabi](docs/trigger/apps/wasabi.md) |
+   | Scheduled/manual backup | [`vaultkeep-schedule.yaml.example`](examples/vaultkeep-schedule.yaml.example) | [Scheduling](docs/trigger/configuration.md) |
 
    For example, copy the Electrum job without overwriting an existing file:
 
@@ -947,9 +947,9 @@ manager and a private, account-owned `XDG_RUNTIME_DIR`; a desktop session is opt
 2. Edit this single YAML file: set the backup sources/destination and the
    `trigger.app`, `trigger.data_dir`, and `trigger.matcher` fields. Keep
    `schedule.enabled: false`. The examples leave triggers disabled until their
-   deployment checks pass. Bisq's data-directory identity cannot currently be
-   established from argv alone; keep its trigger disabled unless reliable identity
-   can be established. See [configuration](docs/trigger/configuration.md).
+   deployment checks pass. For Bisq, every GUI or API-daemon launch for the
+   monitored instance must include the same explicit `--appDataDir` argument. See
+   the application guide and [configuration](docs/trigger/configuration.md).
 
 3. After reviewing the process identity and backup scope, set `trigger.enabled: true`
    and validate:

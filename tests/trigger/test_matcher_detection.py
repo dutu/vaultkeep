@@ -33,20 +33,37 @@ def test_exe_realpath_mismatch() -> None:
 
 
 def test_jar_entrypoint_matches() -> None:
-    matcher = MatcherSpec(entrypoint=Entrypoint(kind="jar", value="/opt/app/app.jar"))
+    matcher = MatcherSpec(entrypoints=(Entrypoint(kind="jar", value="/opt/app/app.jar"),))
     proc = _proc(cmdline=("java", "-jar", "/opt/app/app.jar"))
     assert match_identity(matcher, proc).matched
 
 
 def test_java_main_entrypoint_matches() -> None:
-    matcher = MatcherSpec(entrypoint=Entrypoint(kind="java_main", value="app.Main"))
+    matcher = MatcherSpec(entrypoints=(Entrypoint(kind="java_main", value="app.Main"),))
     proc = _proc(cmdline=("java", "-cp", "/opt/x.jar", "app.Main"))
     assert match_identity(matcher, proc).matched
 
 
+def test_alternative_entrypoints_match_either_identity() -> None:
+    matcher = MatcherSpec(
+        entrypoints=(
+            Entrypoint(kind="java_main", value="bisq.desktop.app.BisqAppMain"),
+            Entrypoint(kind="jar", value="/opt/bisq/daemon.jar"),
+        )
+    )
+
+    gui = _proc(cmdline=("java", "-cp", "/opt/bisq/desktop.jar", "bisq.desktop.app.BisqAppMain"))
+    daemon = _proc(cmdline=("java", "-jar", "/opt/bisq/daemon.jar"))
+    unrelated = _proc(cmdline=("java", "-jar", "/opt/other/app.jar"))
+
+    assert match_identity(matcher, gui).matched
+    assert match_identity(matcher, daemon).matched
+    assert not match_identity(matcher, unrelated).matched
+
+
 def test_argv_tokens_and_regex() -> None:
     matcher = MatcherSpec(
-        entrypoint=Entrypoint(kind="script", value="/opt/app/run_app"),
+        entrypoints=(Entrypoint(kind="script", value="/opt/app/run_app"),),
         argv_tokens=("--dir",),
         cmdline_regex=r"--dir|/opt/.*",
     )
@@ -141,7 +158,7 @@ def test_unreadable_executable_is_unavailable_not_stopped() -> None:
 def test_executable_with_entrypoint_excludes_unrelated_hardened_process() -> None:
     matcher = MatcherSpec(
         exe_realpath="/opt/wasabi/WalletWasabi",
-        entrypoint=Entrypoint("script", "/opt/wasabi/WalletWasabi"),
+        entrypoints=(Entrypoint("script", "/opt/wasabi/WalletWasabi"),),
     )
     provider = FakeProvider([_proc(exe=None, cmdline=("/opt/electrum/run_electrum",))])
     result = detect_spec(
@@ -207,7 +224,7 @@ def test_snapshot_access_failure_blocks_detection(monkeypatch) -> None:
 def test_matching_process_replacement_requires_a_fresh_snapshot() -> None:
     # Use Bisq's directory token so the lifetime check is reached without an env read.
     provider = FakeProvider(
-        [_proc(cmdline=("/opt/app/run_app", "--data-dir", "/home/user/.app"))], alive=False
+        [_proc(cmdline=("/opt/app/run_app", "--appDataDir", "/home/user/.app"))], alive=False
     )
     result = detect_spec(
         app="bisq", data_dir="/home/user/.app", matcher=make_matcher(), provider=provider
@@ -220,3 +237,109 @@ def test_matching_process_replacement_requires_a_fresh_snapshot() -> None:
         ).observation
         is Observation.STOPPED
     )
+
+
+def test_bisq_accepts_separate_and_equals_app_data_dir_arguments() -> None:
+    matcher = MatcherSpec(
+        entrypoints=(
+            Entrypoint(kind="java_main", value="bisq.desktop.app.BisqAppMain"),
+            Entrypoint(kind="jar", value="/opt/bisq/daemon.jar"),
+        )
+    )
+    processes = [
+        _proc(
+            pid=100,
+            cmdline=(
+                "java",
+                "-cp",
+                "/opt/bisq/desktop.jar",
+                "bisq.desktop.app.BisqAppMain",
+                "--appDataDir",
+                "/home/user/bisq-gui",
+            ),
+        ),
+        _proc(
+            pid=101,
+            cmdline=(
+                "java",
+                "-jar",
+                "/opt/bisq/daemon.jar",
+                "--appDataDir=/home/user/bisq-daemon",
+            ),
+        ),
+    ]
+    provider = FakeProvider(processes)
+
+    for data_dir in ("/home/user/bisq-gui", "/home/user/bisq-daemon"):
+        assert (
+            detect_spec(
+                app="bisq",
+                data_dir=data_dir,
+                matcher=matcher,
+                provider=provider,
+            ).observation
+            is Observation.RUNNING
+        )
+
+
+def test_bisq_triggers_for_target_instance_while_another_is_running() -> None:
+    matcher = MatcherSpec(
+        entrypoints=(
+            Entrypoint(kind="java_main", value="bisq.desktop.app.BisqAppMain"),
+            Entrypoint(kind="jar", value="/opt/bisq/daemon.jar"),
+        )
+    )
+    target = _proc(
+        pid=100,
+        cmdline=(
+            "java",
+            "-cp",
+            "/opt/bisq/desktop.jar",
+            "bisq.desktop.app.BisqAppMain",
+            "--appDataDir=/data/bisq/Bisq_Alice",
+        ),
+    )
+    other = _proc(
+        pid=101,
+        cmdline=(
+            "java",
+            "-jar",
+            "/opt/bisq/daemon.jar",
+            "--appDataDir=/data/bisq/Bisq_Bob",
+        ),
+    )
+    provider = FakeProvider([target, other])
+
+    assert (
+        detect_spec(
+            app="bisq",
+            data_dir="/data/bisq/Bisq_Alice",
+            matcher=matcher,
+            provider=provider,
+        ).observation
+        is Observation.RUNNING
+    )
+
+    provider.processes.remove(target)
+    assert (
+        detect_spec(
+            app="bisq",
+            data_dir="/data/bisq/Bisq_Alice",
+            matcher=matcher,
+            provider=provider,
+        ).observation
+        is Observation.STOPPED
+    )
+
+
+def test_bisq_does_not_use_non_bisq_directory_option_spellings() -> None:
+    result = detect_spec(
+        app="bisq",
+        data_dir="/home/user/.app",
+        matcher=make_matcher(),
+        provider=FakeProvider(
+            [_proc(cmdline=("/opt/app/run_app", "--app-data-dir", "/home/user/.app"))]
+        ),
+    )
+
+    assert result.observation is Observation.AMBIGUOUS

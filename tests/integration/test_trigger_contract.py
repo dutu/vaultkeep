@@ -114,7 +114,8 @@ now = utc_now()
 request = Request(request_id=new_uuid(), attempt_id=new_uuid(), instance_id='test-instance',
     created_at=now, confirmed_at=now, boot_id=None, config_fingerprint='disposable',
     app='electrum', data_dir=str(base / 'app'),
-    matcher={'exe_realpath': None, 'entrypoint': {'kind': 'script', 'value': '/disposable/wallet'},
+    matcher={'exe_realpath': None,
+             'entrypoints': [{'kind': 'script', 'value': '/disposable/wallet'}],
              'argv_tokens': [], 'cmdline_regex': None, 'env_eq': {}},
     job_config=str(job), job_params=params, vaultkeep=str(binary), environment=env,
     preflight_version=core_version, deadline_seconds=None)

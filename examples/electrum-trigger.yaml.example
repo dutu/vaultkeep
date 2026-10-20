@@ -3,7 +3,7 @@
 # Copy to your user jobs directory as electrum-main.yaml; replace every example path.
 # Confirm the process identity, data-directory identity and all related writers
 # against the installed application before enabling this trigger.
-# See docs/trigger/process-detection.md for identity and consistency limits.
+# See docs/trigger/apps/electrum.md for configuration guidance.
 config_version: 1
 job:
   id: electrum-main
@@ -36,10 +36,9 @@ trigger:
   app: electrum
   data_dir: /home/user/.electrum
   matcher:
-    entrypoint:
-      kind: script
-      value: /home/user/.local/opt/electrum/current/run_electrum
-    argv_tokens: ["--dir", "/home/user/.electrum"]
+    entrypoints:
+      - kind: script
+        value: /home/user/.local/opt/electrum/current/run_electrum
   poll_seconds: 2
   confirm_seconds: 5
   # Optional advisory deadline; never terminates a backup.

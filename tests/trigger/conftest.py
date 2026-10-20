@@ -140,7 +140,7 @@ def make_matcher(
 ) -> MatcherSpec:
     env_eq = {env_key: env_value} if env_key and env_value else {}
     return MatcherSpec(
-        entrypoint=Entrypoint(kind="script", value=script),
+        entrypoints=(Entrypoint(kind="script", value=script),),
         argv_tokens=argv_tokens,
         env_eq=env_eq,
     )

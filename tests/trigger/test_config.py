@@ -21,7 +21,7 @@ def trigger_settings() -> dict:
         "enabled": True,
         "app": "electrum",
         "data_dir": "/home/user/.electrum",
-        "matcher": {"entrypoint": {"kind": "script", "value": "/opt/electrum/run_electrum"}},
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum"}]},
     }
 
 
@@ -118,12 +118,22 @@ def test_enabled_trigger_requires_identity(tmp_path: Path, valid_config: dict, f
         {},
         {"exe_realpath": "/usr/bin/python3"},
         {"argv_tokens": ["--dir"]},
-        {"entrypoint": {"kind": "script", "value": "relative"}},
+        {"entrypoints": [{"kind": "script", "value": "relative"}]},
         {
-            "entrypoint": {"kind": "script", "value": "/opt/electrum"},
+            "entrypoints": [{"kind": "script", "value": "/opt/electrum"}],
             "env_eq": {"HOME": "/home/user"},
         },
-        {"entrypoint": {"kind": "script", "value": "/opt/electrum"}, "cmdline_regex": "["},
+        {
+            "entrypoints": [{"kind": "script", "value": "/opt/electrum"}],
+            "cmdline_regex": "[",
+        },
+        {"entrypoints": []},
+        {
+            "entrypoints": [
+                {"kind": "java_main", "value": "app.Main"},
+                {"kind": "java_main", "value": "app.Main"},
+            ]
+        },
     ],
 )
 def test_weak_or_invalid_matcher_rejected(tmp_path: Path, valid_config: dict, matcher) -> None:
@@ -133,11 +143,46 @@ def test_weak_or_invalid_matcher_rejected(tmp_path: Path, valid_config: dict, ma
         load_config(write_job(tmp_path, valid_config, settings))
 
 
+def test_unknown_entrypoint_property_reports_path_and_suggestion(
+    tmp_path: Path, valid_config: dict
+) -> None:
+    settings = trigger_settings()
+    settings["matcher"] = {
+        "entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum", "valeu": "/bad"}]
+    }
+
+    with pytest.raises(ConfigurationError) as captured:
+        load_config(write_job(tmp_path, valid_config, settings))
+
+    assert "trigger.matcher.entrypoints[0].valeu" in str(captured.value)
+    assert "trigger.matcher.entrypoints.value" in str(captured.value)
+
+
 def test_matcher_canonical_roundtrip(tmp_path: Path, valid_config: dict) -> None:
     settings = trigger_settings()
     settings["matcher"]["env_eq"] = {"ELECTRUMDIR": "/home/user/.electrum"}
     matcher = load_config(write_job(tmp_path, valid_config, settings)).instances[0].matcher
     assert matcher_from_canonical(matcher.canonical()) == matcher
+
+
+def test_alternative_entrypoints_load_and_roundtrip(tmp_path: Path, valid_config: dict) -> None:
+    settings = trigger_settings()
+    settings["app"] = "bisq"
+    settings["matcher"] = {
+        "entrypoints": [
+            {"kind": "java_main", "value": "bisq.desktop.app.BisqAppMain"},
+            {"kind": "jar", "value": "/opt/bisq-daemon/daemon.jar"},
+        ]
+    }
+    matcher = load_config(write_job(tmp_path, valid_config, settings)).instances[0].matcher
+
+    assert [(entry.kind, entry.value) for entry in matcher.entrypoints] == [
+        ("java_main", "bisq.desktop.app.BisqAppMain"),
+        ("jar", "/opt/bisq-daemon/daemon.jar"),
+    ]
+    canonical = matcher.canonical()
+    assert len(canonical["entrypoints"]) == 2
+    assert matcher_from_canonical(canonical) == matcher
 
 
 def test_missing_job_reports_configuration_error(tmp_path: Path) -> None:

@@ -9,10 +9,12 @@ scenario has been verified. The settled technical contract is in
 ## Current implementation
 
 The repository contains configuration/path/environment handling, psutil detection,
+alternative application entrypoints, explicit Bisq `--appDataDir` resolution,
 shutdown confirmation, durable instance/request/launch/receipt state, monitor recovery,
 static systemd worker dispatch, safety annotations, contention retries, bounded child
-output, history cleanup, optional notifications, public CLI commands, and disabled
-examples. The test suite uses fake jobs, processes, clocks, and systemd controllers.
+output, history cleanup, optional notifications, public CLI commands, disabled examples,
+and application-specific configuration guides. The test suite uses fake jobs, processes,
+clocks, and systemd controllers.
 
 ## Validation status tracker
 
@@ -20,7 +22,7 @@ examples. The test suite uses fake jobs, processes, clocks, and systemd controll
 | --- | --- | --- |
 | Electrum daemon vs CLI vs GUI-forwarding | Open | Verified process model on installed version |
 | Electrum memory-hardening metadata access | Open | Same-user metadata sufficient for safe identification |
-| Bisq desktop/daemon identity and directories | Open | Verified launchers, JVM identity, config/directory resolution |
+| Bisq desktop/daemon identity and directories | Implemented; deployment validation open | GUI/daemon alternatives and explicit `--appDataDir` parsing are tested; verify installed launchers |
 | Wasabi GUI/daemon identity and directories | Open | Verified executable identity and directory resolution |
 | Related writer processes | Open | Establish all processes that can keep writing each instance's job sources |
 | Job scope and destination ownership | Open | One reviewed instance scope per job; distinct effective destinations and external-run review |
@@ -65,7 +67,7 @@ Use temporary state/runtime directories through test-only injection, fake clocks
 
 | Area | Required scenarios |
 | --- | --- |
-| Identity | Strong vs interpreter-only identity, exact argv/entrypoint forms, allowed/disallowed environment keys, directory/network variants, related writers, cross-instance overlap, Electrum hardening and GUI forwarding, multiple Bisq directories, symlink changes, pathological regex limits |
+| Identity | Strong vs interpreter-only identity, alternative entrypoint matching, exact argv forms, allowed/disallowed environment keys, directory/network variants, related writers, cross-instance overlap, Electrum hardening and GUI forwarding, Bisq GUI/API-daemon identities and explicit directories, symlink changes, pathological regex limits |
 | Detection/lifecycle | Start/stop/crash, initially stopped, restart during confirmation, ambiguous/unavailable evidence resets full delay, PID reuse/races, boot change, missed shutdown across monitor restart, whole lifecycle between polls |
 | Requests/concurrency | Stable pending ID, duplicate observations, one active plus one pending per instance, latest pending replacement/drop count, restart invalidation, parallel independent destinations, new pending request preserved across an older blocked/deferred receipt |
 | Persistence/recovery | Crash between every adjacent request/association/launch/start/receipt/reconciliation step, unassociated request adoption, corrupt/incompatible/contradictory state, failed durable write, verified rejection persisted before requeue, crash before rejection persistence remains uncertain, per-request rejection count/processed-attempt evidence and alert decisions survive restart without recounting, compatible pending restart, matcher/job/parameter/enablement changes, removed instance with active worker |
@@ -90,9 +92,8 @@ The Linux test environment is `/tmp/vaultkeep-integration-venv` with Python 3.13
 It is separate from the repository's Windows `.venv`; do not use that environment
 for these Linux/systemd checks.
 
-The unified integration baseline completed with **694 passed, 3 skipped, 2 deselected**.
-The current suite, including seven systemd monitor-path cases, completed with
-**701 passed, 3 skipped, 2 deselected** using the same command:
+The latest suite run after adding application-specific matcher coverage completed
+with **702 passed, 10 skipped, 2 deselected** in the socket-restricted sandbox:
 
 
 ```sh
@@ -100,9 +101,12 @@ The current suite, including seven systemd monitor-path cases, completed with
     -k 'not test_real_header_encrypted_tar_7z_creation_and_verification and not test_real_header_encrypted_tar_7z_restore_drill'
 ```
 
-The current run used systemd 257 outside the socket-restricted sandbox, so all seven
-path cases exercised the real parser. In that sandbox they skip when `SO_PASSCRED`
-is blocked, as described in the development guide.
+The run skipped seven systemd monitor-path cases because the sandbox blocked their
+socket operation, along with three opt-in release-host checks. A previous
+outside-sandbox baseline for an earlier suite completed with **701 passed,
+3 skipped, 2 deselected**, including all seven systemd path cases. The current
+outside-sandbox suite still needs to be rerun for the complete parser result as
+described in the development guide.
 
 An unfiltered run stalls on the two Debian interactive `.tar.7z` creation/restore
 tests. Encrypted archive integration remains unverified by this run and must pass on

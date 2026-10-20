@@ -62,13 +62,16 @@ def match_identity(matcher: MatcherSpec, proc: ProcessInfo) -> MatchResult:
         elif _canonical(proc.exe_realpath) != _canonical(matcher.exe_realpath):
             return MatchResult(False, "executable path does not match")
 
-    if matcher.entrypoint is not None:
+    if matcher.entrypoints:
         if not proc.cmdline_available:
             unavailable = True
-        elif not _match_entrypoint(matcher.entrypoint.value, matcher.entrypoint.kind, proc.cmdline):
-            return MatchResult(False, f"entrypoint {matcher.entrypoint.kind} does not match")
+        elif not any(
+            _match_entrypoint(entrypoint.value, entrypoint.kind, proc.cmdline)
+            for entrypoint in matcher.entrypoints
+        ):
+            return MatchResult(False, "no configured entrypoint matches")
 
-    if matcher.exe_realpath is None and matcher.entrypoint is None:
+    if matcher.exe_realpath is None and not matcher.entrypoints:
         return MatchResult(False, "matcher declares no strong identity")
 
     if not proc.cmdline_available and (matcher.argv_tokens or matcher.cmdline_regex):

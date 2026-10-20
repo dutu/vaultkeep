@@ -13,17 +13,19 @@ trigger:
   data_dir: /home/user/.electrum
   matcher:
     exe_realpath: /usr/bin/python3                # optional additional check
-    entrypoint:
-      kind: script
-      value: /opt/electrum/run_electrum
+    entrypoints:
+      - kind: script
+        value: /opt/electrum/run_electrum
     argv_tokens: ["--dir", "/home/user/.electrum"] # exact, order-insensitive
     cmdline_regex: "--dir|/opt/.*"                # full-anchored per argv token
     env_eq:
       ELECTRUMDIR: /home/user/.electrum           # allow-listed keys only
 ```
 
-- An application `entrypoint` is required. `exe_realpath` is an optional additional
-  predicate; executable-only matchers are rejected even for native application binaries.
+- A non-empty application `entrypoints` list is required. Entries are alternatives:
+  any listed strong identity can match. `exe_realpath` is an optional additional
+  predicate applied to every alternative; executable-only matchers are rejected
+  even for native application binaries.
   This allows an unrelated hardened process to be excluded through its command line
   when its executable metadata is unreadable. A plausible matching process with unreadable
   metadata still blocks detection.
@@ -57,7 +59,7 @@ The effective directory is resolved and compared with `trigger.data_dir` (both c
 | --- | --- |
 | Electrum | `ELECTRUMDIR`, then `-D`/`--dir` |
 | Wasabi | `WASABI_DATADIR`, then `--datadir` |
-| Bisq | `--app-data-dir`/`--data-dir`/`--user-data-dir` |
+| Bisq | `--appDataDir` |
 
 A directory token alone is insufficient without application identity. Directory values
 can be separate option/value tokens or `--option=value`; the first recognized option
@@ -65,6 +67,12 @@ wins. Trigger does not infer a wallet's default directory or read its applicatio
 configuration files. For Electrum/Wasabi, the allowed directory environment key is
 read before argv fallback; unreadable environment evidence blocks detection even when
 a directory option is present.
+
+Bisq has a single supported automatic directory source: the explicit
+`--appDataDir` process argument. Every GUI or API-daemon launch for a monitored
+Bisq instance must include it. `--userDataDir`, `--appName`, and
+`--configFile` are not inferred because config-file evidence is mutable and the
+default directory is not a unique instance identity.
 
 Unresolved directory evidence or inaccessible relevant metadata blocks dispatch.
 Cross-job matcher overlap is **not** detected automatically: check that each
@@ -84,7 +92,7 @@ Examples must be disabled until locally verified. Do not present upstream argume
 
 - **Electrum:** distinguish long-lived daemon/GUI ownership from CLI commands and GUI requests forwarded to an existing daemon. Resolve `-D/--dir`, `ELECTRUMDIR`, portable mode, and network-specific data-directory behavior. Multiple loaded wallets do not necessarily represent separate processes or independently stoppable instances.
 - **Electrum hardening:** the reviewed `run_electrum` enables Linux memory hardening using `PR_SET_DUMPABLE=0`. Verify which metadata remains readable by the normal user; executable-path access may fail. Do not disable hardening, modify startup, or add elevated privileges to satisfy the detector. Use only verified accessible identity evidence and report unsupported identification when it is insufficient.
-- **Bisq:** validate desktop and daemon entry points, packaged launchers, JVM identity, and effective directories. Upstream Bisq 1 configuration supports `appDataDir`, `userDataDir`, `appName`, and `configFile`; command-line arguments are not the only possible source of directory identity. Bisq 2 has a different process/configuration model and is outside the initial scope.
+- **Bisq:** validate desktop and daemon entry points, packaged launchers, JVM identity, and explicit `--appDataDir` evidence. One job may list both GUI and API-daemon identities; the selected canonical directory distinguishes instances. Bisq 2 has a different process/configuration model and is outside the initial scope.
 - **Wasabi:** validate GUI and daemon executable identities and auxiliary processes. Upstream documents `--datadir` and `WASABI_DATADIR`; only read explicitly allowed nonsecret environment keys if this is necessary and permitted.
 - **Related processes:** establish which processes can continue writing the selected sources. Parentage alone is insufficient once a child is reparented. Ignore unrelated helpers only when their role is verified.
 
@@ -92,10 +100,14 @@ Source references: local Electrum `run_electrum`, `electrum/commands.py`, `elect
 
 The expected Electrum installation at `~/.local/opt/electrum/current` was not available
 at the source-review baseline. Installed Bisq and Wasabi behavior was not verified.
-These are deployment gates, not validated presets. In particular, the disabled Bisq
-and Wasabi examples contain no explicit directory evidence; an identity match alone
-will be ambiguous. Revalidate against the intended installed versions before enabling
+These are deployment gates, not validated presets. In particular, a Bisq process
+without explicit `--appDataDir` evidence remains ambiguous even when its application
+identity matches. Revalidate against the intended installed versions before enabling
 automatic execution.
+
+Use the application-specific guides for complete working examples:
+[Bisq](apps/bisq.md), [Electrum](apps/electrum.md), and
+[Wasabi](apps/wasabi.md).
 
 No automatic process-model validation command is provided. Keep the shipped
 [application job examples](../../README.md#configure-and-validate-trigger) disabled until these checks pass.

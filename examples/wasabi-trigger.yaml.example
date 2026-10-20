@@ -3,7 +3,7 @@
 # Copy to your user jobs directory as wasabi-main.yaml; replace every example path.
 # Confirm the process identity, data-directory identity and all related writers
 # against the installed application before enabling this trigger.
-# See docs/trigger/process-detection.md for identity and consistency limits.
+# See docs/trigger/apps/wasabi.md for configuration guidance.
 config_version: 1
 job:
   id: wasabi-main
@@ -36,9 +36,9 @@ trigger:
   app: wasabi
   data_dir: /home/user/.walletwasabi/client
   matcher:
-    entrypoint:
-      kind: script
-      value: /opt/wasabi/WalletWasabi
+    entrypoints:
+      - kind: script
+        value: /opt/wasabi/WalletWasabi
     argv_tokens: []
   poll_seconds: 2
   confirm_seconds: 5

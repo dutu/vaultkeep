@@ -16,10 +16,9 @@ trigger:
   app: electrum
   data_dir: /home/alice/.electrum
   matcher:
-    entrypoint:
-      kind: script
-      value: /home/alice/.local/opt/electrum/current/run_electrum
-    argv_tokens: ["--dir", "/home/alice/.electrum"]
+    entrypoints:
+      - kind: script
+        value: /home/alice/.local/opt/electrum/current/run_electrum
   poll_seconds: 2
   confirm_seconds: 5
 ```
@@ -31,6 +30,14 @@ disabled examples: [Electrum](../../examples/electrum-trigger.yaml.example),
 [schedule example](../../examples/vaultkeep-schedule.yaml.example) for other jobs.
 Process support and directory-identification limitations are documented in
 [process detection](process-detection.md); examples do not certify installed app versions.
+
+Application-specific setup and multiple-instance guidance:
+
+| Application | Configuration guide |
+| --- | --- |
+| Bisq 1 GUI/API daemon | [Bisq Trigger configuration](apps/bisq.md) |
+| Electrum | [Electrum Trigger configuration](apps/electrum.md) |
+| Wasabi GUI/daemon | [Wasabi Trigger configuration](apps/wasabi.md) |
 
 ## Fields
 
@@ -50,7 +57,7 @@ Unknown keys are rejected. Booleans must be booleans; timing values must be fini
 positive numbers. While disabled, `app`, `data_dir`, and `matcher` are optional; a
 minimal block can be `enabled: false`. Identity fields and other settings are still
 validated when present, as in the complete disabled application examples. An enabled
-block requires `app`, `data_dir`, and `matcher.entrypoint`.
+block requires `app`, `data_dir`, and a non-empty `matcher.entrypoints` list.
 
 The backup job's `job.id` identifies the monitored instance. Its `logging.level`
 controls monitor logging. The monitor invokes this installation's own `vaultkeep`
@@ -60,16 +67,21 @@ entry point; there is no separately configured core executable.
 
 | Key | Meaning |
 | --- | --- |
-| `entrypoint` | Required `{kind, value}`; kind is `script`, `jar`, or `java_main`. |
+| `entrypoints` | Required non-empty list of `{kind, value}` identities. |
 | `exe_realpath` | Optional absolute interpreter/executable identity. |
 | `argv_tokens` | Additional exact argv tokens; each 1–4096 characters. |
 | `cmdline_regex` | Optional valid regex, at most 200 characters. |
 | `env_eq` | Allowed environment predicates: Electrum `ELECTRUMDIR`, Wasabi `WASABI_DATADIR`; none for Bisq. |
 
+Each `entrypoints` item requires `kind` (`script`, `jar`, or `java_main`) and
+`value`. Entries are alternatives: any one can establish the application
+identity. Entries must be unique. All other matcher fields apply in addition to
+the chosen entrypoint.
+
 Script/jar entrypoints, executable paths, and data directories must be absolute or
 start with `~/`. Home expansion uses the operating-system account record, not an
 arbitrary `HOME`. Shell expressions and environment-variable expansion are not
-performed. Executable identity alone is insufficient; an entrypoint is required.
+performed. Executable identity alone is insufficient; at least one entrypoint is required.
 See [process detection](process-detection.md) for ambiguity and writer coverage.
 
 ## Parameters and identity

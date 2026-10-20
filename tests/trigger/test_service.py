@@ -25,7 +25,7 @@ def config(tmp_path: Path, valid_config: dict):
         "enabled": True,
         "app": "electrum",
         "data_dir": "/home/user/.electrum",
-        "matcher": {"entrypoint": {"kind": "script", "value": "/opt/electrum"}},
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
     }
     path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))

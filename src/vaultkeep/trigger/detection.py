@@ -29,7 +29,7 @@ _DIRECTORY_ENV_KEY: dict[str, str] = {
 _DIRECTORY_OPTIONS: dict[str, tuple[str, ...]] = {
     "electrum": ("-D", "--dir"),
     "wasabi": ("--datadir",),
-    "bisq": ("--app-data-dir", "--data-dir", "--user-data-dir"),
+    "bisq": ("--appDataDir",),
 }
 
 

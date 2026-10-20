@@ -14,7 +14,7 @@ from vaultkeep.trigger.state import StateStore
 
 MATCHER = {
     "exe_realpath": None,
-    "entrypoint": {"kind": "script", "value": "/opt/app/run_app"},
+    "entrypoints": [{"kind": "script", "value": "/opt/app/run_app"}],
     "argv_tokens": [],
     "cmdline_regex": None,
     "env_eq": {},

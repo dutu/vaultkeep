@@ -3,8 +3,8 @@
 # Copy to your user jobs directory as bisq-main.yaml; replace every example path.
 # Confirm the process identity, data-directory identity and all related writers
 # against the installed application before enabling this trigger.
-# Bisq directory identity is not resolvable from argv alone; leave it disabled
-# unless a reliable identity can be established. See docs/trigger/process-detection.md.
+# Every GUI or API-daemon launch for this instance must include the same explicit
+# --appDataDir argument. See docs/trigger/apps/bisq.md for configuration guidance.
 config_version: 1
 job:
   id: bisq-main
@@ -37,9 +37,15 @@ trigger:
   app: bisq
   data_dir: /home/user/.local/share/Bisq
   matcher:
-    entrypoint:
-      kind: java_main
-      value: bisq.desktop.app.BisqAppMain
+    entrypoints:
+      - kind: script
+        value: /opt/bisq/bin/Bisq
+      - kind: java_main
+        value: bisq.desktop.app.BisqAppMain
+      - kind: jar
+        value: /home/user/bisq-daemon/daemon.jar
+      - kind: java_main
+        value: bisq.daemon.app.BisqDaemonMain
     argv_tokens: []
   poll_seconds: 2
   confirm_seconds: 5
