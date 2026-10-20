@@ -77,9 +77,7 @@ class BackupManifest(BaseModel):
 
 def write_manifest(path: Path, manifest: BackupManifest) -> None:
     """Exclusively write and flush an immutable manifest before directory commit."""
-    payload = (
-        json.dumps(manifest.model_dump(), sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode("utf-8")
+    payload = (json.dumps(manifest.model_dump(), sort_keys=True, indent=2) + "\n").encode("utf-8")
     descriptor = -1
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)

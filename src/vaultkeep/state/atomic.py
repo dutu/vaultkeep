@@ -29,7 +29,7 @@ def write_local_state(path: Path, state: LocalState) -> None:
                 ensure_ascii=True,
                 allow_nan=False,
                 sort_keys=True,
-                separators=(",", ":"),
+                indent=2,
             )
             + "\n"
         )

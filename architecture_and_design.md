@@ -895,6 +895,11 @@ The archive builder accepts already allocated staging archive and checksum paths
 
 ## 13. Manifest and state
 
+New backup manifests, local job state files, and timer ownership registries use
+two-space JSON indentation, sorted keys, and a trailing newline. Existing files
+remain readable without conversion. Canonical JSON used for hashes and
+fingerprints retains its compact serialization.
+
 ## 13.1 Backup manifest
 
 Each backup directory contains one manifest named `<backup-base-name>.json`.

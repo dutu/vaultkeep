@@ -480,7 +480,8 @@ def _atomic_write(path: Path, content: str, *, mode: int) -> None:
 
 
 def _write_registry(path: Path, instances: dict[str, str]) -> None:
-    _atomic_write(path, json.dumps({"version": 1, "instances": instances}) + "\n", mode=0o600)
+    payload = json.dumps({"version": 1, "instances": instances}, sort_keys=True, indent=2) + "\n"
+    _atomic_write(path, payload, mode=0o600)
 
 
 def _sanitize_instance_part(value: str) -> str:
