@@ -1,19 +1,25 @@
 # Process detection and matchers
 
-Trigger identifies a running instance through a **strong identity** plus a required
-data-directory predicate. Detection fails closed: if identity matches but the data
+Trigger identifies each job's running application through a **strong identity**
+plus a required data-directory predicate. Detection fails closed: if identity matches but the data
 directory cannot be resolved, the observation is `ambiguous`, never `stopped`, so it
 cannot arm a backup.
 
 ## Matcher form
 
-```toml
-[instance.matcher]
-exe_realpath = "/absolute/path/to/binary"          # optional additional check
-entrypoint = { kind = "script", value = "/opt/electrum/run_electrum" }
-argv_tokens = ["--dir", "/home/user/.electrum"]     # exact, order-insensitive
-cmdline_regex = "--dir|/opt/.*"                     # full-anchored per argv token
-env_eq = { ELECTRUMDIR = "/home/user/.electrum" }   # allow-listed keys only
+```yaml
+trigger:
+  app: electrum
+  data_dir: /home/user/.electrum
+  matcher:
+    exe_realpath: /usr/bin/python3                # optional additional check
+    entrypoint:
+      kind: script
+      value: /opt/electrum/run_electrum
+    argv_tokens: ["--dir", "/home/user/.electrum"] # exact, order-insensitive
+    cmdline_regex: "--dir|/opt/.*"                # full-anchored per argv token
+    env_eq:
+      ELECTRUMDIR: /home/user/.electrum           # allow-listed keys only
 ```
 
 - An application `entrypoint` is required. `exe_realpath` is an optional additional
@@ -45,7 +51,7 @@ env_eq = { ELECTRUMDIR = "/home/user/.electrum" }   # allow-listed keys only
 
 ## Data-directory predicate
 
-The effective directory is resolved and compared with `data_dir` (both canonicalized):
+The effective directory is resolved and compared with `trigger.data_dir` (both canonicalized):
 
 | App | Sources consulted |
 | --- | --- |
@@ -61,10 +67,10 @@ read before argv fallback; unreadable environment evidence blocks detection even
 a directory option is present.
 
 Unresolved directory evidence or inaccessible relevant metadata blocks dispatch.
-Cross-instance matcher overlap is **not** detected automatically: check that each
-enabled entry identifies a distinct instance. Multiple matching processes for one
-entry are treated as running if at least one resolves to its data directory; this does
-not discover additional writers with different identities.
+Cross-job matcher overlap is **not** detected automatically: check that each
+trigger-enabled job identifies a distinct application and data directory. Multiple
+matching processes for one job are treated as running if at least one resolves to
+its data directory. This does not discover additional writers with different identities.
 
 ## Observation vocabulary
 

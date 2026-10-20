@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-import shlex
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -42,16 +42,25 @@ def _systemctl(*arguments: str) -> str:
     return result.stdout
 
 
+def _quote_systemd_argument(value: str) -> str:
+    """Quote one ExecStart argument with systemd syntax and literal expansions."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ConfigurationError("monitor command arguments must not contain control characters")
+    if re.fullmatch(r"[A-Za-z0-9_./:=,@+-]+", value):
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("%", "%%").replace("$", "$$")
+    return '"' + escaped + '"'
+
+
 def render_service(config: TriggerConfig) -> str:
     # Always use the stable installed entry point, matching timer services.
     args = ["/usr/local/bin/vaultkeep", "--user", "trigger", "--config", str(config.source_path)]
     for key, value in sorted(config.params.items()):
         args.extend(["--param", f"{key}={value}"])
     args.append("monitor")
-    if any(ord(char) < 32 or ord(char) == 127 for arg in args for char in arg):
-        raise ConfigurationError("monitor command arguments must not contain control characters")
-    # systemd expands specifiers and environment variables even inside quoted argv.
-    command = shlex.join(args).replace("%", "%%").replace("$", "$$")
+    # ExecStart is parsed by systemd, not by a shell.
+    command = " ".join(_quote_systemd_argument(arg) for arg in args)
     return (
         f"# Managed by Vaultkeep: {service_name(config)}\n"
         "[Unit]\n"

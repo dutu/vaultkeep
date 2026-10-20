@@ -154,7 +154,7 @@ def load_config(
     params = dict(trigger.params)
     params.update(runtime_params or {})
     scope = job_identity_hash(source, job.job.id, runtime_params=params)
-    instances = ()
+    instances: tuple[InstanceConfig, ...] = ()
     if trigger.app is not None and trigger.data_dir is not None and trigger.matcher is not None:
         raw = trigger.matcher
         entry = raw.entrypoint

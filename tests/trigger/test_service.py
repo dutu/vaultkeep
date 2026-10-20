@@ -169,3 +169,65 @@ def test_root_schedule_and_user_trigger_coexist(
         path: path.read_bytes() for path in root_units.rglob("*") if path.is_file()
     } == scheduled_files
     assert registry.read_bytes() == registry_before
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [
+        "space here",
+        "apostrophe's",
+        'double"quote',
+        r"back\slash",
+        "percent%name",
+        "dollar${HOME}",
+        "space 'quote\" back\\slash %n ${HOME}",
+    ],
+)
+def test_monitor_config_path_survives_systemd_parsing(
+    tmp_path: Path, valid_config: dict, directory: str
+) -> None:
+    import os
+    import shlex
+    import shutil
+    import subprocess
+
+    analyzer = shutil.which("systemd-analyze")
+    if analyzer is None:
+        pytest.skip("systemd-analyze is required to verify ExecStart parsing")
+    job = config(tmp_path, valid_config)
+    source = tmp_path / directory / "job.yaml"
+    candidate = replace(job, source_path=source)
+    unit = tmp_path / service.service_name(candidate)
+    # Validate the full command without needing or launching an installed Vaultkeep.
+    unit.write_text(
+        service.render_service(candidate).replace("/usr/local/bin/vaultkeep", "/usr/bin/true")
+    )
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    result = subprocess.run(
+        [analyzer, "--user", "--man=no", "verify", str(unit)],
+        env=dict(
+            os.environ,
+            XDG_RUNTIME_DIR=str(runtime),
+            SYSTEMD_LOG_LEVEL="debug",
+            SYSTEMD_LOG_COLOR="0",
+        ),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    if "SO_PASSCRED failed: Operation not permitted" in output:
+        pytest.skip("sandbox blocks systemd-analyze sockets; run this test outside that sandbox")
+    assert result.returncode == 0, output
+    commands = [
+        line.partition("Command Line: ")[2]
+        for line in output.splitlines()
+        if "Command Line: " in line
+    ]
+    assert len(commands) == 1, output
+    # The dump backslash-escapes dollar signs inside quotes (which shlex retains).
+    # The doubled dollar is expanded later, when systemd executes the command.
+    argv = [arg.replace(r"\$", "$").replace("$$", "$") for arg in shlex.split(commands[0])]
+    assert argv == ["/usr/bin/true", "--user", "trigger", "--config", str(source), "monitor"]

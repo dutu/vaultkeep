@@ -47,9 +47,10 @@ Process support and directory-identification limitations are documented in
 | `notifications` | disabled | Best-effort desktop notification settings. |
 
 Unknown keys are rejected. Booleans must be booleans; timing values must be finite
-positive numbers. A disabled block may contain only `enabled: false`. Fields supplied
-in disabled blocks still undergo structural validation. An enabled block requires
-`app`, `data_dir`, and `matcher.entrypoint`.
+positive numbers. While disabled, `app`, `data_dir`, and `matcher` are optional; a
+minimal block can be `enabled: false`. Identity fields and other settings are still
+validated when present, as in the complete disabled application examples. An enabled
+block requires `app`, `data_dir`, and `matcher.entrypoint`.
 
 The backup job's `job.id` identifies the monitored instance. Its `logging.level`
 controls monitor logging. The monitor invokes this installation's own `vaultkeep`

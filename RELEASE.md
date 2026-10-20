@@ -127,15 +127,26 @@ exercise real archive tools when available.
 
 ## 3. Debian Release Matrix Gate
 
-Run this section on each supported Debian 13 architecture, with both component selections:
+Run this section for the unified Vaultkeep package on each supported Debian 13 architecture:
 
 - [ ] Debian 13 `trixie` amd64
 - [ ] Debian 13 `trixie` arm64
 
-Each host must be disposable or snapshot-backed. It must run systemd as PID 1
-and test both core-only and combined installations. Provide dedicated disposable
-user accounts with running user managers and one dedicated writable CIFS mount and one dedicated writable NFS
-mount for Vaultkeep release validation.
+Each host must be disposable or snapshot-backed and run systemd as PID 1. Test the
+same unified package on amd64 and arm64, including these deployment cases:
+
+- [ ] Fresh unified installation, update, uninstall and purge.
+- [ ] Schema-1 core deployment upgrades to the unified package.
+- [ ] Schema-2 core-only deployment upgrades to the unified package.
+- [ ] Schema-2 combined deployment upgrades to the unified package, retiring the old
+      Trigger command and shared monitor while preserving user recovery evidence.
+
+For every upgrade case, verify retained-release paths, data preservation and rollback
+of the old links, templates and metadata. Core-only and combined layouts are legacy
+inputs, not current installation selections.
+
+Provide dedicated disposable user accounts with running user managers and one
+writable CIFS mount and one writable NFS mount for release validation.
 
 For each host, record:
 
@@ -655,7 +666,12 @@ Acceptable result:
       "requirements.lock",
       "systemd/vaultkeep@.service",
       "systemd/vaultkeep@.timer",
+      "systemd/vaultkeep-trigger-exec@.service",
+      "src/vaultkeep/trigger/cli.py",
       "examples/vaultkeep-schedule.yaml.example",
+      "examples/electrum-trigger.yaml.example",
+      "examples/bisq-trigger.yaml.example",
+      "examples/wasabi-trigger.yaml.example",
       "README.md",
       "RELEASE.md",
       "docs/design/architecture_and_design.md",
@@ -695,7 +711,7 @@ Acceptable result:
 ## 10. Release Decision
 
 - [ ] Local quality gate passed.
-- [ ] Both Debian 13 architecture entries and both component selections passed.
+- [ ] Unified installation and schema-1/schema-2 upgrade cases passed on both Debian 13 architectures.
 - [ ] Installer install/update/uninstall/purge passed.
 - [ ] Restore drills passed for local, CIFS, and NFS destinations.
 - [ ] Restore drills passed for `.tar.zst` and `.tar.7z`.
@@ -724,8 +740,9 @@ activation is not part of this checklist.
       the archive supports installation without a neighboring checkout.
 - [ ] Debian 12 and an incompatible existing interpreter are rejected before apt/staging.
       A clean Debian 13 host missing Python can bootstrap Debian Python, then checks >=3.13.
-- [ ] Actual schema-1 0.1.0 core and schema-2 combined deployments upgrade to the unified package on Debian 13, preserving data
-      and retaining the old deployment. Debian 12 is upgraded before this transition.
+- [ ] Schema-1 core, schema-2 core-only, and schema-2 combined deployments upgrade to
+      the unified package on both architectures, preserving data and retaining the old
+      deployment. Upgrade Debian 12 before this transition.
 - [ ] Same-version reinstall, later-version upgrade and version/source guards pass.
 - [ ] Per-job monitor service, lock, recovery and worker namespaces stay isolated.
 - [ ] YAML validation rejects simultaneously enabled scheduling and shutdown triggering.
@@ -741,10 +758,10 @@ activation is not part of this checklist.
 - [ ] Injection at dependency/venv/package install, relocated entry points, package/example/
       unit validation, each artifact/manifest write, activation and system/user reload restores
       old software and all managed artifacts. Restoration failures retain useful snapshots
-      and report each failed path/account. Test fresh, upgrade, addition and repair cases.
+      and report each failed path/account. Test fresh installation, legacy upgrades, reinstall and repair cases.
 - [ ] Only previously active schedules are manually resumed after validation. Persistent
       calendar catch-up works normally; the installer directly replays no completed attempt.
-- [ ] Real user units accept an explicit monitor --config override, retain exact worker
+- [ ] Real user units accept an explicit job-specific monitor --config path, retain exact worker
       semantics, preserve independent worker lifetime and handle queued/activating states.
 - [ ] Standalone migration preserves IDs and schema-1 instance/request/launch/receipt/block
       evidence; corrupt/unknown records still block, completed attempts never replay, and

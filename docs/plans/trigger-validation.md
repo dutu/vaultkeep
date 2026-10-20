@@ -26,7 +26,7 @@ examples. The test suite uses fake jobs, processes, clocks, and systemd controll
 | Job scope and destination ownership | Open | One reviewed instance scope per job; distinct effective destinations and external-run review |
 | Installed VaultKeep contract/version | Open | Recheck installed version, exact CLI behavior, environment, and preflight limits |
 | Static worker template semantics | Open | Queued starts, oneshot activating state, receipts, cleanup, proven-rejection exit-code classes, and independent lifetime |
-| Trigger Python environment | Verified | `.venv/bin/python` is Python 3.13.5 and runs the test suite; the historical IDE SDK selection is recorded in development/testing |
+| Linux test environment | Local checks only | Use a Linux Python 3.13+ virtual environment; the repository `.venv` contains Windows `Scripts`/`Lib` and is unusable here. See the local validation record below. |
 
 ## Remaining implementation and deployment checks
 
@@ -74,12 +74,38 @@ Use temporary state/runtime directories through test-only injection, fake clocks
 | Safety/deadlines | App restarts during backup, ambiguous metadata and monitor gap while worker runs/completes, immutable receipt plus review_required, warning retained on later unchanged/result_unknown, overdue worker continues with active slot held, no automatic kill/delete |
 | Diagnostics/retention | Output exceeds cap but child drains and final marker parses, misleading earlier/stderr markers, bounded/absent final marker, private permissions, cleanup excludes active/pending/unresolved/recovery-referenced attempts, completed reconciled summarized outcome_unknown/review_required becomes cleanup-eligible, per-instance 20-record summarized-history cap removes oldest eligible records, protected records are retained and affected-instance dispatch blocked when a bound cannot be enforced, safety summaries survive log expiry |
 | Config/preflight | Unknown keys/types, unsafe job IDs, invalid app/matcher/path/timing, schedule/trigger exclusion, per-job lock/state/worker isolation, optional deadlines, disabled structural validation without runtime job probing, static path without manager/runtime, configured params passed, schema-only limits, full validate failure mapping, missing/masked unit, unwritable/absent state parent, unreachable bus, version warning, no validation writes/probe units |
-| CLI/notifications | Status up/down/without runtime/without state, held-but-stalled monitor age, stale/corrupt state without mutation, blocked status with blocking attempt ID/wait age, one wait notification using the blocking attempt's frozen deadline despite config changes, wait timer and alert decision survive restart/pending replacement, later waits behind an already-notified attempt do not repeat alert, sanitized evidence and removed-instance records, exit codes 0–6, second monitor exits 3, corrupt state exits 2, valid state with failures exits 0, globally disabled notifications, missing notify-send/session bus, timeout, recovery deduplication |
+| CLI/notifications | Status up/down/without runtime/without state, held-but-stalled monitor age, stale/corrupt state without mutation, blocked status with blocking attempt ID/wait age, one wait notification using the blocking attempt's frozen deadline despite config changes, wait timer and alert decision survive restart/pending replacement, later waits behind an already-notified attempt do not repeat alert, sanitized evidence and removed-instance records, exit codes 0–6, second monitor exits 3, corrupt state exits 2, valid state with failures exits 0, per-job disabled notifications, missing notify-send/session bus, timeout, recovery deduplication |
 | Rejection notifications | One start alert across contention/proven-rejection attempts, escalation only at the fifth consecutive proven rejection, no repeat on sixth/later rejection or restart, disabled/failed escalation delivery remains best effort, repeated attempt reconciliation does not increment count, count visible in status, proven acceptance resets count while preserving alert/suppression decisions, inconclusive submission leaves count unchanged, new request resets count and decisions, later terminal/overdue/compromised-safety alerts remain deliverable after escalation |
 | Documentation/deployment | Fixed account-home state despite HOME/XDG overrides, reviewed destination requirement, relative links and anchors, no deferred public commands/settings presented as v1, internal blocked-wait, summarized uncertain-history, and consecutive-rejection alert constants documented in the service operation topic, authorized fake-job template exercise and monitor/logout/shutdown limits |
 
 Record exact validation commands, interpreter version, results, and remaining deployment limitations during implementation.
 
-Automated results and the retained historical validation record are maintained in
+Development setup and validation limits are maintained in
 [development/testing](../development/testing.md#validation-limits). A passing mocked
 suite does not close installed-process or live-service gates.
+
+## Local validation record
+
+The Linux test environment is `/tmp/vaultkeep-integration-venv` with Python 3.13.5.
+It is separate from the repository's Windows `.venv`; do not use that environment
+for these Linux/systemd checks.
+
+The unified integration baseline completed with **694 passed, 3 skipped, 2 deselected**.
+The current suite, including seven systemd monitor-path cases, completed with
+**701 passed, 3 skipped, 2 deselected** using the same command:
+
+
+```sh
+/tmp/vaultkeep-integration-venv/bin/python -m pytest --no-cov -q \
+    -k 'not test_real_header_encrypted_tar_7z_creation_and_verification and not test_real_header_encrypted_tar_7z_restore_drill'
+```
+
+The current run used systemd 257 outside the socket-restricted sandbox, so all seven
+path cases exercised the real parser. In that sandbox they skip when `SO_PASSCRED`
+is blocked, as described in the development guide.
+
+An unfiltered run stalls on the two Debian interactive `.tar.7z` creation/restore
+tests. Encrypted archive integration remains unverified by this run and must pass on
+a suitable release host. Three opt-in release-host checks are skipped without their
+prepared environment. These results do not close real wallet identity, live systemd
+service lifecycle, supported-architecture execution, or network restore gates.

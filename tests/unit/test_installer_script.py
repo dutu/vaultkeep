@@ -610,11 +610,21 @@ def test_uninstall_preserves_user_evidence(host: dict[str, str], purge: bool) ->
     )
     evidence.parent.mkdir(parents=True)
     evidence.write_bytes(b'{"schema_version":1,"outcome":"review_required"}\n')
+    worker = Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service"
+    assert worker.is_file()
+    monitor = (
+        evidence.parents[4] / ".config/systemd/user/vaultkeep-trigger@app-0123456789abcdef.service"
+    )
+    monitor.parent.mkdir(parents=True)
+    monitor.write_bytes(b"# user-owned per-job monitor\n[Service]\n")
+    monitor_before = monitor.read_bytes()
     before = evidence.read_bytes()
     result = run_installer(host, "uninstall", "--dry-run", *(["--purge"] if purge else []))
     assert "preserve every user's Trigger" in result.stdout
     run_installer(host, "uninstall", *(["--purge"] if purge else []))
     assert evidence.read_bytes() == before
+    assert not worker.exists()
+    assert monitor.read_bytes() == monitor_before
     assert not Path(host["VAULTKEEP_INSTALL_PREFIX"]).exists()
     assert not Path(host["VAULTKEEP_TRIGGER_BIN_LINK"]).exists()
     assert Path(host["VAULTKEEP_CONFIG_ROOT"]).exists() != purge

@@ -1177,7 +1177,7 @@ sudo vaultkeep timers sync
 sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
 ```
 
-3. Remove both installed components, managed command links/shared templates, temporary data, and the deployment tree:
+3. Remove the installed package, managed command link, and shared templates, along with temporary data and the deployment tree:
 
 ```bash
 sudo /opt/vaultkeep/current/src/install.sh uninstall

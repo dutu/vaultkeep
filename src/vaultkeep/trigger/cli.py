@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import sys
+from types import FrameType
 
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
@@ -100,7 +101,7 @@ def cmd_monitor(args: argparse.Namespace) -> int:
         notifier=build_notifier(config.notifications),
     )
 
-    def _stop(signum, _frame):
+    def _stop(signum: int, _frame: FrameType | None) -> None:
         _LOG.info("received signal %s; stopping monitoring", signum)
         monitor.request_stop()
 

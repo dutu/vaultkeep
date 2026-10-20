@@ -140,8 +140,9 @@ systemctl --user list-jobs --no-pager
 journalctl --user -u 'vaultkeep-trigger-exec@*.service' -n 100 --no-pager
 ```
 
-For a particular attempt, use its UUID from `status` to select
-`vaultkeep-trigger-exec@<attempt-id>.service`. `Type=oneshot` can remain `activating`
+For a particular attempt, combine the job identity (shown in the service name and
+state path) with its attempt UUID from `status` to select
+`vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service`. `Type=oneshot` can remain `activating`
 for the whole backup. Submission success is not completion. Even a receipt does not
 release its slot until both the worker and queued job are confirmed gone. Reconcile
 evidence before a manual `systemctl --user reset-failed <unit>`; the monitor does not

@@ -76,9 +76,17 @@ python_version = "3.13"
 strict = true
 files = ["src"]
 
-# Preserve the existing strict core boundary; Trigger retains its current typing.
+# Keep strict checks on core and Trigger integration; exempt imported legacy internals.
 [[tool.mypy.overrides]]
-module = ["vaultkeep.trigger.*"]
+module = [
+    "vaultkeep.trigger.childproc",
+    "vaultkeep.trigger.detection",
+    "vaultkeep.trigger.models",
+    "vaultkeep.trigger.monitor",
+    "vaultkeep.trigger.process",
+    "vaultkeep.trigger.state",
+    "vaultkeep.trigger.systemd",
+]
 ignore_errors = true
 
 [tool.pytest.ini_options]

@@ -1,8 +1,10 @@
 # Development and testing
 
-Use Python 3.13+ on Linux. Debian 13 amd64/arm64 is the release matrix. Core's strict
-mypy boundary stays in place; the imported Trigger implementation keeps its existing
-typing boundary via the `vaultkeep.trigger.*` override.
+Use Python 3.13+ on Linux. Debian 13 amd64/arm64 is the release matrix. Strict mypy
+covers core and the Trigger integration, including its configuration adapter, CLI,
+parser, paths, environment, preflight and service management. The explicit
+module list in `pyproject.toml` exempts only imported legacy internals that still need
+gradual typing.
 
 ## Set up
 
@@ -29,10 +31,16 @@ Hatchling dependencies used for local production package installation.
 ruff format --check .
 ruff check .
 mypy
-pytest -vv
+pytest --no-cov -q -k 'not test_real_header_encrypted_tar_7z_creation_and_verification and not test_real_header_encrypted_tar_7z_restore_drill'
 python scripts/check_packages.py
 git diff --check
 ```
+
+Monitor-unit path tests use `systemd-analyze --user verify` and inspect its parsed
+arguments, following [systemd quoting rules](https://www.freedesktop.org/software/systemd/man/devel/systemd.syntax.html).
+They skip when the tool is absent or a sandbox blocks its `SO_PASSCRED` socket
+operation. Run them outside that sandbox to validate the actual systemd parser;
+verification does not start services.
 
 Root pytest runs backup, Trigger, installer, and installed-worker contract tests in
 one process. Trigger fixtures live under `tests/trigger/` with explicit package
@@ -56,11 +64,16 @@ previews installation without touching services.
 Regenerate using Python 3.13, preserving existing pins unless explicitly updating:
 
 ```sh
-pip-compile --generate-hashes --allow-unsafe --no-emit-index-url --no-emit-trusted-host \
+pip-compile --generate-hashes --allow-unsafe --no-emit-index-url --no-emit-trusted-host --no-emit-find-links \
     --strip-extras --output-file requirements.lock requirements.in
-pip-compile --generate-hashes --allow-unsafe --no-emit-index-url --no-emit-trusted-host \
+pip-compile --generate-hashes --allow-unsafe --no-emit-index-url --no-emit-trusted-host --no-emit-find-links \
     --strip-extras --output-file requirements-dev.lock requirements-dev.in
 ```
+
+For offline regeneration, prepare the wheelhouse above and set `PIP_NO_INDEX=1`
+and `PIP_FIND_LINKS=/absolute/path/to/wheelhouse` for the same commands. The
+`--no-emit-find-links` option keeps that local artifact source out of generated locks.
+Do not change existing pins or hashes merely to change the generation environment.
 
 Both backup and Trigger runtime/build dependencies use `requirements.lock`. Verify
 hash-locked binary downloads on both supported architectures; cross-platform download
@@ -68,6 +81,13 @@ checks availability and hashes, not execution on arm64.
 
 
 ## Validation limits
+
+The non-interactive command above excludes two Debian interactive `.tar.7z` creation/
+restore tests that stall in this environment. An unfiltered `pytest` run therefore
+has not completed here. Their exclusion is a validation limitation, not a passing
+encrypted-backup release gate. Run the complete `pytest -vv` suite, including those
+tests, on a host where the interactive 7zip checks can finish before release. See the
+[local validation record](../plans/trigger-validation.md#local-validation-record).
 
 Automated checks use disposable files, fake managers, simulated process providers,
 and installed CLI/worker contracts. They do not certify real app identity/writer
