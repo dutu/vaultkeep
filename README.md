@@ -477,6 +477,13 @@ vaultkeep [--user] --config <job.yaml> prune
 vaultkeep [--user] --config <job.yaml> run
 ```
 
+When stderr is a terminal, `run` displays the current stage and elapsed time,
+including source hashing, compression, verification, and retention. Long stages
+repeat every 10 seconds with a `still running` message. Elapsed time is for the
+whole run; these updates indicate the active stage, not a completion percentage.
+Progress is omitted when stderr is redirected or captured, including scheduled
+runs. The final result remains on stdout as `run: created` or `run: unchanged`.
+
 Possible successful results:
 
 - `created`: a new backup was finalized;
@@ -988,6 +995,7 @@ update directly to 0.2.0 without moving jobs or state.
 ```bash
 cd /path/to/vaultkeep
 git fetch --tags --prune
+git pull
 git checkout <new-release-tag>
 ```
 

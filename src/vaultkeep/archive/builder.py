@@ -37,14 +37,17 @@ def build_archive(
     *,
     password: PasswordSecret | None = None,
     source_digest_calculator: SourceDigestCalculator = calculate_source_digest,
+    progress: Callable[[str], None] | None = None,
 ) -> ArchiveArtifact:
     """Build, consistency-check, verify, checksum, and flush one archive."""
     _validate_request(request, password)
+    report = progress if progress is not None else lambda message: None
     inner_tar: Path | None = None
     archive_created = False
     checksum_created = False
     try:
         if request.archive_format == "tar.zst":
+            report("Creating and compressing archive")
             create_tar_zstd(
                 request.snapshot,
                 request.archive_path,
@@ -52,10 +55,13 @@ def build_archive(
                 tools=request.tools,
             )
             archive_created = True
+            report("Rechecking source files for changes")
             source_digest = source_digest_calculator(request.snapshot)
             _require_source_consistency(request.expected_source_digest, source_digest)
+            report("Verifying archive")
             verify_tar_zstd(request.archive_path, request.snapshot, tools=request.tools)
         else:
+            report("Preparing private archive workspace")
             inner_tar = private_inner_tar_path(
                 temp_root=request.local_temp_root,
                 job_id=request.job_id,
@@ -70,11 +76,14 @@ def build_archive(
                     owner_uid=request.private_owner_uid,
                     owner_gid=request.private_owner_gid,
                 )
+            report("Creating private TAR archive")
             create_private_inner_tar(request.snapshot, inner_tar, tools=request.tools)
+            report("Rechecking source files for changes")
             source_digest = source_digest_calculator(request.snapshot)
             _require_source_consistency(request.expected_source_digest, source_digest)
             if password is None:
                 raise AssertionError("validated tar.7z request has no password")
+            report("Compressing and encrypting archive")
             encrypt_inner_tar(
                 inner_tar,
                 request.archive_path,
@@ -83,6 +92,7 @@ def build_archive(
                 tools=request.tools,
             )
             archive_created = True
+            report("Verifying encrypted archive")
             verify_tar_7z(
                 request.archive_path,
                 request.snapshot,
@@ -90,12 +100,15 @@ def build_archive(
                 password=password,
                 tools=request.tools,
             )
+            report("Removing private TAR archive")
             cleanup_private_inner_tar(inner_tar)
             inner_tar = None
 
+        report("Calculating archive checksum")
         digest = calculate_archive_sha256(request.archive_path)
         write_checksum_sidecar(request.archive_path, request.checksum_path, digest)
         checksum_created = True
+        report("Verifying archive checksum")
         verified_digest = verify_checksum_sidecar(request.archive_path, request.checksum_path)
         try:
             size = request.archive_path.stat().st_size
@@ -112,6 +125,7 @@ def build_archive(
             source_digest=source_digest,
         )
     except BaseException as error:
+        report("Cleaning up incomplete archive")
         cleanup_error = _cleanup_failed_build(
             request,
             inner_tar,

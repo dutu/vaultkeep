@@ -6,6 +6,7 @@ import sys
 from collections.abc import Sequence
 
 from vaultkeep.cli.parser import create_parser
+from vaultkeep.cli.progress import terminal_progress
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import (
     ConfigurationError,
@@ -48,11 +49,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 namespace.config, schema_only=namespace.schema_only, runtime_params=runtime_params
             )
         elif namespace.command == "run":
-            result = run_backup(
-                namespace.config,
-                runtime_params=runtime_params,
-                user_mode=namespace.user_mode,
-            )
+            with terminal_progress() as progress:
+                result = run_backup(
+                    namespace.config,
+                    runtime_params=runtime_params,
+                    user_mode=namespace.user_mode,
+                    progress=progress,
+                )
         elif namespace.command == "list":
             result, _ = list_backups(namespace.config, runtime_params=runtime_params)
         elif namespace.command == "verify":

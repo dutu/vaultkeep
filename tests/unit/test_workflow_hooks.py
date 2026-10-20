@@ -106,8 +106,9 @@ def test_created_run_orders_hooks_and_persists_outcomes(
         path: Path,
         context: Any,
         outcomes: list[HookOutcomeState],
+        **kwargs: Any,
     ) -> None:
-        del config, path, context
+        del config, path, context, kwargs
         phases.append(phase)
         outcomes.append(
             HookOutcomeState(
@@ -143,9 +144,14 @@ def test_archive_failure_keeps_primary_error_and_runs_cleanup_then_failure_hook(
     )
 
     def run_phase(
-        phase: str, config: JobConfig, path: Path, context: Any, outcomes: list[HookOutcomeState]
+        phase: str,
+        config: JobConfig,
+        path: Path,
+        context: Any,
+        outcomes: list[HookOutcomeState],
+        **kwargs: Any,
     ) -> None:
-        del config, path, context
+        del config, path, context, kwargs
         phases.append(phase)
         outcomes.append(
             HookOutcomeState(
@@ -179,9 +185,14 @@ def test_before_archive_failure_runs_cleanup_then_failure_hook(
     phases: list[str] = []
 
     def run_phase(
-        phase: str, config: JobConfig, path: Path, context: Any, outcomes: list[HookOutcomeState]
+        phase: str,
+        config: JobConfig,
+        path: Path,
+        context: Any,
+        outcomes: list[HookOutcomeState],
+        **kwargs: Any,
     ) -> None:
-        del config, path, context
+        del config, path, context, kwargs
         phases.append(phase)
         outcomes.append(
             HookOutcomeState(

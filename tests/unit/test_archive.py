@@ -720,9 +720,11 @@ def test_build_archive_completes_checksum_workflow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _request(tmp_path)
+    stages: list[str] = []
 
     def fake_create(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
+        assert stages[-1] == "Creating and compressing archive"
         request.archive_path.write_bytes(b"verified archive")
 
     monkeypatch.setattr(builder_module, "create_tar_zstd", fake_create)
@@ -731,11 +733,19 @@ def test_build_archive_completes_checksum_workflow(
     artifact = build_archive(
         request,
         source_digest_calculator=lambda snapshot: SOURCE_DIGEST,
+        progress=stages.append,
     )
 
     assert artifact.sha256 == calculate_archive_sha256(request.archive_path)
     assert artifact.size == len(b"verified archive")
     assert verify_checksum_sidecar(request.archive_path, request.checksum_path) == artifact.sha256
+    assert stages == [
+        "Creating and compressing archive",
+        "Rechecking source files for changes",
+        "Verifying archive",
+        "Calculating archive checksum",
+        "Verifying archive checksum",
+    ]
 
 
 def test_build_archive_source_change_removes_partial_artifacts(
@@ -791,6 +801,7 @@ def test_encrypted_build_cleans_plaintext_before_return(
     request = _request(tmp_path, archive_format="tar.7z")
     inner = tmp_path / "private" / "job" / "backup" / "app.tar"
     events: list[str] = []
+    stages: list[str] = []
 
     monkeypatch.setattr(builder_module, "private_inner_tar_path", lambda **kwargs: inner)
 
@@ -805,6 +816,7 @@ def test_encrypted_build_cleans_plaintext_before_return(
 
     def encrypt(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
+        assert stages[-1] == "Compressing and encrypting archive"
         request.archive_path.write_bytes(b"encrypted")
         events.append("encrypt")
 
@@ -823,11 +835,22 @@ def test_encrypted_build_cleans_plaintext_before_return(
         request,
         password=PasswordSecret(b"secret"),
         source_digest_calculator=lambda snapshot: SOURCE_DIGEST,
+        progress=stages.append,
     )
 
     assert artifact.archive_format == "tar.7z"
     assert not inner.exists()
     assert events == ["prepare", "create", "encrypt", "cleanup"]
+    assert stages == [
+        "Preparing private archive workspace",
+        "Creating private TAR archive",
+        "Rechecking source files for changes",
+        "Compressing and encrypting archive",
+        "Verifying encrypted archive",
+        "Removing private TAR archive",
+        "Calculating archive checksum",
+        "Verifying archive checksum",
+    ]
 
 
 def test_plaintext_cleanup_failure_blocks_encrypted_build_and_removes_archive(

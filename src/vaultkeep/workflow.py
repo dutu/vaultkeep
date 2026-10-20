@@ -6,7 +6,7 @@ import os
 import socket
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -81,6 +81,7 @@ class _HookRunKwargs(TypedDict, total=False):
     owner_uid: int
     owner_gid: int | None
     allow_root_owned: bool
+    progress: Callable[[str], None]
 
 
 def load_validated_config(
@@ -154,8 +155,11 @@ def run_backup(
     runtime_params: Mapping[str, str] | None = None,
     paths: WorkflowPaths | None = None,
     user_mode: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> CommandResult:
     """Execute change detection, archival, commit, state persistence, and retention."""
+    report = progress if progress is not None else lambda message: None
+    report("Preparing backup")
     if paths is None:
         paths = user_workflow_paths() if user_mode else WorkflowPaths()
     owner_uid, owner_gid = _runtime_owner(user_mode)
@@ -166,8 +170,11 @@ def run_backup(
         if user_mode
         else {}
     )
+    hook_kwargs["progress"] = report
     parameters = dict(runtime_params or {})
+    report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
+    report("Checking sources, destination, and hooks")
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
     if user_mode:
         _validate_configured_hooks(config, user_mode=True)
@@ -177,6 +184,7 @@ def run_backup(
     lock = JobLock(
         job_lock_path(root=paths.lock_root, job_id=config.job.id, identity_hash=identity)
     )
+    report("Acquiring job lock")
     lock.acquire()
     state_path = job_state_path(
         config_path, config.job.id, runtime_params=parameters, state_root=paths.state_root
@@ -197,9 +205,12 @@ def run_backup(
             hook_outcomes,
             **hook_kwargs,
         )
+        report("Discovering source files")
         snapshot = discover_sources(config)
+        report("Hashing source files")
         source_digest = calculate_source_digest(snapshot)
         config_fingerprint = calculate_config_fingerprint(config, runtime_params=parameters)
+        report("Checking existing backups")
         discovered = discover_backups(config, runtime_params=parameters)
         loaded_password = (
             load_password_file(
@@ -210,6 +221,7 @@ def run_backup(
             if config.encryption.password_file
             else None
         )
+        report("Checking backup state and source changes")
         reconciliation = reconcile_local_state(
             state_path,
             job_id=config.job.id,
@@ -228,6 +240,7 @@ def run_backup(
         )
         now = datetime.now().astimezone()
         if decision.unchanged:
+            report("Sources unchanged; skipping archive creation")
             terminal_hook_failed = True
             _run_configured_hook(
                 "on_unchanged",
@@ -254,6 +267,7 @@ def run_backup(
                 credential_fingerprint=loaded_password.fingerprint if loaded_password else None,
                 hooks=tuple(hook_outcomes),
             )
+            report("Saving backup state")
             write_local_state(
                 state_path,
                 latest_state,
@@ -262,6 +276,7 @@ def run_backup(
             if previous is None:
                 raise AssertionError("Unchanged state has no successful backup")
             return CommandResult("run", "unchanged", archive_path=Path(previous.backup_path))
+        report("Preparing archive destination")
         backup_id = uuid.uuid4().hex
         allocated = allocate_job_backup_paths(
             config.destination,
@@ -311,6 +326,7 @@ def run_backup(
                     private_owner_gid=owner_gid,
                 ),
                 password=loaded_password.secret if loaded_password else None,
+                progress=report,
             )
         except BaseException:
             try:
@@ -335,6 +351,7 @@ def run_backup(
                 hook_outcomes,
                 **hook_kwargs,
             )
+        report("Finalizing backup")
         manifest = commit_archive_artifact(
             allocated,
             artifact,
@@ -344,6 +361,7 @@ def run_backup(
             created_at=now,
             config_fingerprint=config_fingerprint,
         )
+        report("Checking finalized backup")
         committed = discover_backups(config, runtime_params=parameters)
         record = next(
             record for record in committed.state_records if record.backup_id == manifest.backup_id
@@ -359,10 +377,12 @@ def run_backup(
             credential_fingerprint=loaded_password.fingerprint if loaded_password else None,
             hooks=tuple(hook_outcomes),
         )
+        report("Saving backup state")
         write_local_state(
             state_path,
             latest_state,
         )
+        report("Applying retention")
         plan = build_prune_plan(committed, config.retention)
         removed = execute_prune_plan(plan, committed)
         terminal_hook_failed = True
@@ -384,11 +404,13 @@ def run_backup(
             credential_fingerprint=loaded_password.fingerprint if loaded_password else None,
             hooks=tuple(hook_outcomes),
         )
+        report("Saving backup state")
         write_local_state(state_path, latest_state)
         return CommandResult(
             "run", "created", removed=len(removed), archive_path=Path(record.backup_path)
         )
     except BaseException as error:
+        report("Handling backup failure")
         failure_context = replace(
             failure_context,
             result="failed",
@@ -525,10 +547,13 @@ def _run_configured_hook(
     owner_uid: int = 0,
     owner_gid: int | None = 0,
     allow_root_owned: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> None:
     del config_path
     hook = getattr(config.hooks, phase)
     if hook is not None:
+        if progress is not None:
+            progress(f"Running {phase} hook")
         execution = run_hook(
             phase,
             hook,
