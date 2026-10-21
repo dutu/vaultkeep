@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import stat
+import subprocess
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -621,6 +622,13 @@ def _validate_runtime(
         raise DestinationError(f"Destination root is not an accessible directory: {root}")
     if config.destination.mount_point is not None:
         _assert_configured_mount_point(root, Path(config.destination.mount_point))
+    if config.destination.expected_fstype is not None:
+        actual_fstype = _mounted_filesystem_type(root)
+        if actual_fstype != config.destination.expected_fstype:
+            raise DestinationError(
+                f"Destination filesystem type mismatch at {root}: "
+                f"expected {config.destination.expected_fstype}, found {actual_fstype}"
+            )
     if (
         config.destination.marker_file is not None
         and not (root / config.destination.marker_file).is_file()
@@ -648,8 +656,37 @@ def _assert_configured_mount_point(root: Path, mount_point: Path) -> None:
         ) from error
     if not _path_is_relative_to(root_resolved, mount_point_resolved):
         raise DestinationError(f"Destination root is not below configured mount point: {root}")
-    if not os.path.ismount(mount_point):
-        raise DestinationError(f"Configured mount point is not mounted: {mount_point}")
+    _mounted_filesystem_type(mount_point_resolved, exact_mount_point=True)
+
+
+def _mounted_filesystem_type(path: Path, *, exact_mount_point: bool = False) -> str:
+    """Inspect this process's mount namespace, including bind mounts, without writing."""
+    command = [
+        "findmnt",
+        "--kernel",
+        "--uniq",
+        "--noheadings",
+        "--raw",
+        "--output",
+        "FSTYPE",
+        "--mountpoint" if exact_mount_point else "--target",
+        str(path),
+    ]
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
+        raise DestinationError(
+            f"Cannot inspect destination filesystem at {path}: {error}"
+        ) from error
+    if exact_mount_point and completed.returncode == 1 and not completed.stdout.strip():
+        raise DestinationError(f"Configured mount point is not mounted: {path}")
+    filesystem_types = completed.stdout.split()
+    if completed.returncode != 0 or len(filesystem_types) != 1:
+        raise DestinationError(
+            f"Cannot inspect destination filesystem at {path}: "
+            "findmnt did not return one mounted filesystem type"
+        )
+    return filesystem_types[0]
 
 
 def _path_is_relative_to(path: Path, parent: Path) -> bool:

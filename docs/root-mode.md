@@ -68,6 +68,11 @@ job:
 
 Use absolute source and destination paths. For mounted destinations, mount the share through the operating system and set `destination.mount_point` to the actual mount path. The mount point can be `destination.root` itself or one of its parents.
 
+For CIFS shares, set `destination.expected_fstype: cifs` to reject a local directory
+exposed through an LXC bind mount when the host share is unavailable. See the
+[destination mount checks](../README.md#destination-mount-checks) for verification commands
+and the optional destination marker.
+
 ## Validate and run manually
 
 Schema-only validation can run without root:

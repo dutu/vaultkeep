@@ -373,7 +373,7 @@ def test_hard_linked_files_are_hashed(tmp_path: Path, valid_config: dict[str, An
     assert before != after
 
 
-@pytest.mark.parametrize("section", ["retention", "schedule", "hooks", "logging"])
+@pytest.mark.parametrize("section", ["retention", "schedule", "hooks", "logging", "destination"])
 def test_operational_configuration_is_excluded_from_fingerprint(
     valid_config: dict[str, Any], section: str
 ) -> None:
@@ -385,6 +385,8 @@ def test_operational_configuration_is_excluded_from_fingerprint(
         candidate[section]["window"] = "02:00-04:00"
     elif section == "hooks":
         candidate[section]["on_success"] = {"command": "true"}
+    elif section == "destination":
+        candidate[section]["expected_fstype"] = "cifs"
     else:
         candidate[section]["level"] = "debug"
 

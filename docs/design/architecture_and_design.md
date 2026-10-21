@@ -2152,6 +2152,11 @@ destination:
   # destination.root itself or one of its parents.
   # mount_point: /mnt/backups
 
+  # Optional exact kernel filesystem type backing destination.root.
+  # Checked with findmnt in the running process's mount namespace before
+  # destination writes or backup management; cifs rejects host local fallbacks.
+  # expected_fstype: cifs
+
 archive:
   # Supported values: tar.zst, tar.7z.
   format: tar.zst

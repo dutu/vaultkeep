@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -129,7 +130,14 @@ def test_schema_only_validation_never_probes_destination(
     def unexpected_probe(root: Path) -> None:
         pytest.fail("Schema-only validation must not probe the destination")
 
+    def unexpected_mount_check(*args: Any, **kwargs: Any) -> str:
+        pytest.fail("Schema-only validation must not inspect mounts")
+
+    data = json.loads(local_job.read_text())
+    data["destination"]["expected_fstype"] = "cifs"
+    local_job.write_text(json.dumps(data))
     monkeypatch.setattr(workflow, "probe_destination_writability", unexpected_probe)
+    monkeypatch.setattr(workflow, "_mounted_filesystem_type", unexpected_mount_check)
     (local_job.parent / "destination").rmdir()
 
     assert main(["--config", str(local_job), "validate", "--schema-only"]) == 0
@@ -191,6 +199,41 @@ def test_runtime_validation_checks_marker_before_writing_probe(
         )
 
 
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
+@pytest.mark.parametrize(
+    "command", [["validate"], ["run"], ["list"], ["verify"], ["prune"], ["prune", "--dry-run"]]
+)
+def test_commands_reject_local_bind_mount_before_destination_access(
+    local_job: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+    backup_mode: str,
+    command: list[str],
+) -> None:
+    data = json.loads(local_job.read_text())
+    data["backup_mode"] = backup_mode
+    data["destination"].update(mount_point=data["destination"]["root"], expected_fstype="cifs")
+    local_job.write_text(json.dumps(data))
+
+    def unexpected_access(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("A mismatched filesystem must block destination probes and backup discovery")
+
+    monkeypatch.setattr(
+        workflow.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "ext4\n", ""),
+    )
+    monkeypatch.setattr(workflow, "probe_destination_writability", unexpected_access)
+    monkeypatch.setattr(workflow, "discover_backups", unexpected_access)
+    monkeypatch.setenv("XDG_STATE_HOME", str(local_job.parent / "state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(local_job.parent / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(local_job.parent / "runtime"))
+
+    assert main(["--user", "--config", str(local_job), *command]) == 5
+    assert "expected cifs, found ext4" in capsys.readouterr().err
+    assert list((local_job.parent / "destination").iterdir()) == []
+
+
 def test_runtime_validation_accepts_destination_below_mounted_parent(
     tmp_path: Path,
     valid_config: dict[str, Any],
@@ -209,7 +252,13 @@ def test_runtime_validation_accepts_destination_below_mounted_parent(
     }
     config = JobConfig.model_validate(config_data)
 
-    monkeypatch.setattr(workflow.os.path, "ismount", lambda path: Path(path) == mount_point)
+    def mounted(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert command[-2:] == ["--mountpoint", str(mount_point.resolve())]
+        return subprocess.CompletedProcess(command, 0, "cifs\n", "")
+
+    # A same-filesystem bind mount can be missed by os.path.ismount().
+    monkeypatch.setattr(workflow.os.path, "ismount", lambda path: False)
+    monkeypatch.setattr(workflow.subprocess, "run", mounted)
 
     workflow._validate_runtime(
         config,
@@ -236,7 +285,11 @@ def test_runtime_validation_rejects_unmounted_configured_mount_point(
     }
     config = JobConfig.model_validate(config_data)
 
-    monkeypatch.setattr(workflow.os.path, "ismount", lambda path: False)
+    monkeypatch.setattr(
+        workflow.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", ""),
+    )
 
     with pytest.raises(DestinationError, match="Configured mount point is not mounted"):
         workflow._validate_runtime(

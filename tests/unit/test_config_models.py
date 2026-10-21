@@ -150,3 +150,21 @@ def test_documented_defaults_are_applied(valid_config: dict[str, Any]) -> None:
     assert config.source_options.cross_filesystems is False
     assert config.source_options.ignore_missing is False
     assert config.schedule.persistent is True
+    assert config.destination.expected_fstype is None
+
+
+@pytest.mark.parametrize("fstype", [None, "cifs", "nfs4", "ext4", "fuse.sshfs"])
+def test_expected_filesystem_type_is_optional_and_accepts_kernel_names(
+    valid_config: dict[str, Any], fstype: str | None
+) -> None:
+    valid_config["destination"]["expected_fstype"] = fstype
+    assert JobConfig.model_validate(valid_config).destination.expected_fstype == fstype
+
+
+@pytest.mark.parametrize("fstype", ["", " ", "cifs\n", "cifs,nfs", "cifs/nas", 1, True])
+def test_expected_filesystem_type_requires_one_strict_filesystem_name(
+    valid_config: dict[str, Any], fstype: object
+) -> None:
+    valid_config["destination"]["expected_fstype"] = fstype
+    with pytest.raises(ValidationError):
+        JobConfig.model_validate(valid_config)

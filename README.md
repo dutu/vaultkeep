@@ -22,6 +22,7 @@ and [user mode guide](docs/user-mode.md).
   - [Back up directory files separately](#back-up-directory-files-separately)
   - [Destination name templates](#destination-name-templates)
   - [Runtime template parameters](#runtime-template-parameters)
+  - [Destination mount checks](#destination-mount-checks)
   - [CLI reference](#cli-reference)
   - [Check the installed version](#check-the-installed-version)
   - [Validate a job configuration](#validate-a-job-configuration)
@@ -509,6 +510,8 @@ Runtime parameter names must match `[A-Za-z_][A-Za-z0-9_]*` and cannot use built
 
 Runtime parameter values are part of the effective backup identity. Different parameter values use different destination namespaces, configuration fingerprints, local state files, locks, and timer instances.
 
+### Destination mount checks
+
 For destinations below a mounted filesystem, set `destination.mount_point` to the actual mount path:
 
 ```yaml
@@ -518,6 +521,60 @@ destination:
 ```
 
 When `mount_point` is present, Vaultkeep requires it to be currently mounted before using `destination.root`. The mount point can be `destination.root` itself or one of its parents. Omit `mount_point` for ordinary local destinations.
+
+For a CIFS destination, especially one mounted on an LXC host and bind-mounted into
+the container, also require the destination filesystem type:
+
+```yaml
+destination:
+  root: /mnt/backups/app
+  mount_point: /mnt/backups
+  expected_fstype: cifs
+  marker_file: .vaultkeep-destination
+```
+
+`expected_fstype` is optional and checks the filesystem backing `destination.root`
+as seen by Vaultkeep, including inside a container. It requires an exact kernel
+filesystem type such as `cifs`, `nfs`, or `nfs4`; it can be used without
+`mount_point`. If an LXC bind mount exposes a host local directory instead of the
+CIFS share, the filesystem type differs and Vaultkeep stops before writing to or
+managing backups on that destination. A type check does not identify a particular
+server or share.
+
+1. Inspect the mount point and destination from the environment that runs Vaultkeep
+   (inside LXC when applicable):
+
+   ```sh
+   findmnt --uniq --mountpoint /mnt/backups --output TARGET,SOURCE,FSTYPE
+   findmnt --uniq --target /mnt/backups/app --output TARGET,SOURCE,FSTYPE
+   ```
+
+   Confirm the expected server/share and `FSTYPE` of `cifs`. A local filesystem
+   such as `ext4` or `zfs` indicates that the intended share is unavailable at that path.
+
+2. After confirming the real share, create the configured marker once:
+
+   ```sh
+   touch /mnt/backups/app/.vaultkeep-destination
+   ```
+
+   Keep this marker absent from the underlying host local directory. Vaultkeep
+   checks that the marker is a file below `destination.root`; it does not check
+   its contents or create it automatically.
+
+3. Run full validation with your job configuration:
+
+   ```sh
+   vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+   ```
+
+Mount checks use `findmnt` from the required `util-linux` package and recognize
+bind mounts. Failed or unavailable mount inspection and filesystem type mismatches
+stop the operation with destination error exit code 5. Schema-only validation
+skips these runtime checks. Full validation also probes writing, renaming, and
+removal; a registered mount alone does not establish that a NAS is reachable.
+These checks confirm conditions at the time of inspection; they do not prevent
+mount changes or network failures during an operation.
 
 ### CLI reference
 

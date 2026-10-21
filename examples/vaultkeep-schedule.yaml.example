@@ -55,6 +55,10 @@ destination:
   # Optional mount check. Value: absolute mount path at or above destination.root.
   # mount_point: /mnt/backups
 
+  # Optional exact filesystem type backing root, as seen by Vaultkeep.
+  # Use cifs to reject an LXC bind mount of a host local directory.
+  # expected_fstype: cifs
+
 archive:
   # Archive format. Values: tar.zst, tar.7z.
   format: tar.zst
