@@ -17,6 +17,7 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
     (): (
         "config_version",
         "job",
+        "backup_mode",
         "sources",
         "exclude",
         "source_options",

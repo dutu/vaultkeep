@@ -8,8 +8,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
-def test_installed_worker_core_contract(tmp_path: Path, valid_config: dict) -> None:
+
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
+def test_installed_worker_core_contract(
+    tmp_path: Path, valid_config: dict, backup_mode: str
+) -> None:
     root = Path(__file__).resolve().parents[2]
     wheelhouse = os.environ.get("VAULTKEEP_TEST_WHEELHOUSE", "/tmp/vaultkeep-wheelhouse")
     environment = dict(
@@ -35,7 +40,9 @@ def test_installed_worker_core_contract(tmp_path: Path, valid_config: dict) -> N
     destination.mkdir()
     (destination / "testnet").mkdir()
     (source / "payload.txt").write_text("disposable contract test\n")
+    (source / "second-wallet").write_text("another disposable file\n")
     config = dict(valid_config)
+    config["backup_mode"] = backup_mode
     config["sources"] = [
         {"path": str(source), "archive_path_mode": "prefix", "archive_prefix": "source"}
     ]

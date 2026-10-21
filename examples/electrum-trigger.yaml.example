@@ -7,10 +7,16 @@
 config_version: 1
 job:
   id: electrum-main
+# For independent wallet archives, use backup_mode: per_file and select
+# /home/user/.electrum/wallets with archive_prefix: wallets.
+# See docs/trigger/apps/electrum.md#separate-wallet-backups.
 sources:
   - path: /home/user/.electrum
     archive_path_mode: prefix
     archive_prefix: electrum
+    exclude:
+      - "*.lock"
+      - "*.tmp"
 source_options:
   follow_symlinks: false
   cross_filesystems: false

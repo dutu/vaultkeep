@@ -245,6 +245,7 @@ class JobConfig(StrictConfigModel):
 
     config_version: Literal[1]
     job: JobIdentityConfig
+    backup_mode: Literal["combined", "per_file"] = "combined"
     sources: list[SourceConfig] = Field(min_length=1)
     exclude: list[NonEmptyString] = Field(default_factory=list)
     source_options: SourceOptionsConfig
@@ -261,4 +262,13 @@ class JobConfig(StrictConfigModel):
     def _exclusive_automatic_execution(self) -> Self:
         if self.schedule.enabled and self.trigger.enabled:
             raise ValueError("schedule.enabled and trigger.enabled are mutually exclusive")
+        return self
+
+    @model_validator(mode="after")
+    def _per_file_source(self) -> Self:
+        if self.backup_mode == "per_file":
+            if len(self.sources) != 1:
+                raise ValueError("per_file backups require exactly one source directory")
+            if self.source_options.follow_symlinks:
+                raise ValueError("per_file backups require source_options.follow_symlinks: false")
         return self

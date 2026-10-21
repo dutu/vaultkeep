@@ -441,6 +441,50 @@ config.json
 
 The archive must not store a leading `/`.
 
+### Independent file backups
+
+`backup_mode` defaults to `combined`, retaining one archive and history for the
+selected source set. `backup_mode: per_file` requires exactly one real source
+directory and disables symlink following. It scans immediate regular files only,
+applies existing exclusions, and derives one source configuration per selected
+file. Prefix mode appends the filename to the configured directory prefix;
+preserve mode retains the ordinary absolute-path layout.
+
+Each file reuses the single-archive workflow, including content and metadata
+hashing, source-consistency checks, archive verification, state reconstruction,
+hooks, encryption, and retention. The selected file is checked again after its
+`before_check` hook and must still be a single regular file. Directory enumeration
+precedes per-file hooks; no hooks run for an empty selection.
+
+The destination namespace is `file-<label>-<digest>` below the configured root.
+The label is the filename lowercased, with runs outside ASCII letters and digits
+replaced by hyphens, trimmed and truncated to 40 characters, or `file` if empty.
+The digest is the full SHA-256 of the original filename encoded with the lossless
+filesystem encoding. This bounds destination component length and distinguishes
+names that collide after sanitization or on case-insensitive shares. No mapping
+registry or additional destination metadata is needed. The job ID, name template,
+and manifest schema stay unchanged. `per_file` is included in the child
+configuration fingerprint; the existing combined-mode fingerprint is unchanged.
+
+The original job lock covers selection and the complete batch. Each file's local
+identity additionally includes its destination key; this keeps its state, lock,
+and private archive workspace independent. The parent mount and marker are checked
+before creating a child destination. The marker remains relative to the parent;
+child destinations retain the mount requirement and reject symlinks.
+
+Per-file expected backup and filesystem errors are collected while remaining files
+are attempted. The CLI reports details on stderr and emits the usual single
+`run: created` or `run: unchanged` marker on complete success. An empty selection
+is `unchanged`; any file failure produces `run: failed` and exit 7. Interruptions
+propagate normally. The Trigger worker therefore uses its existing result contract.
+
+New filenames create new histories. Deleted or excluded files retain their
+histories; a rename creates a new namespace. Management commands discover the
+reserved per-file directories independently of the current sources. Manual pruning
+validates all discovered histories before deleting any backups and applies retention
+separately to each history. Automatic retention applies to each newly backed-up
+file only. Combined backups and legacy ZIPs are not imported.
+
 ## 8.1 Exclusion semantics
 
 Vaultkeep uses GitWildMatch-style exclusions through the `pathspec` library. V1 does not support negated exclusion patterns.
@@ -944,6 +988,11 @@ State path:
 `job-identity-hash` is the first 16 hexadecimal characters of SHA-256 over the canonical configuration path, a null separator, and the normalized job ID.
 
 The implementation encodes the canonical configuration path with Python's lossless filesystem encoding, appends one null byte, and appends the exact validated ASCII job ID before hashing.
+
+When runtime parameters are present, it appends a null separator and their sorted,
+compact, ASCII JSON representation. For an independent file it then appends
+`\0per-file\0` and the ASCII per-file destination key before hashing. The batch lock
+uses the original identity without a file key.
 
 State format version 1 contains:
 

@@ -119,6 +119,7 @@ def calculate_config_fingerprint(
             ),
         },
         "metadata_policy": _METADATA_POLICY,
+        **({"backup_mode": config.backup_mode} if config.backup_mode != "combined" else {}),
     }
     encoded = json.dumps(
         document,

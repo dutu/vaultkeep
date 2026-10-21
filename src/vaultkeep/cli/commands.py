@@ -130,9 +130,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return 7
     print(f"{result.command}: {result.result}", flush=True)
+    if result.files:
+        _print_file_results(result)
     if namespace.command == "run" and result.result == "created" and progress is not None:
         _print_run_summary(result, elapsed)
-    return 0
+    return 7 if result.result == "failed" else 0
+
+
+def _print_file_results(result: CommandResult) -> None:
+    """Keep per-file diagnostics on stderr and stdout's Trigger marker unchanged."""
+    with suppress(OSError):
+        for outcome in result.files:
+            print(f"{outcome.source.name!r}: {outcome.result}", file=sys.stderr)
+            if outcome.archive_path is not None and outcome.result == "created":
+                print(f"  Archive: {outcome.archive_path}", file=sys.stderr)
+            if outcome.error is not None:
+                print(f"  {outcome.error}", file=sys.stderr)
 
 
 def _print_run_summary(result: CommandResult, elapsed: float) -> None:

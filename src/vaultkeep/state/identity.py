@@ -17,7 +17,11 @@ def canonical_config_path(config_path: Path) -> Path:
 
 
 def job_identity_hash(
-    config_path: Path, job_id: str, *, runtime_params: Mapping[str, str] | None = None
+    config_path: Path,
+    job_id: str,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+    file_key: str | None = None,
 ) -> str:
     """Calculate the documented 16-hex local job identity."""
     digest = hashlib.sha256()
@@ -35,6 +39,9 @@ def job_identity_hash(
                 separators=(",", ":"),
             ).encode("ascii")
         )
+    if file_key is not None:
+        digest.update(b"\0per-file\0")
+        digest.update(file_key.encode("ascii"))
     return digest.hexdigest()[:16]
 
 
@@ -43,8 +50,11 @@ def job_state_path(
     job_id: str,
     *,
     runtime_params: Mapping[str, str] | None = None,
+    file_key: str | None = None,
     state_root: Path = DEFAULT_STATE_ROOT,
 ) -> Path:
     """Return the state.json path for one configuration identity."""
-    identity = job_identity_hash(config_path, job_id, runtime_params=runtime_params)
+    identity = job_identity_hash(
+        config_path, job_id, runtime_params=runtime_params, file_key=file_key
+    )
     return state_root / f"{job_id}-{identity}" / "state.json"

@@ -17,6 +17,7 @@ This file is the shared user guide for both operating modes. For mode-specific s
 - [Usage](#usage)
   - [Choose a mode-specific workflow](#choose-a-mode-specific-workflow)
   - [Minimal job configuration](#minimal-job-configuration)
+  - [Back up directory files separately](#back-up-directory-files-separately)
   - [Destination name templates](#destination-name-templates)
   - [Runtime template parameters](#runtime-template-parameters)
   - [CLI reference](#cli-reference)
@@ -61,7 +62,7 @@ A job specifies:
 - an optional systemd schedule;
 - optional lifecycle hooks.
 
-For each run, Vaultkeep validates the job, checks whether the selected sources changed, creates one independent backup directory when needed, verifies the archive, writes a manifest, and applies the configured retention policy. If nothing relevant changed, the run finishes as `unchanged` and does not create a new archive.
+For each run, Vaultkeep validates the job, checks whether the selected sources changed, creates an independent backup directory when needed, verifies the archive, writes a manifest, and applies the configured retention policy. By default, all selected sources share one archive. The optional [per-file mode](#back-up-directory-files-separately) creates a separate archive and history for each file in a directory. If nothing relevant changed, the run finishes as `unchanged` and does not create a new archive.
 
 Backups are ordinary archive files:
 
@@ -318,6 +319,76 @@ logging:
   level: info
   include_command_output: false
 ```
+
+### Back up directory files separately
+
+To back up Electrum wallets independently, set these fields in a complete job:
+
+```yaml
+backup_mode: per_file
+
+sources:
+  - path: /home/alice/.electrum/wallets
+    archive_path_mode: prefix
+    archive_prefix: wallets
+    exclude:
+      - "*.lock"
+      - "*.tmp"
+
+destination:
+  root: /mnt/backups/electrum
+  mount_point: /mnt/backups
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+```
+
+1. Set the source and destination to your actual paths. The destination root must
+   already exist. Set `mount_point` to the actual share mount, or omit it for a
+   local destination. Keep the job's archive, encryption, and retention settings.
+2. Validate and run the job as its owning user:
+
+   ```sh
+   vaultkeep --user --config ~/.config/vaultkeep/jobs/electrum-main.yaml validate
+   vaultkeep --user --config ~/.config/vaultkeep/jobs/electrum-main.yaml run
+   ```
+
+3. Check the per-file results on stderr, then verify the destination:
+
+   ```sh
+   vaultkeep --user --config ~/.config/vaultkeep/jobs/electrum-main.yaml list
+   vaultkeep --user --config ~/.config/vaultkeep/jobs/electrum-main.yaml verify
+   ```
+
+`per_file` requires exactly one source directory and
+`source_options.follow_symlinks: false`. It selects immediate regular files,
+applies global and per-source exclusions, and skips subdirectories and symlinks.
+New files are included automatically. Unchanged files create no archive; changes
+to permissions, ownership, or backup-relevant configuration can also require a
+backup. An empty selection finishes as `unchanged` without creating an archive.
+
+Each file has its own destination folder, local state, and retention history. A
+folder is named `file-<readable-name>-<sha256-of-original-filename>` so names remain
+distinct on case-insensitive shares. Inside it, backups use the usual timestamped
+directories and three artifacts. Each archive contains just `wallets/<filename>`
+with the configuration above. Existing `tar.zst` and `tar.7z` formats apply; ZIP is
+not supported.
+
+Deleting or excluding a source file leaves its history intact. Renaming a file
+starts a new history. `list`, `verify`, and `prune` include histories whose sources
+are gone; retention is calculated separately for each file. Automatic retention
+runs only for files that receive a new backup. A failure for one file does not
+stop the remaining files; the command reports each result and exits with code 7
+if any file failed. Successful files are checked normally on the next run.
+
+Lifecycle hooks run separately for each selected file, including `before_check`
+after the directory's file list has been selected. An empty selection runs no
+hooks. Use a timer or the existing shutdown trigger for the complete job; see
+[Electrum setup](docs/trigger/apps/electrum.md#separate-wallet-backups).
+Omit `backup_mode`, or set it to `combined`, for the default shared archive.
+
+When migrating an existing combined job, use a separate destination root for
+per-file backups. Existing combined backups and the wrapper's ZIP archives are
+not imported; retain them separately. The first run creates a new baseline for
+every selected wallet.
 
 ### Destination name templates
 

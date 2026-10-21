@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import stat
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -23,10 +24,18 @@ from vaultkeep.destination import (
     execute_prune_plan,
     probe_destination_writability,
 )
-from vaultkeep.errors import DestinationError
+from vaultkeep.errors import DestinationError, SourceDiscoveryError, VaultkeepError
+from vaultkeep.file_backups import (
+    file_config,
+    file_destinations,
+    file_key,
+    require_file_directory,
+    select_files,
+)
 from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_shell
 from vaultkeep.locking import JobLock, job_lock_path
 from vaultkeep.sources import (
+    SourceEntryType,
     calculate_config_fingerprint,
     calculate_source_digest,
     discover_sources,
@@ -67,6 +76,16 @@ def user_workflow_paths() -> WorkflowPaths:
 
 
 @dataclass(frozen=True, slots=True)
+class FileBackupResult:
+    """The outcome of one independent file within a per-file job."""
+
+    source: Path
+    result: str
+    archive_path: Path | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CommandResult:
     """Stable facts returned by a manual command without presentation concerns."""
 
@@ -76,6 +95,7 @@ class CommandResult:
     removed: int = 0
     archive_path: Path | None = None
     archive_size: int | None = None
+    files: tuple[FileBackupResult, ...] = ()
 
 
 class _HookRunKwargs(TypedDict, total=False):
@@ -108,6 +128,8 @@ def validate_job(
 
     config = load_validated_config(config_path, runtime_params=runtime_params)
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
+    if config.backup_mode == "per_file":
+        select_files(config)
     return CommandResult("validate", "valid")
 
 
@@ -118,8 +140,13 @@ def list_backups(
     parameters = dict(runtime_params or {})
     config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
-    discovered = discover_backups(config, runtime_params=parameters)
-    return CommandResult("list", "listed", backups=len(discovered.backups)), discovered.backups
+    destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
+    backups = tuple(
+        backup
+        for destination in destinations
+        for backup in discover_backups(destination, runtime_params=parameters).backups
+    )
+    return CommandResult("list", "listed", backups=len(backups)), backups
 
 
 def prune_backups(
@@ -129,9 +156,19 @@ def prune_backups(
     parameters = dict(runtime_params or {})
     config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=False, require_writable_destination=not dry_run)
-    discovered = discover_backups(config, runtime_params=parameters)
-    plan = build_prune_plan(discovered, config.retention)
-    removed = () if dry_run else execute_prune_plan(plan, discovered)
+    destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
+    # Validate every history before deleting anything in any history.
+    plans = []
+    for destination in destinations:
+        discovered = discover_backups(destination, runtime_params=parameters)
+        plans.append((discovered, build_prune_plan(discovered, config.retention)))
+    removed = (
+        ()
+        if dry_run
+        else tuple(
+            path for discovered, plan in plans for path in execute_prune_plan(plan, discovered)
+        )
+    )
     return CommandResult("prune", "planned" if dry_run else "pruned", removed=len(removed))
 
 
@@ -149,12 +186,16 @@ def verify_backups(
     report("Checking destination")
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
     report("Verifying backup manifests and checksums")
-    discovered = discover_backups(config, runtime_params=parameters)
-    if discovered.malformed:
-        raise DestinationError(
-            "Matching malformed destination entries prevent successful verification"
-        )
-    return CommandResult("verify", "verified", backups=len(discovered.backups))
+    destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
+    count = 0
+    for destination in destinations:
+        discovered = discover_backups(destination, runtime_params=parameters)
+        if discovered.malformed:
+            raise DestinationError(
+                "Matching malformed destination entries prevent successful verification"
+            )
+        count += len(discovered.backups)
+    return CommandResult("verify", "verified", backups=count)
 
 
 def run_backup(
@@ -166,6 +207,104 @@ def run_backup(
     progress: Callable[[str], None] | None = None,
 ) -> CommandResult:
     """Execute change detection, archival, commit, state persistence, and retention."""
+    if progress is not None:
+        progress("Loading and validating configuration")
+    config = load_validated_config(config_path, runtime_params=runtime_params)
+    if config.backup_mode == "per_file":
+        return _run_file_backups(
+            config_path,
+            config,
+            runtime_params=runtime_params,
+            paths=paths,
+            user_mode=user_mode,
+            progress=progress,
+        )
+    return _run_single_backup(
+        config_path,
+        config,
+        runtime_params=runtime_params,
+        paths=paths,
+        user_mode=user_mode,
+        progress=progress,
+    )
+
+
+def _run_file_backups(
+    config_path: Path,
+    config: JobConfig,
+    *,
+    runtime_params: Mapping[str, str] | None,
+    paths: WorkflowPaths | None,
+    user_mode: bool,
+    progress: Callable[[str], None] | None,
+) -> CommandResult:
+    report = progress if progress is not None else lambda message: None
+    if paths is None:
+        paths = user_workflow_paths() if user_mode else WorkflowPaths()
+    if user_mode:
+        _prepare_user_paths(paths)
+    _validate_runtime(config, require_sources=True, require_writable_destination=True)
+    _validate_configured_hooks(config, user_mode=user_mode)
+    identity = job_identity_hash(config_path, config.job.id, runtime_params=runtime_params)
+    lock = JobLock(
+        job_lock_path(root=paths.lock_root, job_id=config.job.id, identity_hash=identity)
+    )
+    lock.acquire()
+    outcomes: list[FileBackupResult] = []
+    removed = 0
+    archive_size = 0
+    try:
+        report("Discovering files for independent backups")
+        for source in select_files(config):
+            report(f"Backing up {source.name!r}")
+            try:
+                # Recheck the parent share and marker before creating each namespace.
+                _validate_runtime(config, require_sources=False, require_writable_destination=False)
+                child = file_config(config, source)
+                require_file_directory(Path(child.destination.root), create=True)
+                result = _run_single_backup(
+                    config_path,
+                    child,
+                    runtime_params=runtime_params,
+                    paths=paths,
+                    user_mode=user_mode,
+                    progress=progress,
+                    source_file_key=file_key(source.name),
+                )
+                outcomes.append(FileBackupResult(source, result.result, result.archive_path))
+                removed += result.removed
+                archive_size += result.archive_size or 0
+            except (VaultkeepError, OSError) as error:
+                outcomes.append(FileBackupResult(source, "failed", error=str(error)))
+        if any(outcome.result == "failed" for outcome in outcomes):
+            status = "failed"
+        elif any(outcome.result == "created" for outcome in outcomes):
+            status = "created"
+        else:
+            status = "unchanged"
+        return CommandResult(
+            "run",
+            status,
+            backups=sum(outcome.result == "created" for outcome in outcomes),
+            removed=removed,
+            archive_size=archive_size,
+            files=tuple(outcomes),
+        )
+    finally:
+        lock.release()
+
+
+def _run_single_backup(
+    config_path: Path,
+    config: JobConfig,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+    paths: WorkflowPaths | None = None,
+    user_mode: bool = False,
+    progress: Callable[[str], None] | None = None,
+    source_file_key: str | None = None,
+) -> CommandResult:
+    """Execute the same verified archive workflow for one backup unit."""
     report = progress if progress is not None else lambda message: None
     report("Preparing backup")
     if paths is None:
@@ -180,22 +319,26 @@ def run_backup(
     )
     hook_kwargs["progress"] = report
     parameters = dict(runtime_params or {})
-    report("Loading and validating configuration")
-    config = load_validated_config(config_path, runtime_params=parameters)
     report("Checking sources, destination, and hooks")
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
     if user_mode:
         _validate_configured_hooks(config, user_mode=True)
     else:
         _validate_configured_hooks(config)
-    identity = job_identity_hash(config_path, config.job.id, runtime_params=parameters)
+    identity = job_identity_hash(
+        config_path, config.job.id, runtime_params=parameters, file_key=source_file_key
+    )
     lock = JobLock(
         job_lock_path(root=paths.lock_root, job_id=config.job.id, identity_hash=identity)
     )
     report("Acquiring job lock")
     lock.acquire()
     state_path = job_state_path(
-        config_path, config.job.id, runtime_params=parameters, state_root=paths.state_root
+        config_path,
+        config.job.id,
+        runtime_params=parameters,
+        state_root=paths.state_root,
+        file_key=source_file_key,
     )
     hook_outcomes: list[HookOutcomeState] = []
     reconciliation = None
@@ -220,7 +363,15 @@ def run_backup(
             **hook_kwargs,
         )
         report("Discovering source files")
+        if source_file_key is not None:
+            source = Path(config.sources[0].path)
+            if not stat.S_ISREG(source.lstat().st_mode):
+                raise SourceDiscoveryError(f"Selected source is no longer a regular file: {source}")
         snapshot = discover_sources(config)
+        if source_file_key is not None and (
+            len(snapshot.entries) != 1 or snapshot.entries[0].entry_type is not SourceEntryType.FILE
+        ):
+            raise SourceDiscoveryError("Selected source is no longer a single regular file")
         report("Hashing source files")
         source_digest = calculate_source_digest(snapshot)
         failure_context = replace(failure_context, source_digest=source_digest)
