@@ -139,13 +139,15 @@ the job. Then validate and install the monitor:
 
 ```sh
 vaultkeep --user --config /absolute/path/electrum-main.yaml validate
-vaultkeep --user trigger --config /absolute/path/electrum-main.yaml check-config
-vaultkeep --user trigger --config /absolute/path/electrum-main.yaml check-config --runtime
-vaultkeep --user trigger --config /absolute/path/electrum-main.yaml install
+vaultkeep --user --config /absolute/path/electrum-main.yaml trigger install
 ```
 
-`check-config` validates the selected matcher and job but does not certify
+`vaultkeep validate` validates the selected matcher and job but does not certify
 Electrum's installed process model, writer coverage, or backup consistency.
+
+Before installation, validation reports the missing monitor and `setup incomplete`.
+Fix any prerequisite failures, install the monitor explicitly, then run the same
+validation command again to check its health.
 
 ## Limitations
 

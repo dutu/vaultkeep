@@ -97,13 +97,15 @@ Confirm the executable path and directory evidence before enabling the trigger:
 
 ```sh
 vaultkeep --user --config /absolute/path/wasabi-main.yaml validate
-vaultkeep --user trigger --config /absolute/path/wasabi-main.yaml check-config
-vaultkeep --user trigger --config /absolute/path/wasabi-main.yaml check-config --runtime
-vaultkeep --user trigger --config /absolute/path/wasabi-main.yaml install
+vaultkeep --user --config /absolute/path/wasabi-main.yaml trigger install
 ```
 
-`check-config` does not certify the installed GUI/daemon model or writer
+`vaultkeep validate` does not certify the installed GUI/daemon model or writer
 coverage.
+
+Before installation, validation reports the missing monitor and `setup incomplete`.
+Fix any prerequisite failures, install the monitor explicitly, then run the same
+validation command again to check its health.
 
 ## Limitations
 

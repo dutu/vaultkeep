@@ -55,10 +55,10 @@ def _quote_systemd_argument(value: str) -> str:
 
 def render_service(config: TriggerConfig) -> str:
     # Always use the stable installed entry point, matching timer services.
-    args = ["/usr/local/bin/vaultkeep", "--user", "trigger", "--config", str(config.source_path)]
+    args = ["/usr/local/bin/vaultkeep", "--user", "--config", str(config.source_path)]
     for key, value in sorted(config.params.items()):
         args.extend(["--param", f"{key}={value}"])
-    args.append("monitor")
+    args.extend(["trigger", "monitor"])
     # ExecStart is parsed by systemd, not by a shell.
     command = " ".join(_quote_systemd_argument(arg) for arg in args)
     return (

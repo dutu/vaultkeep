@@ -496,6 +496,13 @@ def check_trigger_command(
     expected = [str(executable)] if legacy else [str(executable), "--user", "trigger"]
     offset = len(expected)
     if unit == "vaultkeep-trigger.service" or unit.startswith("vaultkeep-trigger@"):
+        # Accept the former option order while inspecting installed deployments
+        # for upgrade/removal. Newly rendered monitors use top-level job options.
+        suffix = ["monitor"]
+        if not legacy and argv[:offset] != expected:
+            expected = [str(executable), "--user"]
+            offset = len(expected)
+            suffix = ["trigger", "monitor"]
         if not legacy and (len(argv) < offset + 3 or argv[offset] != "--config"):
             fail(f"{label}: unexpected ExecStart (monitor requires its job configuration): {unit}")
         if (
@@ -509,7 +516,7 @@ def check_trigger_command(
             while len(argv) > offset + 2 and argv[offset] == "--param" and "=" in argv[offset + 1]:
                 expected.extend(argv[offset : offset + 2])
                 offset += 2
-        expected.append("monitor")
+        expected.extend(suffix)
     else:
         expected.extend(["exec-worker", "%i" if "@." in unit else unit.split("@", 1)[1][:-8]])
     if argv != expected:

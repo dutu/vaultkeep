@@ -15,7 +15,6 @@ from tests.trigger.conftest import (
     make_instance,
 )
 from tests.trigger.test_monitor import _running_proc
-from vaultkeep.cli import main
 from vaultkeep.trigger.errors import BlockedError, ConfigurationError
 from vaultkeep.trigger.monitor import Monitor
 from vaultkeep.trigger.preflight import runtime_preflight, validate_jobs
@@ -50,22 +49,21 @@ def test_runtime_preflight_is_read_only_and_checks_full_jobs_and_version(
     root = tmp_path / "absent" / "state"
     assert runtime_preflight(config, FakeController(), root, runner=runner) == "0.1.0"
     assert not root.parent.exists() and not (runtime / "vaultkeep-trigger").exists()
-    assert runner.calls[0][-1] == "validate" and "--schema-only" not in runner.calls[0]
+    assert runner.calls[0][-2:] == ["validate", "--backup-only"]
+    assert "--schema-only" not in runner.calls[0]
     assert "NETWORK=mainnet" in runner.calls[0]
     assert runner.calls[1] == [str(config.vaultkeep), "--version"]
 
 
-def test_static_validation_does_not_require_runtime_and_skips_disabled_jobs(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_backup_validation_skips_disabled_jobs(tmp_path: Path, monkeypatch) -> None:
     config, _runtime = _runtime_config(tmp_path, monkeypatch)
     monkeypatch.delenv("XDG_RUNTIME_DIR")
     runner = FakeRunner([child_result()])
     config = replace(
         config, instances=(*config.instances, make_instance(instance_id="disabled", enabled=False))
     )
-    validate_jobs(config, runtime=False, runner=runner)
-    assert len(runner.calls) == 1 and runner.calls[0][-1] == "--schema-only"
+    validate_jobs(config, runner=runner)
+    assert len(runner.calls) == 1 and runner.calls[0][-1] == "--backup-only"
 
 
 def test_template_failure_blocks_preflight_before_job_commands(tmp_path: Path, monkeypatch) -> None:
@@ -160,18 +158,3 @@ def test_monitor_records_runtime_baseline_in_requests(tmp_path: Path, monkeypatc
     request = store.read_request(state.active_attempt_id)
     assert request is not None and request.preflight_version == "0.1.0"
     assert request.environment["XDG_RUNTIME_DIR"] == str(_runtime)
-
-
-def test_cli_runtime_check_never_initializes_state_or_runtime_subdirectory(
-    tmp_path: Path, monkeypatch, valid_config: dict
-) -> None:
-    import json
-
-    _config, runtime = _runtime_config(tmp_path, monkeypatch)
-    source = tmp_path / "app.yaml"
-    source.write_text(json.dumps(valid_config))
-    root = tmp_path / "absent-state"
-    monkeypatch.setattr("vaultkeep.trigger.cli.state_root", lambda _scope: root)
-    monkeypatch.setattr("vaultkeep.trigger.cli.RealSystemdController", FakeController)
-    assert main(["--user", "trigger", "--config", str(source), "check-config", "--runtime"]) == 0
-    assert not root.exists() and not (runtime / "vaultkeep-trigger").exists()

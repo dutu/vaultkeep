@@ -48,9 +48,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if namespace.command is None:
         parser.error("a command is required")
-    if namespace.command != "timers" and namespace.config is None:
+    if namespace.command != "schedules" and namespace.config is None:
         parser.error("--config is required for this command")
-    if namespace.command == "timers" and namespace.param:
+    if namespace.command == "schedules" and namespace.param:
         parser.error("--param requires --config")
     try:
         runtime_params = parse_runtime_parameters(namespace.param)
@@ -59,6 +59,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 3
     try:
         if namespace.command == "validate":
+            if not namespace.backup_only:
+                from vaultkeep.cli.validation import validate_command
+
+                return validate_command(
+                    namespace.config,
+                    schema_only=namespace.schema_only,
+                    runtime_params=runtime_params,
+                    user_mode=namespace.user_mode,
+                )
             result = validate_job(
                 namespace.config, schema_only=namespace.schema_only, runtime_params=runtime_params
             )
@@ -86,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             manager = TimerManager(user_mode=namespace.user_mode)
             manager.require_environment()
-            if namespace.command == "timer":
+            if namespace.command == "schedule":
                 if namespace.action == "install":
                     manager.install(namespace.config, runtime_params=runtime_params)
                 elif namespace.action == "update":

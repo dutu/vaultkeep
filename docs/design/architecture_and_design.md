@@ -1458,28 +1458,28 @@ vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] prune
 vaultkeep [--user] --config job.yaml [--param KEY=VALUE ...] prune --dry-run
 ```
 
-Any command that accepts `--config` also accepts repeatable `--param KEY=VALUE`. `--param` is rejected for commands that do not operate on one explicit configuration, such as `timers`.
+Any command that accepts `--config` also accepts repeatable `--param KEY=VALUE`. `--param` is rejected for commands that do not operate on one explicit configuration, such as `schedules`.
 
 `--version` and `validate --schema-only` run without root privileges. In root mode, runtime validation, `run`, `list`, `verify`, `prune`, and every timer command require effective user ID `0` in the installed v1 product. In user mode, those operational commands run as the calling user with `--user`, use per-user state, temporary, lock, configuration, and systemd user-timer locations, and are limited to files and destinations available to that user. Tests use explicit temporary path overrides and do not weaken the root-mode production check.
 
 Timer commands:
 
 ```bash
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer install
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer update
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer status
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer next
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer disable
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer remove
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule install
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule update
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule status
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule next
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule disable
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule remove
 ```
 
 Bulk timer commands:
 
 ```bash
-vaultkeep [--user] timers list
-vaultkeep [--user] timers sync
-vaultkeep [--user] timers sync --dry-run
-vaultkeep [--user] timers validate
+vaultkeep [--user] schedules list
+vaultkeep [--user] schedules sync
+vaultkeep [--user] schedules sync --dry-run
+vaultkeep [--user] schedules validate
 ```
 
 The root-mode jobs directory defaults to:
@@ -1620,7 +1620,7 @@ schedule:
   enabled: false
 ```
 
-When `enabled: false`, other schedule fields are optional and are not required for manual `run`, `list`, `verify`, or `prune`. `enabled: false` prevents timer installation and causes `timers sync` to disable an existing unparameterized instance.
+When `enabled: false`, other schedule fields are optional and are not required for manual `run`, `list`, `verify`, or `prune`. `enabled: false` prevents timer installation and causes `schedules sync` to disable an existing unparameterized instance.
 
 For daily, weekly, and monthly intervals, `at` and window endpoints use local `HH:MM` wall-clock time. V1 windows must end later than they start on the same day; windows crossing midnight are invalid.
 
@@ -1701,7 +1701,7 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 
 ## 18.6 Timer lifecycle helper
 
-`timer install` performs these operations:
+`schedule install` performs these operations:
 
 1. validate the configuration;
 2. calculate the timer schedule;
@@ -1712,19 +1712,19 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 7. verify the timer;
 8. show the next run.
 
-`timer install` and `timer update` require `schedule.enabled: true` and refuse to enable an invalid or incomplete job.
+`schedule install` and `schedule update` require `schedule.enabled: true` and refuse to enable an invalid or incomplete job.
 
-`timer update` rewrites the generated drop-in, reloads systemd, preserves the timer's enabled or disabled state, verifies the result, and displays the next run.
+`schedule update` rewrites the generated drop-in, reloads systemd, preserves the timer's enabled or disabled state, verifies the result, and displays the next run.
 
-`timer install` and `timer update` write a temporary drop-in, validate it, atomically replace the final file, and restore the preceding file and enabled state when a later lifecycle operation fails.
+`schedule install` and `schedule update` write a temporary drop-in, validate it, atomically replace the final file, and restore the preceding file and enabled state when a later lifecycle operation fails.
 
-`timer status` reports the instance state, effective unit content, last trigger, and next trigger.
+`schedule status` reports the instance state, effective unit content, last trigger, and next trigger.
 
-`timer next` reports systemd's effective next trigger and fails with a timer-management error when the instance is not installed.
+`schedule next` reports systemd's effective next trigger and fails with a timer-management error when the instance is not installed.
 
-`timer disable` stops and disables the instance, clears its persistent timestamp so intentional downtime does not produce a catch-up activation, and retains its Vaultkeep-owned drop-in.
+`schedule disable` stops and disables the instance, clears its persistent timestamp so intentional downtime does not produce a catch-up activation, and retains its Vaultkeep-owned drop-in.
 
-`timer remove` performs these operations:
+`schedule remove` performs these operations:
 
 1. stop and disable the timer;
 2. clear the timer's persistent timestamp with `systemctl clean --what=state`;
@@ -1732,7 +1732,7 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 4. reload systemd;
 5. leave the job configuration unchanged.
 
-`timers sync` performs these operations:
+`schedules sync` performs these operations:
 
 - scan configured jobs;
 - validate all jobs;
@@ -1744,7 +1744,7 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 
 Synchronization uses a plan-then-apply transaction. Any invalid job or ownership-registry error aborts before file or systemd state changes. During apply, drop-ins and the ownership registry use atomic replacement. A failed apply restores the previous generated files, registry, and enabled states, reloads systemd, and exits with timer-management failure.
 
-`timers list` displays every configured job, its enabled setting, installed state, active state, next trigger, and configuration drift. `timers validate` validates every job, renders every schedule, runs systemd calendar and unit verification, checks registry ownership, reports all independently detectable errors, and never mutates files or systemd state. `timers sync --dry-run` displays the exact create, update, disable, remove, and unchanged plan without applying it.
+`schedules list` displays every configured job, its enabled setting, installed state, active state, next trigger, and configuration drift. `schedules validate` validates every job, renders every schedule, runs systemd calendar and unit verification, checks registry ownership, reports all independently detectable errors, and never mutates files or systemd state. `schedules sync --dry-run` displays the exact create, update, disable, remove, and unchanged plan without applying it.
 
 Vaultkeep maintains an ownership registry:
 

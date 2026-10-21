@@ -5,7 +5,7 @@
 Each enabled job has its own explicitly installed monitor service:
 `vaultkeep-trigger@<job-id>-<identity>.service`, stored in
 `${XDG_CONFIG_HOME:-<account-home>/.config}/systemd/user/`. It runs
-`/usr/local/bin/vaultkeep --user trigger --config <job.yaml> [--param ...] monitor`, with
+`/usr/local/bin/vaultkeep --user --config <job.yaml> [--param ...] trigger monitor`, with
 restart-on-failure, journald output, and `UMask=0077`.
 
 The installer supplies the shared `/etc/systemd/user/vaultkeep-trigger-exec@.service`
@@ -112,7 +112,7 @@ Before enabling automatic backup for an instance:
 
 1. Verify the installed wallet's identity, explicit data-directory evidence, metadata
    accessibility, and every source writer using the [process checklist](process-detection.md#validation-before-enabling).
-   Passing `check-config --runtime` does not perform this review.
+   Passing `vaultkeep validate` does not perform this review.
 2. Review the VaultKeep YAML job and runtime parameters, source scope, distinct effective
    destination roots, hooks/credentials, and external timers/direct runs. Compare the
    service and interactive runtime/cache namespace so VaultKeep's locks are shared.
@@ -129,7 +129,7 @@ Before enabling automatic backup for an instance:
    Keep production instances disabled until the relevant gates are met.
 
 There is no built-in deployment-test or dry-run-backup command. Automated tests mock
-service operations; live unit validation remains open. Read-only `check-config --runtime`
+service operations; live unit validation remains open. `vaultkeep validate`
 does not substitute for a real worker exercise.
 
 ## Inspect workers without discarding evidence

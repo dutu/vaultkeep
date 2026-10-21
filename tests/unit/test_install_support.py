@@ -145,6 +145,22 @@ def test_lock_symlink_is_refused_without_following(tmp_path: Path) -> None:
     "argv,unit,valid",
     [
         (
+            "/usr/local/bin/vaultkeep --user --config /jobs/app.yaml trigger monitor",
+            "vaultkeep-trigger@job-identity.service",
+            True,
+        ),
+        (
+            "/usr/local/bin/vaultkeep --user --config /jobs/app.yaml "
+            "--param NETWORK=mainnet trigger monitor",
+            "vaultkeep-trigger@job-identity.service",
+            True,
+        ),
+        (
+            "/usr/local/bin/vaultkeep --user --config relative.yaml trigger monitor",
+            "vaultkeep-trigger@job-identity.service",
+            False,
+        ),
+        (
             "/usr/local/bin/vaultkeep --user trigger monitor",
             "vaultkeep-trigger@job-identity.service",
             False,

@@ -18,15 +18,11 @@ from vaultkeep.version import installed_version
 _LOG = logging.getLogger(__name__)
 
 
-def validate_jobs(
-    config: TriggerConfig, *, runtime: bool, runner: ChildRunner | None = None
-) -> None:
+def validate_jobs(config: TriggerConfig, *, runner: ChildRunner | None = None) -> None:
     runner = runner or RealChildRunner()
     env = build_child_environment()
     for instance in config.enabled_instances():
-        argv = [str(config.vaultkeep), *instance.job.argv(), "validate"]
-        if not runtime:
-            argv.append("--schema-only")
+        argv = [str(config.vaultkeep), *instance.job.argv(), "validate", "--backup-only"]
         result = runner.run(argv, env=env, timeout=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS)
         if result.spawn_error or result.exit_code == 2:
             raise IntegrationError(
@@ -57,6 +53,7 @@ def runtime_preflight(
     state_path: Path,
     *,
     runner: ChildRunner | None = None,
+    validate_backup: bool = True,
 ) -> str | None:
     """Check readiness and return the installed version without mutating state/services."""
     validate_vaultkeep_executable(config)
@@ -89,7 +86,8 @@ def runtime_preflight(
     ):
         _check_writable_location(path)
     runner = runner or RealChildRunner()
-    validate_jobs(config, runtime=True, runner=runner)
+    if validate_backup:
+        validate_jobs(config, runner=runner)
     result = runner.run(
         [str(config.vaultkeep), "--version"],
         env=build_child_environment(),

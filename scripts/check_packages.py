@@ -133,11 +133,10 @@ def check() -> None:
             "assert importlib.util.find_spec('vaultkeep_trigger') is None",
         )
         command = str(venv / "bin/vaultkeep")
-        for prefix in ([], ["trigger"]):
-            assert run(command, *prefix, "--version").strip() == version
+        assert run(command, "--version").strip() == version
         for example in (ROOT / "examples").glob("*.example"):
             run(command, "--config", str(example), "validate", "--schema-only")
-            run(command, "--user", "trigger", "--config", str(example), "check-config")
+            run(command, "--user", "--config", str(example), "validate", "--schema-only")
         assert not (venv / "bin/vaultkeep-trigger").exists()
         run(python, "-m", "pip", "check")
         print("Unified wheel, source archive, installer preview and all job examples passed.")

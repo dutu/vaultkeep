@@ -3,7 +3,7 @@
 Use the executable and config path selected during [installation](../../README.md#install-the-application).
 The examples below assume `vaultkeep` is on your `PATH`; otherwise use the
 absolute installed console-script path. For nondefault config, put `--config PATH`
-before `check-config`, `monitor`, or `status`. The job YAML selects its recovery namespace.
+before `validate`, or before Trigger's `monitor` or `status`. The job YAML selects its recovery namespace.
 
 ## Installer reports `inconclusive unit properties`
 
@@ -35,7 +35,7 @@ the reported condition before retrying.
 ```sh
 systemctl --user status --no-pager 'vaultkeep-trigger@<job-id>-<identity>.service'
 journalctl --user -u 'vaultkeep-trigger@<job-id>-<identity>.service' -n 100 --no-pager
-vaultkeep --user trigger --config /absolute/path/job.yaml status
+vaultkeep --user --config /absolute/path/job.yaml trigger status
 systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
 systemctl --user list-jobs --no-pager
 ```
@@ -45,21 +45,24 @@ A successful `status` exit does not mean the monitor or backups are healthy. Chi
 diagnostics under the fixed state root can contain job output; review/redact them
 before sharing. Preserve requests/receipts when investigating uncertain execution.
 
-## `check-config` exits 2
+## Validation reports failed or incomplete setup
 
-The configuration, a matcher, or a job validation failed. The message names the
-offending key or instance. Unknown keys are rejected by design; use
-[configuration](configuration.md) for the supported schema.
-Invalid command-line arguments also exit 2; check that global `--config` precedes
-the subcommand. Job validation exit 2 from VaultKeep itself is a Trigger integration
-error (exit 6), rather than a normal config failure.
+Run the complete check as the application owner:
 
-## `check-config --runtime` or `monitor` exits 3
+```sh
+vaultkeep --user --config /absolute/path/job.yaml validate
+```
 
-The systemd user manager is unreachable, the worker template/executable is unavailable
-or incompatible, `XDG_RUNTIME_DIR` is unset/unusable, or the state location or its
-existing parent is not writable. Runtime preflight fails closed because VaultKeep's lock
-namespace depends on the runtime directory.
+Read each named check. A missing monitor is reported as `Monitor service: not installed`
+and `Result: setup incomplete`; correct any runtime failures and explicitly run
+`vaultkeep --user --config /absolute/path/job.yaml trigger install`, then validate again.
+For an installed monitor, disabled/inactive/failed systemd state, stale monitor updates,
+a configuration fingerprint mismatch, recovery blocks/review warnings, and recorded
+backup failures require attention. Check its exact service name and journal. Validation
+only reports evidence; it does not repair it. A schema-only pass skips these checks.
+
+Trigger requires an accessible systemd user manager, the installed worker template and
+executable, an account-owned `XDG_RUNTIME_DIR`, and writable state/runtime locations.
 
 ```sh
 systemctl --user is-system-running
@@ -68,8 +71,7 @@ test -n "$XDG_RUNTIME_DIR" && test -d "$XDG_RUNTIME_DIR" && test -O "$XDG_RUNTIM
 ```
 
 Check that both installed `ExecStart` commands have the actual executable path and
-that the worker is `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`. Do not
-print the entire manager environment into logs to debug bus access. Failed config
+that the worker is `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`. Failed config
 validation should be fixed before restarting; the monitor unit retries failed starts.
 
 ## A second monitor refuses to start (exit 3)

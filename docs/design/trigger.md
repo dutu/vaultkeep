@@ -58,7 +58,7 @@ The source-review baseline is 2026-10-13, with the CLI/validation/locking behavi
 | Concurrency | Per-job advisory locks; no general destination/shared-resource lock was found | Allow parallel independent instances; require reviewed distinct destination roots and serialize each instance |
 | Results | Human-readable stdout/stderr; no structured CLI result option or public execution-status API was found | Parse the trailing stdout result and retain an independent durable receipt |
 | Configuration | YAML jobs own sources, destinations, archive/encryption settings, retention, and hooks | Trigger does not copy or reinterpret backup configuration or credentials |
-| Validation | `validate --schema-only` loads YAML schema; full `validate` resolves parameters and checks source/destination conditions, but skips destination writability and hook-shell checks | Pass configured parameters; describe preflight's limited assurance |
+| Validation | `validate --schema-only` loads YAML schema; full `validate` checks backup paths and destination writability plus enabled automation prerequisites, installation, and health | Pass configured parameters; internal backup preflight uses `validate --backup-only` to avoid requiring an installed/healthy monitor before installation or startup |
 | Version | `--version` prints the installed distribution version | Record preflight and execution versions; warn on a reviewed-contract mismatch |
 | Commit/retention | A created archive is committed and state is updated before pruning and the final CLI result | Trigger cannot undo retention or discard an archive safely by ignoring the result |
 | Cancellation | Hook timeouts exist; no documented safe whole-backup cancellation interface was found | Use advisory execution deadlines without forced termination |
@@ -166,6 +166,16 @@ Resolve account home from the effective UID's operating system account record. A
 
 The monitor acquires `monitor.lock` with nonblocking `flock` before full runtime/job preflight or owning instance state; a second monitor refuses startup without spawning VaultKeep validation. Perform runtime preflight, reconcile existing attempts, and only then admit new dispatch. Hold the lock for the monitor's lifetime, with no descriptor inheritance into workers.
 
+Public `vaultkeep validate` combines backup validation with mode-specific automation
+prerequisites and read-only installation/health checks. Missing installation is
+reported as incomplete setup; no service or recovery state is changed. Its Trigger
+preflight skips the redundant backup subprocess because the public command already
+validated the backup. Monitor/install preflight retains a bounded child process in
+the selected environment and uses the internal, help-hidden `--backup-only` option.
+That child checks only the backup job, preventing recursive automation checks and
+allowing installation/startup before monitor state exists. Worker execution remains
+behind the normal `run` command and its locks.
+
 For each eligible pending request:
 
 1. Allocate a fresh attempt UUID and durably write its immutable request.
@@ -208,7 +218,7 @@ VaultKeep exit 10 records a deferred attempt. Retain its logical request for ret
 
 Ship an installation-resolved absolute Trigger console-script path in both unit files:
 
-- `vaultkeep-trigger@<job-id>-<identity>.service`: foreground `vaultkeep --user trigger --config JOB.yaml monitor`, restart-on-failure, journald output, UMask 0077; explicit per-job service installation records the YAML path and parameters.
+- `vaultkeep-trigger@<job-id>-<identity>.service`: foreground `vaultkeep --user --config JOB.yaml trigger monitor`, restart-on-failure, journald output, UMask 0077; explicit per-job service installation records the YAML path and parameters.
 - `vaultkeep-trigger-exec@.service`: `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`, UMask 0077, and `ExecStart=/usr/local/bin/vaultkeep --user trigger exec-worker %i`. Keep it independent of the monitor's stop/restart lifecycle. No terminating execution runtime limit, socket activation, dynamically created units, or enablement of individual attempt instances.
 
 Only the monitor submits worker starts. The worker reads and validates its request (including UUID and association checks), refuses to replay an existing terminal receipt, and performs the authoritative final process/identity recheck from the request snapshot. Reliable stopped evidence is required; running, ambiguous, or unavailable evidence yields a blocked receipt without invoking VaultKeep. The monitor then reconciles only the matching request.

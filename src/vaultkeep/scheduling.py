@@ -245,6 +245,18 @@ class TimerManager:
         instance = self._instance_id(config_path, config.job.id, parameters)
         return self._systemctl("status", self._unit(instance), check=False)
 
+    def installation_status(
+        self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    ) -> tuple[str, bool]:
+        """Return the selected timer name and whether its managed files exist."""
+        parameters = dict(runtime_params or {})
+        config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
+        instance = self._instance_id(config_path, config.job.id, parameters)
+        installed = self._timer_drop_in_path(instance).is_file()
+        if self.user_mode or parameters:
+            installed = installed and self._service_drop_in_path(instance).is_file()
+        return self._unit(instance), installed
+
     def validate(
         self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
     ) -> RenderedSchedule:

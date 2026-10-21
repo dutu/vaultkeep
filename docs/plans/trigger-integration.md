@@ -49,7 +49,7 @@ protocol, no-replay rules, per-job locking and result classification. Monitor st
 restart, disable or removal never terminates workers. The backup subprocess uses the
 installation's own CLI and preserves the original user's runtime lock namespace.
 
-`vaultkeep --user trigger` supports per-job check-config, foreground monitor, status,
+`vaultkeep --user trigger` supports per-job foreground monitor, status,
 install, update, disable and remove. Installation of the application never enables
 monitoring; activation is an explicit per-job operation. Generated monitor services
 have clear ownership markers and do not adopt unrelated units or local overrides.

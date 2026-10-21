@@ -3,14 +3,14 @@
 Trigger is part of the `vaultkeep` command:
 
 ```text
-vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] monitor
-vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] check-config [--runtime]
-vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] status [--json]
-vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] install
-vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] update
-vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] disable
-vaultkeep --user trigger --config JOB.yaml [--param KEY=VALUE ...] remove
-vaultkeep --user trigger --version
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger monitor
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] validate [--schema-only]
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger status [--json]
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger install
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger update
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger disable
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger remove
+vaultkeep --version
 ```
 
 All operational Trigger commands require `--user` before `trigger` and must run as
@@ -18,10 +18,12 @@ a non-root application owner. Root execution is rejected before configuration,
 state or services are accessed. `--help` and `--version` remain available to root.
 Root-mode backup jobs use manual execution or system timers.
 
-`--config` selects the complete YAML job. Options may also precede `trigger`, as in
-`vaultkeep --user --config JOB.yaml trigger status`. Trigger always uses the systemd
-user manager and user-mode backups. Use one `--config` selection, before or after
-`trigger`. Parameters override the job's `trigger.params` defaults.
+`--config` selects the complete YAML job. Put all job options (`--user`, `--config`,
+and `--param`) before `trigger`, as in
+`vaultkeep --user --config JOB.yaml --param NETWORK=mainnet trigger status`.
+Trigger always uses the systemd user manager and user-mode backups. Parameters
+override the job's `trigger.params` defaults. Use the application-wide
+`vaultkeep --version` to inspect the installed version.
 
 ## Monitoring and checks
 
@@ -31,17 +33,34 @@ attempts, and starts observation. SIGTERM/SIGINT stop the monitor while workers
 continue. Configuration is read once. A second monitor for the same identity is
 refused before backup validation runs. Different jobs have independent locks.
 
-`check-config` validates the job YAML and process matcher and performs schema-only
-backup validation for an enabled trigger. Disabled triggers are structurally checked
-without probing their backup sources. `--runtime` additionally checks user-manager
-reachability, worker-template readiness, runtime/state parent permissions, and full
-backup validation. It does not start a service or initialize recovery state. Full
-backup validation may create and remove a temporary destination writability probe.
+Use `vaultkeep --user --config JOB.yaml validate` to validate the complete job and
+check Trigger runtime prerequisites, installation, and health. It reports enabled
+features explicitly, checks the monitor's systemd enablement/activity, recent updates
+(with a freshness limit of twice the poll interval), configuration fingerprint,
+process observation, recovery blocks/review warnings, and recorded backup failures.
+Missing state or ambiguous/unavailable process observations cannot establish health.
+Backup history is read without reconstruction or repair. Use matching `--param`
+values; enabled Trigger's `trigger.params` defaults apply to this validation command.
 
-Neither check certifies wallet process identity, writer coverage, matcher overlap,
+Before installation, it reports `Monitor service: not installed` and
+`Result: setup incomplete`, while continuing other available checks. Install the
+monitor explicitly, then validate again. Validation never starts, enables, restarts,
+or repairs services or recovery state. Full backup validation may create and remove
+a temporary destination writability probe. `--schema-only` skips all runtime,
+installation, history, and health checks, and says so in the result. See the
+[validation user guide](../../README.md#validate-a-job-configuration).
+
+Complete validation exits nonzero for missing installation or failed health checks
+(normally 3; backup and state errors retain their core codes). This is independent
+of the Trigger service/status/worker exit table below. A just-started monitor may not yet
+have recorded its first update; wait for an observation and validate again.
+
+Validation does not certify wallet process identity, writer coverage, matcher overlap,
 or destination independence. Version checks compare the configured invocation with
-the current Vaultkeep distribution; mismatches produce a warning. Validation/version
-calls have a 60-second timeout; systemd probes are bounded and synchronous.
+the current Vaultkeep distribution; mismatches produce a warning. Internal backup
+validation/version calls have a 60-second timeout; systemd probes are bounded and
+synchronous. Health checks observe state without an execution lock, so concurrent
+transitions can occur during or immediately after a report.
 
 ## Service management
 
@@ -77,7 +96,7 @@ records produce exit 2; review warnings and unknown outcomes require evidence re
 For scripts, add `--json`:
 
 ```sh
-vaultkeep --user trigger --config JOB.yaml status --json
+vaultkeep --user --config JOB.yaml trigger status --json
 ```
 
 The command writes one JSON object followed by a newline to stdout. Field order is

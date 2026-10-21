@@ -93,7 +93,6 @@ params = {'NETWORK': 'testnet'}
 argv = [str(binary), *JobSpec(config=job, params=params).argv()]
 runner = RealChildRunner()
 core_version = version('vaultkeep')
-assert runner.run([str(binary), 'trigger', '--version'], env=env).stdout_tail == core_version
 assert runner.run([str(binary), '--version'], env=env).stdout_tail == core_version
 schema = runner.run([*argv, 'validate', '--schema-only'], env=env)
 assert schema.exit_code == 0, schema

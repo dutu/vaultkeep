@@ -191,7 +191,7 @@ def test_status_reports_durable_block_without_mutating_evidence(
     )
     path = store.root.parent / "app.yaml"
     path.write_text(json.dumps(valid_config))
-    assert main(["--user", "trigger", "--config", str(path), "status", "broken"]) == 0
+    assert main(["--user", "--config", str(path), "trigger", "status", "broken"]) == 0
     assert "dispatch blocked: active attempt ghost has no request" in capsys.readouterr().out
     assert {path: path.read_bytes() for path in store.root.rglob("*.json")} == before
 
@@ -211,7 +211,7 @@ def test_status_reports_readable_instances_and_block_when_another_record_is_corr
     monkeypatch.setattr("vaultkeep.trigger.cli._monitor_runtime_status", lambda _scope: "running")
     path = store.root.parent / "app.yaml"
     path.write_text(json.dumps(valid_config))
-    assert main(["--user", "trigger", "--config", str(path), "status"]) == 2
+    assert main(["--user", "--config", str(path), "trigger", "status"]) == 2
     output = capsys.readouterr()
     assert "dispatch blocked: corrupt instance state requires review" in output.out
     assert "instance healthy" in output.out and "StateError:" in output.err

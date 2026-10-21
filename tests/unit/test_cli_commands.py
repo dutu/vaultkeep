@@ -24,7 +24,10 @@ def test_version_does_not_require_a_command(capsys: Any) -> None:
 
 def test_schema_only_validation_accepts_disabled_template(capsys: Any) -> None:
     assert main(["--config", str(EXAMPLE_CONFIG), "validate", "--schema-only"]) == 0
-    assert capsys.readouterr().out.strip() == "validate: valid"
+    output = capsys.readouterr().out
+    assert "Configuration: valid" in output
+    assert "Schedule: disabled\nTrigger: disabled" in output
+    assert "Runtime checks: skipped (--schema-only)" in output
 
 
 def test_schema_only_validation_uses_config_path(tmp_path: Path, capsys: Any) -> None:
@@ -90,7 +93,10 @@ def test_full_validation_probes_destination_and_leaves_no_artifacts(
     local_job: Path, capsys: Any
 ) -> None:
     assert main(["--config", str(local_job), "validate"]) == 0
-    assert capsys.readouterr().out.strip() == "validate: valid"
+    output = capsys.readouterr().out
+    assert "Backup sources and destination: valid" in output
+    assert "Schedule: disabled\nTrigger: disabled" in output
+    assert "Result: healthy" in output
     assert list((local_job.parent / "destination").iterdir()) == []
 
 
@@ -253,3 +259,103 @@ def test_user_workflow_paths_use_xdg_locations(
     assert paths.state_root == tmp_path / "state" / "vaultkeep" / "jobs"
     assert paths.local_temp_root == tmp_path / "cache" / "vaultkeep" / "tmp"
     assert paths.lock_root == tmp_path / "runtime" / "vaultkeep" / "locks"
+
+
+@pytest.mark.parametrize("user_mode", [False, True])
+@pytest.mark.parametrize("action", ["install", "update", "status", "next", "disable", "remove"])
+def test_schedule_dispatches_global_job_selection(monkeypatch, tmp_path, user_mode, action):
+    from vaultkeep.cli import commands
+
+    config = tmp_path / "app.yaml"
+    calls = []
+
+    class Manager:
+        def __init__(self, *, user_mode):
+            calls.append(user_mode)
+
+        def require_environment(self):
+            calls.append("environment")
+
+        def __getattr__(self, name):
+            def invoke(path, *, runtime_params):
+                calls.append((name, path, runtime_params))
+                return "status or next run"
+
+            return invoke
+
+    monkeypatch.setattr(commands, "TimerManager", Manager)
+    assert (
+        main(
+            [
+                *(["--user"] if user_mode else []),
+                "--config",
+                str(config),
+                "--param",
+                "repo=nas-a",
+                "schedule",
+                action,
+            ]
+        )
+        == 0
+    )
+    assert calls == [user_mode, "environment", (action, config, {"repo": "nas-a"})]
+
+
+@pytest.mark.parametrize("action", ["list", "validate", "sync"])
+def test_bulk_schedules_need_no_job_config(monkeypatch, action):
+    from vaultkeep.cli import commands
+
+    calls = []
+
+    class Manager:
+        def __init__(self, *, user_mode):
+            assert user_mode
+
+        def require_environment(self):
+            pass
+
+        def list(self):
+            calls.append("list")
+            return ()
+
+        def validate_all(self):
+            calls.append("validate")
+            return ()
+
+        def sync(self, *, dry_run):
+            assert dry_run
+            calls.append("sync")
+            return ()
+
+    monkeypatch.setattr(commands, "TimerManager", Manager)
+    args = ["--user", "schedules", action]
+    if action == "sync":
+        args.append("--dry-run")
+    assert main(args) == 0
+    assert calls == [action]
+
+
+@pytest.mark.parametrize("old_command", ["timer", "timers"])
+def test_old_schedule_names_are_rejected(old_command):
+    with pytest.raises(SystemExit) as error:
+        main([old_command, "status"])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["trigger", "schedule"])
+@pytest.mark.parametrize(
+    "option", [["--config", "/job.yaml"], ["--param", "repo=nas-a"], ["--version"]]
+)
+def test_job_and_version_options_must_precede_command(command, option):
+    with pytest.raises(SystemExit) as error:
+        main(["--user", command, *option, "status"])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["trigger", "schedule"])
+def test_shared_lifecycle_actions_provide_help(command, capsys):
+    for action in ("install", "update", "status", "disable", "remove"):
+        with pytest.raises(SystemExit) as error:
+            main([command, action, "--help"])
+        assert error.value.code == 0
+        assert f"vaultkeep {command} {action}" in capsys.readouterr().out

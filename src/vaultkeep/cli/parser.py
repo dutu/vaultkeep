@@ -10,7 +10,11 @@ from vaultkeep.trigger.parser import configure_parser
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the top-level Vaultkeep argument parser."""
-    parser = argparse.ArgumentParser(prog="vaultkeep")
+    parser = argparse.ArgumentParser(
+        prog="vaultkeep",
+        description="Run backups manually, on a schedule, or after application shutdown.",
+        epilog="Put job options (--user, --config, --param) before the command.",
+    )
     parser.add_argument(
         "--version",
         action="store_true",
@@ -32,19 +36,35 @@ def create_parser() -> argparse.ArgumentParser:
         help="runtime template parameter for shared configurations; repeatable",
     )
     commands = parser.add_subparsers(dest="command")
-    configure_parser(commands.add_parser("trigger", help="manage optional shutdown-triggered jobs"))
-    validate = commands.add_parser("validate")
-    validate.add_argument("--schema-only", action="store_true")
-    commands.add_parser("run")
-    commands.add_parser("list")
-    commands.add_parser("verify")
-    prune = commands.add_parser("prune")
-    prune.add_argument("--dry-run", action="store_true")
-    timer = commands.add_parser("timer")
-    timer.add_argument(
-        "action", choices=("install", "update", "status", "next", "disable", "remove")
+    configure_parser(
+        commands.add_parser("trigger", help="manage this job's shutdown-triggered backups")
     )
-    timers = commands.add_parser("timers")
-    timers.add_argument("action", choices=("list", "sync", "validate"))
-    timers.add_argument("--dry-run", action="store_true")
+    validate = commands.add_parser("validate", help="validate this job and check automation health")
+    validate.add_argument(
+        "--schema-only",
+        action="store_true",
+        help="check configuration structure without runtime checks",
+    )
+    # Monitor/install preflight already checks its own runtime prerequisites. Keep
+    # its bounded child validation independent of service installation and health.
+    validate.add_argument("--backup-only", action="store_true", help=argparse.SUPPRESS)
+    commands.add_parser("run", help="run this job's backup now")
+    commands.add_parser("list", help="list this job's stored backups")
+    commands.add_parser("verify", help="verify this job's stored backups")
+    prune = commands.add_parser("prune", help="apply this job's retention policy")
+    prune.add_argument("--dry-run", action="store_true")
+    schedule = commands.add_parser("schedule", help="manage this job's scheduled backups")
+    actions = schedule.add_subparsers(dest="action", required=True)
+    for action, help_text in (
+        ("install", "install and enable this job's timer"),
+        ("update", "refresh this job's installed timer"),
+        ("status", "report this job's timer status"),
+        ("next", "show the next scheduled run"),
+        ("disable", "stop and disable this job's timer"),
+        ("remove", "remove this job's timer; preserve backups and state"),
+    ):
+        actions.add_parser(action, help=help_text)
+    schedules = commands.add_parser("schedules", help="manage schedules across all jobs")
+    schedules.add_argument("action", choices=("list", "sync", "validate"))
+    schedules.add_argument("--dry-run", action="store_true")
     return parser

@@ -24,7 +24,7 @@ def status_args(tmp_path, valid_config, store, monkeypatch):
     monkeypatch.setattr(
         "vaultkeep.trigger.cli.monitor_lock_path", lambda _scope: tmp_path / "monitor.lock"
     )
-    return ["--user", "trigger", "--config", str(config), "status", "--json"]
+    return ["--user", "--config", str(config), "trigger", "status", "--json"]
 
 
 @pytest.mark.parametrize(
@@ -251,7 +251,7 @@ def test_instance_selection_is_preserved(status_args, store, capsys):
 
 def test_json_accepts_config_before_trigger(status_args, store, capsys):
     store.write_instance(InstanceState(instance_id="app"))
-    assert main(["--user", "--config", status_args[3], "trigger", "status", "--json"]) == 0
+    assert main(["--user", "--config", status_args[2], "trigger", "status", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["backup_activity"] == "idle"
 
 
@@ -260,7 +260,7 @@ def test_parameter_selection_uses_the_correct_job_namespace(
 ):
     monkeypatch.setattr("vaultkeep.trigger.cli.state_root", lambda scope: tmp_path / scope)
     for parameter, activity in (("main", "active"), ("test", "idle")):
-        config = load_config(status_args[3], runtime_params={"network": parameter})
+        config = load_config(status_args[2], runtime_params={"network": parameter})
         store = StateStore(tmp_path / config.scope)
         store.write_instance(
             InstanceState(
@@ -268,7 +268,7 @@ def test_parameter_selection_uses_the_correct_job_namespace(
                 active_attempt_id="attempt" if activity == "active" else None,
             )
         )
-        assert main([*status_args[:-2], "--param", f"network={parameter}", "status", "--json"]) == 0
+        assert main([*status_args[:3], "--param", f"network={parameter}", *status_args[3:]]) == 0
         assert json.loads(capsys.readouterr().out)["backup_activity"] == activity
 
 
@@ -285,7 +285,7 @@ def test_instance_selection_cannot_read_outside_namespace(status_args, store, mo
 
 def test_invalid_configuration_has_nonzero_exit_and_no_stdout(tmp_path, capsys):
     assert (
-        main(["--user", "trigger", "--config", str(tmp_path / "missing"), "status", "--json"]) == 2
+        main(["--user", "--config", str(tmp_path / "missing"), "trigger", "status", "--json"]) == 2
     )
     output = capsys.readouterr()
     assert output.out == ""

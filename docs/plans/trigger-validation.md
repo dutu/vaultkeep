@@ -57,7 +57,7 @@ clocks, and systemd controllers.
 | 2 | Process validation | Safe read-only identity inspection and version-specific matcher/writer evidence established; unverified instances stay disabled | Disabled example configurations and validation notes |
 | 3 | Core monitoring | Configuration, observations, confirmation, pending-request IDs, persistence, and restart/config/boot recovery implemented with mocked processes | Monitoring/state modules and focused tests |
 | 4 | Dispatch and worker | Durable request/attempt transitions, parallel instance workers, static-unit reconciliation, safety annotation, contention retry, and bounded receipts validated using fake commands/mocked systemd | Monitor/worker modules, recovery matrix tests |
-| 5 | CLI and packaging | check-config, read-only status, monitor/template units, bounded optional notifications, and installation guidance complete; automated tests install/enable nothing | CLI, units, and app documentation |
+| 5 | CLI and packaging | unified validation, read-only status, monitor/template units, bounded optional notifications, and installation guidance complete; automated tests install/enable nothing | CLI, units, and app documentation |
 | 6 | Automated validation | Focused tests pass in the configured Python 3.13 environment; required PyCharm inspections pass after source edits | Interpreter/check results and documentation-link validation |
 | 7 | Deployment validation | Explicitly authorized template exercise uses a fake job; actual process matchers, session notifications, and lifetime limits verified read-only where possible | Deployment record and remaining limitations; production enablement separately authorized |
 

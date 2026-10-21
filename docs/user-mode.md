@@ -164,29 +164,34 @@ schedule:
   persistent: true
 ```
 
-Install the systemd user timer:
+Validate the enabled schedule, then install its user timer explicitly. Before
+installation, validation reports `Timer: not installed` and `setup incomplete`;
+fix any prerequisite failures before continuing. Re-run validation after setup
+to check user timer health. See [validation results](../README.md#validate-a-job-configuration).
 
 ```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml timer install
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml validate
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule install
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml validate
 ```
 
 Manage the user timer:
 
 ```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml timer status
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml timer next
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml timer update
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml timer disable
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml timer remove
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule status
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule next
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule update
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule disable
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule remove
 ```
 
 Manage all user-mode jobs:
 
 ```bash
-vaultkeep --user timers list
-vaultkeep --user timers validate
-vaultkeep --user timers sync --dry-run
-vaultkeep --user timers sync
+vaultkeep --user schedules list
+vaultkeep --user schedules validate
+vaultkeep --user schedules sync --dry-run
+vaultkeep --user schedules sync
 ```
 
 User timers depend on the user's systemd user manager. On many Debian systems, user timers run while the user has an active login session. To run user timers after boot without an active session, an administrator may need to enable lingering:

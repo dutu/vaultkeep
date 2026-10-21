@@ -2,7 +2,9 @@
 
 Vaultkeep is a backup application for Debian 13 systems. It creates independent archive files from one or more files and directories, skips unchanged sources, applies calendar-based retention, and runs manually, through per-job systemd timers, or after a supported app shuts down.
 
-This file is the shared user guide for both operating modes. For mode-specific setup and command examples, see the [root mode guide](docs/root-mode.md) or [user mode guide](docs/user-mode.md). For configuration rules, data structures, security decisions, workflow details, and implementation requirements, see [architecture_and_design.md](docs/design/architecture_and_design.md).
+This is the operational user guide for manual, shutdown-triggered, and scheduled backups.
+Root and user setup details are also available in the [root mode guide](docs/root-mode.md)
+and [user mode guide](docs/user-mode.md).
 
 ## Table of contents
 
@@ -23,6 +25,7 @@ This file is the shared user guide for both operating modes. For mode-specific s
   - [CLI reference](#cli-reference)
   - [Check the installed version](#check-the-installed-version)
   - [Validate a job configuration](#validate-a-job-configuration)
+  - [Start backups in the chosen mode](#start-backups-in-the-chosen-mode)
   - [Update a job configuration](#update-a-job-configuration)
   - [Run a job manually](#run-a-job-manually)
   - [List job backups](#list-job-backups)
@@ -45,7 +48,9 @@ This file is the shared user guide for both operating modes. For mode-specific s
 
 ### What Vaultkeep does
 
-Vaultkeep creates file-based backups and applies retention. You define backup jobs as YAML files. Each job can be run manually with the `vaultkeep` command or automatically through a managed systemd timer.
+Vaultkeep creates file-based backups and applies retention. You define backup jobs as
+YAML files. Each job can run manually, on a calendar schedule, or after a supported
+application shuts down.
 
 Vaultkeep has two operating modes:
 
@@ -60,6 +65,7 @@ A job specifies:
 - an archive format;
 - a retention policy;
 - an optional systemd schedule;
+- an optional application shutdown trigger;
 - optional lifecycle hooks.
 
 For each run, Vaultkeep validates the job, checks whether the selected sources changed, creates an independent backup directory when needed, verifies the archive, writes a manifest, and applies the configured retention policy. By default, all selected sources share one archive. The optional [per-file mode](#back-up-directory-files-separately) creates a separate archive and history for each file in a directory. If nothing relevant changed, the run finishes as `unchanged` and does not create a new archive.
@@ -75,7 +81,23 @@ Root-mode jobs run as root because they can read system files, access protected 
 
 ### Operating modes
 
-Root mode and user mode are independent workflows using the same centrally installed `vaultkeep` command.
+Choose how each job starts its backups:
+
+| Operation | Configuration | Start or manage it with |
+| --- | --- | --- |
+| Manual | `schedule.enabled: false`, `trigger.enabled: false` | `vaultkeep --config JOB.yaml run` |
+| Trigger | `trigger.enabled: true`, `schedule.enabled: false` | `vaultkeep --user --config JOB.yaml trigger <action>` |
+| Schedule | `schedule.enabled: true`, `trigger.enabled: false` | `vaultkeep --config JOB.yaml schedule <action>` |
+
+Trigger and Schedule are mutually exclusive for one job. Manual `run` remains
+available for every job, including jobs with automation enabled. The same per-job
+lock applies to all three ways of starting a backup.
+
+Execution scope is a separate choice: use `--user` to run as the job's owning user;
+omit it and use `sudo` for root/system jobs. Manual and Schedule support both scopes.
+Trigger supports only a non-root application owner using `--user`.
+
+Root and user scope use the same centrally installed `vaultkeep` command:
 
 Root mode:
 
@@ -249,7 +271,38 @@ After installing Vaultkeep, continue with the workflow for the intended mode:
 
 ### Choose a mode-specific workflow
 
-Job creation, command privileges, timer installation, secret paths, hook ownership, and state locations differ by mode. Use the mode-specific guide for the first working job:
+Choose the account that will own and run the job. User jobs normally live under
+`${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs`; root jobs live under `/etc/vaultkeep/jobs`.
+The filename stem must match `job.id` in the YAML.
+
+For a user job, copy the installed manual/schedule example without overwriting an
+existing job:
+
+```bash
+jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
+install -d -m 700 "$jobs_dir"
+job_config="$jobs_dir/app.yaml"
+if [ ! -e "$job_config" ]; then
+    install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml.example "$job_config"
+fi
+nano "$job_config"
+```
+
+For a root job, copy and edit the root-owned template:
+
+```bash
+sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example /etc/vaultkeep/jobs/app.yaml
+sudo nano /etc/vaultkeep/jobs/app.yaml
+```
+
+Set `job.id: app`, replace the source and destination paths, and configure any
+secrets needed for encryption. The destination directory must already exist; mount
+network destinations before validation. Start with both automation settings disabled
+unless you are configuring a Schedule or Trigger job using the procedures below.
+For Trigger, use an [application-specific example](#configure-and-validate-trigger)
+with the correct process matcher and data directory.
+
+Detailed scope-specific instructions are available in:
 
 - [Root mode guide](docs/root-mode.md), for jobs below `/etc/vaultkeep/jobs`, root-owned secrets, and system timers.
 - [User mode guide](docs/user-mode.md), for jobs below `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs`, user-owned secrets, and systemd user timers.
@@ -468,7 +521,9 @@ When `mount_point` is present, Vaultkeep requires it to be currently mounted bef
 
 ### CLI reference
 
-`--config` is required for commands that operate on one job. It must appear before the command name.
+Put global options before the command name: `--user`, `--config`, and any repeated
+`--param KEY=VALUE` selections. `--config` is required for operations on one job.
+Action-specific options, such as `status --json`, follow the action.
 
 ```text
 vaultkeep [-h|--help]
@@ -480,19 +535,28 @@ vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
 
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer install
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer update
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer status
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer next
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer disable
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] timer remove
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule install
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule update
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule status
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule next
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule disable
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule remove
 
-vaultkeep [--user] timers list
-vaultkeep [--user] timers validate
-vaultkeep [--user] timers sync [--dry-run]
+vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger install
+vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger update
+vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger status [--json]
+vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger disable
+vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger remove
+vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger monitor
+
+vaultkeep [--user] schedules list
+vaultkeep [--user] schedules validate
+vaultkeep [--user] schedules sync [--dry-run]
 ```
 
-Every command also supports `-h` or `--help` in its own position, for example `vaultkeep timer --help`.
+Every command and action supports `-h` or `--help` in its own position, for example
+`vaultkeep schedule --help`, `vaultkeep schedule install --help`, or
+`vaultkeep trigger status --help`. Version inspection uses `vaultkeep --version`.
 
 Use `--user` for per-user job configuration, per-user state, and systemd user timers. Omit it for root mode. Root-mode operations that read protected sources, write root-owned state, manage system timers, or use root-owned secrets must be run with `sudo`.
 
@@ -511,7 +575,31 @@ vaultkeep [--user] --config <job.yaml> validate --schema-only
 vaultkeep [--user] --config <job.yaml> validate
 ```
 
-Use schema-only validation for quick YAML structure checks. Use complete validation before running a backup or installing a timer.
+Use complete validation before running a backup or installing automation, and later
+as a health check. It validates the whole job and checks the runtime prerequisites,
+installation, and health of its enabled Trigger or Schedule in the selected user or
+system mode. Trigger requires user mode and a non-root application owner.
+
+The report shows `Trigger: enabled`, `Schedule: enabled`, or both disabled. It includes
+backup source/destination checks and any recorded last-run failure. For Trigger it
+checks the monitor service, recent monitor updates, the loaded configuration, process
+observations, and recovery warnings. For Schedule it checks the timer, next scheduled
+run, and backup service result. Missing backup history alone is not a failure.
+
+Before the job's automation is installed, expect `not installed` and
+`Result: setup incomplete`; the other available checks still run. Correct failed
+prerequisites, then use `trigger install` or `schedule install` explicitly. Re-run
+validation after installation. A missing, disabled, stopped, or unhealthy monitor/timer
+is reported; validation never installs, starts, restarts, or repairs services or state.
+A health report describes the state observed during the check, not future execution.
+Complete validation exits zero only when all requested checks pass. Missing installation
+and automation health failures exit nonzero (normally 3); backup destination/source and
+state errors retain their specific [exit codes](#logs-and-troubleshooting). After starting
+a new monitor, allow it to record its first observation before expecting a healthy result.
+
+Use `--schema-only` for YAML structure checks on a machine without the job's source,
+destination, or systemd environment. Its output explicitly says runtime checks were
+skipped; it does not establish readiness or health.
 
 Complete validation creates a temporary directory and file in the destination, checks
 the same atomic directory rename used to finalize backups, then removes the probe.
@@ -524,6 +612,101 @@ Run validation as the account that runs the backup, using `--user` for user-mode
 Successful validation confirms access at that moment; permissions and mount conditions
 can change afterward.
 
+### Start backups in the chosen mode
+
+These procedures use a user-owned job. Set `job_config` to its actual YAML path:
+
+```bash
+job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
+```
+
+For root Manual or Schedule jobs, use `/etc/vaultkeep/jobs/app.yaml`, omit `--user`,
+and prefix privileged commands with `sudo`. Trigger requires a non-root user.
+User automation requires a reachable systemd user manager; Trigger also requires
+an account-owned `XDG_RUNTIME_DIR`. Validation reports missing runtime prerequisites.
+
+#### Manual
+
+1. Keep `schedule.enabled: false` and `trigger.enabled: false` (omitting `trigger`
+   also leaves it disabled).
+2. Validate, run the backup, and verify its archives:
+
+   ```bash
+   vaultkeep --user --config "$job_config" validate
+   vaultkeep --user --config "$job_config" run
+   vaultkeep --user --config "$job_config" verify
+   ```
+
+   Validation should report both automation settings disabled and `Result: healthy`.
+   A successful run reports `run: created` or `run: unchanged`. No service installation
+   is needed for manual operation.
+
+#### Schedule
+
+1. Set `trigger.enabled: false` and replace the existing `schedule` block, for example:
+
+   ```yaml
+   schedule:
+     enabled: true
+     interval: daily
+     at: "03:30"
+     persistent: true
+   ```
+
+2. Validate the job, then install and inspect its timer:
+
+   ```bash
+   vaultkeep --user --config "$job_config" validate
+   vaultkeep --user --config "$job_config" schedule install
+   vaultkeep --user --config "$job_config" schedule status
+   vaultkeep --user --config "$job_config" schedule next
+   vaultkeep --user --config "$job_config" validate
+   ```
+
+   Before installation, `Timer: not installed` and `Result: setup incomplete` are
+   expected. Fix any other failed checks before installing. After setup, expect
+   an enabled, active timer, a next run time, and `Result: healthy`.
+   [Schedule options](#configure-a-job-timer) include hourly, weekly, monthly, and
+   randomized time windows.
+
+#### Trigger
+
+1. Set `schedule.enabled: false`. Configure the supported application, data directory,
+   and process matcher as described in [Configure and validate Trigger](#configure-and-validate-trigger),
+   then set `trigger.enabled: true`.
+2. Validate, install, and inspect its shutdown monitor:
+
+   ```bash
+   vaultkeep --user --config "$job_config" validate
+   vaultkeep --user --config "$job_config" trigger install
+   vaultkeep --user --config "$job_config" trigger status
+   vaultkeep --user --config "$job_config" validate
+   ```
+
+   Before installation, `Monitor service: not installed` and `Result: setup incomplete`
+   are expected. Fix any other failed checks before installing. Allow the monitor
+   to record its first observation, then expect `Result: healthy`. It must observe
+   the application running before a later confirmed shutdown can request a backup.
+   For interactive foreground monitoring, use `trigger monitor` instead of installing
+   a service. Run only one monitor for the selected job.
+
+Trigger and Schedule share the lifecycle actions:
+
+| Action | Purpose |
+| --- | --- |
+| `install` | Create and enable this job's automation. |
+| `update` | Refresh generated units after editing the configuration. |
+| `status` | Inspect the selected automation. |
+| `disable` | Stop and disable future automatic starts. |
+| `remove` | Disable and remove the job's generated automation units. |
+
+Use the same global `--config` and `--param` selections for every action. Schedule's
+`update` preserves timer enablement; Trigger's `update` enables and restarts the monitor.
+Disabling or removing automation preserves configuration, backup archives, and job
+state, and does not terminate a backup already running. Changing YAML alone does
+not stop installed automation. Before switching between Schedule and Trigger, disable
+the previous mechanism and let its backup work finish.
+
 ### Update a job configuration
 
 After changing a job configuration:
@@ -535,7 +718,7 @@ vaultkeep [--user] --config <job.yaml> validate
 For a schedule change:
 
 ```text
-vaultkeep [--user] --config <job.yaml> timer update
+vaultkeep [--user] --config <job.yaml> schedule update
 ```
 
 Changes to sources, exclusions, destination identity, archive format, encryption mode, password-file path, or metadata policy force a new backup on the next run.
@@ -660,43 +843,43 @@ schedule:
 Install and start the timer:
 
 ```text
-vaultkeep [--user] --config <job.yaml> timer install
+vaultkeep [--user] --config <job.yaml> schedule install
 ```
 
 For a parameterized job, pass the same parameters to every timer command:
 
 ```text
-vaultkeep [--user] --config <job.yaml> --param repo=nas-a timer install
-vaultkeep [--user] --config <job.yaml> --param repo=nas-a timer status
-vaultkeep [--user] --config <job.yaml> --param repo=nas-a timer remove
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a schedule install
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a schedule status
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a schedule remove
 ```
 
 Update the timer after changing the job schedule:
 
 ```text
-vaultkeep [--user] --config <job.yaml> timer update
+vaultkeep [--user] --config <job.yaml> schedule update
 ```
 
 Inspect the timer:
 
 ```text
-vaultkeep [--user] --config <job.yaml> timer status
-vaultkeep [--user] --config <job.yaml> timer next
+vaultkeep [--user] --config <job.yaml> schedule status
+vaultkeep [--user] --config <job.yaml> schedule next
 ```
 
 Stop the timer without removing its Vaultkeep-managed systemd schedule file:
 
 ```text
-vaultkeep [--user] --config <job.yaml> timer disable
+vaultkeep [--user] --config <job.yaml> schedule disable
 ```
 
 Remove, or uninstall, the timer:
 
 ```text
-vaultkeep [--user] --config <job.yaml> timer remove
+vaultkeep [--user] --config <job.yaml> schedule remove
 ```
 
-`timer remove` disables and stops the timer, removes the per-job systemd drop-in, reloads the appropriate systemd manager, and unregisters the timer from Vaultkeep's timer ownership registry. It does not delete the job YAML file, local job state, or backup archives.
+`schedule remove` disables and stops the timer, removes the per-job systemd drop-in, reloads the appropriate systemd manager, and unregisters the timer from Vaultkeep's timer ownership registry. It does not delete the job YAML file, local job state, or backup archives.
 
 Supported intervals:
 
@@ -748,13 +931,18 @@ Manual and scheduled runs execute the same backup workflow. A per-job lock preve
 Commands covering every job:
 
 ```text
-vaultkeep [--user] timers list
-vaultkeep [--user] timers validate
-vaultkeep [--user] timers sync --dry-run
-vaultkeep [--user] timers sync
+vaultkeep [--user] schedules list
+vaultkeep [--user] schedules validate
+vaultkeep [--user] schedules sync --dry-run
+vaultkeep [--user] schedules sync
 ```
 
-`timers sync` creates or updates timers for jobs with `schedule.enabled: true` and disables timers for jobs with `schedule.enabled: false`. Use `--dry-run` to preview the actions.
+`schedules sync` creates or updates timers for jobs with `schedule.enabled: true` and disables timers for jobs with `schedule.enabled: false`. Use `--dry-run` to preview the actions.
+
+Bulk operations use all jobs in the selected scope's jobs directory and take no
+`--config` or `--param` selection. `schedules validate` checks job configuration and
+schedule calendars; use `vaultkeep --config JOB.yaml validate` (with `--user` for
+user jobs) for complete runtime and health checks of one job.
 
 ### Password-protected backups
 
@@ -928,7 +1116,7 @@ vaultkeep [--user] --config <job.yaml> validate
 Inspect timer and service status through Vaultkeep:
 
 ```text
-vaultkeep [--user] --config <job.yaml> timer status
+vaultkeep [--user] --config <job.yaml> schedule status
 ```
 
 Inspect systemd directly when needed:
@@ -951,7 +1139,7 @@ Common exit codes:
 |---:|---|
 | 0 | Success, including unchanged |
 | 2 | Invalid command-line arguments |
-| 3 | Invalid configuration |
+| 3 | Invalid configuration or validation health/setup failure |
 | 4 | Source error |
 | 5 | Destination or mount error |
 | 7 | Archive creation failure |
@@ -1027,22 +1215,24 @@ manager and a private, account-owned `XDG_RUNTIME_DIR`; a desktop session is opt
 
    ```bash
    vaultkeep --user --config "$job_config" validate
-   vaultkeep --user trigger --config "$job_config" check-config
-   vaultkeep --user trigger --config "$job_config" check-config --runtime
    ```
 
    For shared job templates, put the selected string parameters in `trigger.params`;
-   supply the same parameters to manual validation/runs with `--param KEY=VALUE`.
-   Runtime checks inspect the user manager, worker template, permissions, and actual
-   job availability. They do not certify application consistency or matcher coverage.
+   validation uses these defaults and accepts `--param KEY=VALUE` overrides. Supply
+   matching parameters to manual runs. Before installation, expect
+   `Monitor service: not installed` and `Result: setup incomplete`. Fix any prerequisite
+   failures before continuing to installation. Runtime checks inspect the user manager,
+   worker template, permissions, and actual job availability. They do not certify
+   application consistency or matcher coverage.
 
 ### Start Trigger explicitly
 
 Install and activate this job's user monitor only after validation:
 
 ```bash
-vaultkeep --user trigger --config "$job_config" install
-vaultkeep --user trigger --config "$job_config" status
+vaultkeep --user --config "$job_config" trigger install
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" trigger status
 ```
 
 `install` creates and enables a service named
@@ -1055,7 +1245,8 @@ session. See [service lifetime](docs/trigger/service-operation.md#lifecycle-limi
 ### Trigger operation and health
 
 ```bash
-vaultkeep --user trigger --config "$job_config" status
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" trigger status
 systemctl --user list-units --all 'vaultkeep-trigger@*.service' 'vaultkeep-trigger-exec@*.service'
 ```
 
@@ -1065,18 +1256,20 @@ Use the exact service name printed by `status` to inspect logs:
 journalctl --user -u 'vaultkeep-trigger@<job-id>-<identity>.service' -n 100 --no-pager
 ```
 
-After editing the job, validate again and restart its monitor explicitly:
+After editing the job, validate again and restart its monitor explicitly. Until
+updated, validation can report that the monitor is using the previous configuration:
 
 ```bash
-vaultkeep --user trigger --config "$job_config" check-config --runtime
-vaultkeep --user trigger --config "$job_config" update
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" trigger update
+vaultkeep --user --config "$job_config" validate
 ```
 
 Stop and disable only this monitor, or remove its generated unit:
 
 ```bash
-vaultkeep --user trigger --config "$job_config" disable
-vaultkeep --user trigger --config "$job_config" remove
+vaultkeep --user --config "$job_config" trigger disable
+vaultkeep --user --config "$job_config" trigger remove
 ```
 
 These operations preserve recovery state and leave already dispatched workers
@@ -1092,7 +1285,7 @@ require [migration](docs/trigger/migration.md) before starting these per-job mon
 For machine-readable Trigger activity, run:
 
 ```bash
-vaultkeep --user trigger --config "$job_config" status --json
+vaultkeep --user --config "$job_config" trigger status --json
 ```
 
 The JSON reports persisted activity as `idle`, `pending`, `active`, or `unknown`, with
@@ -1127,7 +1320,7 @@ Before update, reinstall, environment repair, or uninstall:
    systemctl --user stop 'vaultkeep-trigger@<job-id>-<identity>.service'
    ```
 
-   Do not use `vaultkeep timer disable` for maintenance: it changes enablement and
+   Do not use `vaultkeep schedule disable` for maintenance: it changes enablement and
    clears persistent timestamps. Stop custom/foreground launchers too. Let services,
    workers, queued jobs, and manual backups finish. Do not kill them to pass checks.
    Inspect `systemctl list-jobs` and `systemctl --user list-jobs` in each manager.
@@ -1139,11 +1332,37 @@ Before update, reinstall, environment repair, or uninstall:
    user manager is a valid clean-host condition.
 
 4. After successful installation or rollback, validate actual core jobs and Trigger
-   config/runtime readiness. Resume only the timers/monitors recorded as active,
+   config/runtime readiness. When upgrading older command syntax, first follow
+   [refresh existing monitor commands](#refresh-existing-monitor-commands).
+   Resume only the timers/monitors recorded as active,
    using `systemctl start` in each owning manager. Previously inactive schedules stay
    inactive; enablement remains unchanged. Persistent calendar timers can catch up a
    missed event on resumption. The installer never explicitly replays a backup or
    Trigger attempt. A later manual restart failure does not roll software back.
+
+### Refresh existing monitor commands
+
+Commands use `schedule` and `schedules` in place of `timer` and `timers`. Update any
+saved shell commands or scripts. Put `--user`, `--config`, and `--param` before
+`trigger` or `schedule`; version inspection uses `vaultkeep --version`.
+
+For monitor services installed with the previous option order, refresh each job's
+unit after deploying this version and before resuming monitoring. Run this as the
+application owner, using the same YAML path and parameters as the installed monitor:
+
+```bash
+vaultkeep --user --config "$job_config" trigger update
+vaultkeep --user --config "$job_config" validate
+```
+
+`trigger update` enables and starts the monitor. Refresh only monitors you intend to
+run. For an old monitor that should remain disabled, remove its generated unit with
+`vaultkeep --user --config "$job_config" trigger remove`; this preserves recovery
+evidence and backups. Install it again explicitly when monitoring is wanted.
+
+Existing scheduled backup units still invoke `run`; the command rename does not
+require regenerating them. Their systemd unit names remain `vaultkeep@…timer` and
+`vaultkeep@…service`.
 
 ### Reinstall the same application version
 
@@ -1226,14 +1445,14 @@ vaultkeep --version
 Validate root-mode jobs and inspect root-mode timer changes:
 
 ```bash
-sudo vaultkeep timers validate
-sudo vaultkeep timers sync --dry-run
+sudo vaultkeep schedules validate
+sudo vaultkeep schedules sync --dry-run
 ```
 
 The installer does not enable or start timers. Apply root-mode timer changes explicitly:
 
 ```bash
-sudo vaultkeep timers sync
+sudo vaultkeep schedules sync
 ```
 
 ### Uninstall the application

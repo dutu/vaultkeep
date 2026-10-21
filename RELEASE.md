@@ -283,7 +283,7 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
 
   ```bash
   vaultkeep --version
-  sudo vaultkeep timers validate
+  sudo vaultkeep schedules validate
   systemd-analyze verify /etc/systemd/system/vaultkeep@.service /etc/systemd/system/vaultkeep@.timer
   ```
 
@@ -316,7 +316,7 @@ run this candidate checkout as the update source.
   ```bash
   sudo ./install.sh update
   vaultkeep --version
-  sudo vaultkeep timers validate
+  sudo vaultkeep schedules validate
   ```
 
   Acceptable result:
@@ -488,28 +488,28 @@ Run after the installer gate on a systemd Debian host.
   `schedule.enabled: true`.
 
   ```bash
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml timer install
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml timer status
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml timer next
-  sudo vaultkeep timers list
-  sudo vaultkeep timers validate
-  sudo vaultkeep timers sync --dry-run
+  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule install
+  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule status
+  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule next
+  sudo vaultkeep schedules list
+  sudo vaultkeep schedules validate
+  sudo vaultkeep schedules sync --dry-run
   ```
 
   Acceptable result:
 
   - Install exits `0`.
   - Status shows the corresponding `vaultkeep@<job-id>.timer`.
-  - `timer next` prints a next elapse value.
-  - `timers list` includes the job.
-  - `timers validate` exits `0`.
+  - `schedule next` prints a next elapse value.
+  - `schedules list` includes the job.
+  - `schedules validate` exits `0`.
   - Dry-run sync prints planned actions and makes no changes.
 
 - [ ] Disable and remove the timer.
 
   ```bash
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml timer disable
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml timer remove
+  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule disable
+  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule remove
   ```
 
   Acceptable result:

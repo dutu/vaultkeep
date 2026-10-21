@@ -50,7 +50,7 @@ restarting the monitor:
 
 ```sh
 systemctl --user import-environment DBUS_SESSION_BUS_ADDRESS
-vaultkeep --user trigger --config /absolute/path/job.yaml update
+vaultkeep --user --config /absolute/path/job.yaml trigger update
 ```
 
 Run the import from the graphical session where the variable is set, and apply the

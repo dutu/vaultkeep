@@ -120,13 +120,15 @@ GUI or daemon entrypoint form is actually present. Then validate:
 
 ```sh
 vaultkeep --user --config /absolute/path/bisq-sell0.yaml validate
-vaultkeep --user trigger --config /absolute/path/bisq-sell0.yaml check-config
-vaultkeep --user trigger --config /absolute/path/bisq-sell0.yaml check-config --runtime
-vaultkeep --user trigger --config /absolute/path/bisq-sell0.yaml install
+vaultkeep --user --config /absolute/path/bisq-sell0.yaml trigger install
 ```
 
-`check-config` validates the matcher structure and job but does not prove that
+`vaultkeep validate` validates the matcher structure and job but does not prove that
 the installed launcher always supplies the required directory evidence.
+
+Before installation, validation reports the missing monitor and `setup incomplete`.
+Fix any prerequisite failures, install the monitor explicitly, then run the same
+validation command again to check its health.
 
 ## Limitations
 

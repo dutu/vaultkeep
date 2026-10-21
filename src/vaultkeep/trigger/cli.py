@@ -1,4 +1,4 @@
-"""Command-line interface: monitor, check-config, status, and exec-worker."""
+"""Command-line interface for monitoring, status, services, and workers."""
 
 from __future__ import annotations
 
@@ -35,12 +35,11 @@ from vaultkeep.trigger.paths import (
     state_root,
     validate_scope,
 )
-from vaultkeep.trigger.preflight import runtime_preflight, validate_jobs
+from vaultkeep.trigger.preflight import runtime_preflight
 from vaultkeep.trigger.process import PsutilProcessProvider
 from vaultkeep.trigger.service import manage_service, service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController
-from vaultkeep.version import installed_version
 
 _LOG = logging.getLogger("vaultkeep.trigger")
 
@@ -55,36 +54,12 @@ def _configure_logging(level: str) -> None:
 
 def _load(args: argparse.Namespace) -> TriggerConfig:
     try:
-        params = parse_runtime_parameters([*args.param, *args.trigger_params])
+        params = parse_runtime_parameters(args.param)
     except JobConfigurationError as error:
         raise SelectionError(str(error)) from error
-    config = load_config(args.trigger_config or args.config, runtime_params=params)
+    config = load_config(args.config, runtime_params=params)
     _configure_logging(config.log_level)
     return config
-
-
-# -- check-config -------------------------------------------------------------
-def _validate_instance_jobs(config: TriggerConfig, *, runtime: bool) -> int:
-    validate_jobs(config, runtime=runtime)
-    return EXIT_OK
-
-
-def cmd_check_config(args: argparse.Namespace) -> int:
-    config = _load(args)
-    validate_vaultkeep_executable(config)
-    print(f"configuration: {config.source_path}")
-    print(f"vaultkeep: {config.vaultkeep}")
-    print(f"instances: {len(config.instances)} ({len(config.enabled_instances())} enabled)")
-
-    if args.runtime:
-        controller = RealSystemdController()
-        root = state_root(config.scope)
-        version = runtime_preflight(config, controller, root)
-        print(f"state root: {root}")
-        print(f"vaultkeep version: {version or 'unknown'}")
-        return EXIT_OK
-
-    return _validate_instance_jobs(config, runtime=args.runtime)
 
 
 # -- monitor ------------------------------------------------------------------
@@ -319,12 +294,7 @@ def cmd_exec_worker(args: argparse.Namespace) -> int:
 
 
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    if args.trigger_version:
-        print(installed_version())
-        return EXIT_OK
-    command = args.trigger_command
-    if command is None:
-        parser.error("a trigger command is required")
+    command = args.action
     if not args.user_mode:
         parser.error("Trigger supports user mode only; specify --user before trigger")
     if os.geteuid() == 0:
@@ -333,15 +303,11 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             file=sys.stderr,
         )
         return EXIT_CONFIG
-    if command != "exec-worker" and args.trigger_config is None and args.config is None:
+    if command != "exec-worker" and args.config is None:
         parser.error("trigger commands require --config pointing to a job YAML")
-    if args.trigger_config is not None and args.config is not None:
-        parser.error("specify --config once, before or after trigger")
     try:
         if command == "monitor":
             return cmd_monitor(args)
-        if command == "check-config":
-            return cmd_check_config(args)
         if command == "status":
             return cmd_status(args)
         if command == "exec-worker":

@@ -16,7 +16,7 @@ def job(tmp_path: Path, valid_config: dict) -> Path:
 
 
 def test_version(capsys) -> None:
-    assert main(["--user", "trigger", "--version"]) == 0
+    assert main(["--version"]) == 0
     assert capsys.readouterr().out == installed_version() + "\n"
 
 
@@ -35,7 +35,7 @@ def test_status_without_state(tmp_path: Path, valid_config: dict, monkeypatch, c
     monkeypatch.setattr(
         "vaultkeep.trigger.cli._monitor_runtime_status", lambda _scope: "not running"
     )
-    assert main(["--user", "trigger", "--config", str(job(tmp_path, valid_config)), "status"]) == 0
+    assert main(["--user", "--config", str(job(tmp_path, valid_config)), "trigger", "status"]) == 0
     assert "no recorded instances" in capsys.readouterr().out
     assert not (tmp_path / "state").exists()
 
@@ -46,32 +46,32 @@ def test_status_corrupt_state_exits_2(tmp_path: Path, valid_config: dict, monkey
     instances.mkdir(parents=True)
     (instances / "app.json").write_text("{not json")
     monkeypatch.setattr("vaultkeep.trigger.cli.state_root", lambda _scope: root)
-    assert main(["--user", "trigger", "--config", str(job(tmp_path, valid_config)), "status"]) == 2
+    assert main(["--user", "--config", str(job(tmp_path, valid_config)), "trigger", "status"]) == 2
 
 
-def test_check_config_valid(tmp_path: Path, valid_config: dict, capsys) -> None:
-    assert (
-        main(["--user", "trigger", "--config", str(job(tmp_path, valid_config)), "check-config"])
-        == 0
-    )
-    assert "0 enabled" in capsys.readouterr().out
+@pytest.mark.parametrize("extra", [[], ["--runtime"]])
+def test_removed_check_config_is_rejected(monkeypatch, capsys, extra) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("removed command must be rejected before loading configuration")
+
+    monkeypatch.setattr("vaultkeep.trigger.cli._load", unexpected)
+    with pytest.raises(SystemExit) as error:
+        main(["--user", "--config", "/missing/job.yaml", "trigger", "check-config", *extra])
+    assert error.value.code == 2
+    assert "invalid choice: 'check-config'" in capsys.readouterr().err
 
 
-def test_config_can_precede_trigger(tmp_path: Path, valid_config: dict) -> None:
-    assert (
-        main(["--user", "--config", str(job(tmp_path, valid_config)), "trigger", "check-config"])
-        == 0
-    )
+def test_config_can_precede_trigger(tmp_path: Path, valid_config: dict, monkeypatch) -> None:
+    monkeypatch.setattr("vaultkeep.trigger.cli.state_root", lambda _scope: tmp_path / "state")
+    assert main(["--user", "--config", str(job(tmp_path, valid_config)), "trigger", "status"]) == 0
 
 
 def test_missing_config_exits_2(tmp_path: Path) -> None:
-    assert (
-        main(["--user", "trigger", "--config", str(tmp_path / "missing.yaml"), "check-config"]) == 2
-    )
+    assert main(["--user", "--config", str(tmp_path / "missing.yaml"), "trigger", "status"]) == 2
 
 
 def test_monitor_refuses_disabled_trigger(tmp_path: Path, valid_config: dict) -> None:
-    assert main(["--user", "trigger", "--config", str(job(tmp_path, valid_config)), "monitor"]) == 2
+    assert main(["--user", "--config", str(job(tmp_path, valid_config)), "trigger", "monitor"]) == 2
 
 
 @pytest.mark.parametrize("identifier", ["../../evil", "a" * 16 + "_../../evil", "a" * 16 + "_bad"])
@@ -81,7 +81,7 @@ def test_worker_rejects_invalid_namespace_or_attempt(identifier: str) -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ["monitor", "check-config", "status", "install", "update", "disable", "remove", "exec-worker"],
+    ["monitor", "status", "install", "update", "disable", "remove", "exec-worker"],
 )
 def test_trigger_requires_explicit_user_mode_before_any_work(monkeypatch, command, capsys) -> None:
     def unexpected(*_args, **_kwargs):
@@ -89,7 +89,7 @@ def test_trigger_requires_explicit_user_mode_before_any_work(monkeypatch, comman
 
     for name in ("_load", "manage_service", "cmd_exec_worker"):
         monkeypatch.setattr(f"vaultkeep.trigger.cli.{name}", unexpected)
-    arguments = ["trigger", "--config", "/missing/job.yaml", command]
+    arguments = ["--config", "/missing/job.yaml", "trigger", command]
     if command == "exec-worker":
         arguments.append("invalid")
     with pytest.raises(SystemExit) as error:
@@ -100,7 +100,7 @@ def test_trigger_requires_explicit_user_mode_before_any_work(monkeypatch, comman
 
 @pytest.mark.parametrize(
     "command",
-    ["monitor", "check-config", "status", "install", "update", "disable", "remove", "exec-worker"],
+    ["monitor", "status", "install", "update", "disable", "remove", "exec-worker"],
 )
 def test_trigger_rejects_root_before_any_work(monkeypatch, command, capsys) -> None:
     monkeypatch.setattr("vaultkeep.trigger.cli.os.geteuid", lambda: 0)
@@ -110,7 +110,7 @@ def test_trigger_rejects_root_before_any_work(monkeypatch, command, capsys) -> N
 
     for name in ("_load", "manage_service", "cmd_exec_worker"):
         monkeypatch.setattr(f"vaultkeep.trigger.cli.{name}", unexpected)
-    arguments = ["--user", "trigger", "--config", "/missing/job.yaml", command]
+    arguments = ["--user", "--config", "/missing/job.yaml", "trigger", command]
     if command == "exec-worker":
         arguments.append("invalid")
     assert main(arguments) == 2
@@ -119,9 +119,11 @@ def test_trigger_rejects_root_before_any_work(monkeypatch, command, capsys) -> N
 
 def test_root_can_inspect_trigger_version_and_help(monkeypatch, capsys) -> None:
     monkeypatch.setattr("vaultkeep.trigger.cli.os.geteuid", lambda: 0)
-    assert main(["trigger", "--version"]) == 0
+    assert main(["--version"]) == 0
     assert capsys.readouterr().out == installed_version() + "\n"
     with pytest.raises(SystemExit) as error:
         main(["trigger", "--help"])
     assert error.value.code == 0
-    assert "user-mode only" in capsys.readouterr().out
+    help_output = capsys.readouterr().out
+    assert "user-mode only" in help_output
+    assert "check-config" not in help_output

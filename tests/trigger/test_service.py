@@ -76,7 +76,7 @@ def test_service_install_disable_and_remove_preserve_state(
     unit = service.service_name(job)
     service.manage_service(job, "install")
     content = (root / unit).read_text()
-    assert f"vaultkeep --user trigger --config {job.source_path} monitor" in content
+    assert f"vaultkeep --user --config {job.source_path} trigger monitor" in content
     assert "exec-worker" not in content and "PartOf=" not in content
     assert calls == [("daemon-reload",), ("enable", "--now", unit)]
     service.manage_service(job, "disable")
@@ -161,7 +161,7 @@ def test_root_schedule_and_user_trigger_coexist(
     service.manage_service(triggered, "install")
     monitor = service.service_name(triggered)
     assert (user_units / monitor).is_file()
-    assert "vaultkeep --user trigger" in (user_units / monitor).read_text()
+    assert "vaultkeep --user --config" in (user_units / monitor).read_text()
     assert ("systemctl", "enable", "--now", "vaultkeep@app.timer") in root_commands
     assert ("enable", "--now", monitor) in user_commands
     service.manage_service(triggered, "remove")
@@ -230,4 +230,22 @@ def test_monitor_config_path_survives_systemd_parsing(
     # The dump backslash-escapes dollar signs inside quotes (which shlex retains).
     # The doubled dollar is expanded later, when systemd executes the command.
     argv = [arg.replace(r"\$", "$").replace("$$", "$") for arg in shlex.split(commands[0])]
-    assert argv == ["/usr/bin/true", "--user", "trigger", "--config", str(source), "monitor"]
+    assert argv == ["/usr/bin/true", "--user", "--config", str(source), "trigger", "monitor"]
+
+
+def test_rendered_monitor_command_uses_global_job_options(tmp_path, valid_config):
+    import shlex
+
+    from vaultkeep.cli.parser import create_parser
+
+    job = config(tmp_path, valid_config)
+    job = replace(job, source_path=tmp_path / "job with spaces.yaml", params={"NETWORK": "testnet"})
+    command = next(
+        line.removeprefix("ExecStart=")
+        for line in service.render_service(job).splitlines()
+        if line.startswith("ExecStart=")
+    )
+    args = create_parser().parse_args(shlex.split(command)[1:])
+    assert args.command == "trigger" and args.action == "monitor"
+    assert args.config == job.source_path
+    assert args.user_mode and args.param == ["NETWORK=testnet"]

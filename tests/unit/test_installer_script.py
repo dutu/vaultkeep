@@ -378,13 +378,10 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> N
     release = Path(data["active_release"])
     assert release.name == CANDIDATE_VERSION
     assert "components" not in json.loads((release / "deployment.json").read_text())
-    for prefix in ([], ["trigger"]):
-        assert (
-            subprocess.check_output(
-                [host["VAULTKEEP_BIN_LINK"], *prefix, "--version"], text=True
-            ).strip()
-            == CANDIDATE_VERSION
-        )
+    assert (
+        subprocess.check_output([host["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
+        == CANDIDATE_VERSION
+    )
     worker = Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service"
     assert "TimeoutStartSec=infinity" in worker.read_text()
     assert "PartOf=" not in worker.read_text()
@@ -434,9 +431,7 @@ os.execvp('systemctl', args)
     assert "components" not in manifest(installed)
     assert manifest(installed)["retained_release"] == previous["retained_release"]
     assert (
-        subprocess.check_output(
-            [installed["VAULTKEEP_BIN_LINK"], "trigger", "--version"], text=True
-        ).strip()
+        subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
         == CANDIDATE_VERSION
     )
     calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]

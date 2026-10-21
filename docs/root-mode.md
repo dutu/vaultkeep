@@ -105,29 +105,34 @@ schedule:
   persistent: true
 ```
 
-Install the system timer:
+Validate the enabled schedule, then install its system timer explicitly. Before
+installation, validation reports `Timer: not installed` and `setup incomplete`;
+fix any prerequisite failures before continuing. Re-run validation after setup
+to check system timer health. See [validation results](../README.md#validate-a-job-configuration).
 
 ```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer install
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule install
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
 ```
 
 Manage the timer:
 
 ```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer status
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer next
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer update
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer disable
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml timer remove
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule status
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule next
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule update
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule disable
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule remove
 ```
 
 Manage all root-mode jobs:
 
 ```bash
-sudo vaultkeep timers list
-sudo vaultkeep timers validate
-sudo vaultkeep timers sync --dry-run
-sudo vaultkeep timers sync
+sudo vaultkeep schedules list
+sudo vaultkeep schedules validate
+sudo vaultkeep schedules sync --dry-run
+sudo vaultkeep schedules sync
 ```
 
 ## Secrets and hooks

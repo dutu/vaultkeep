@@ -84,14 +84,16 @@ ownership metadata for the unified release.
    ```bash
    job_config=/absolute/path/to/electrum-main.yaml
    vaultkeep --user --config "$job_config" validate
-   vaultkeep --user trigger --config "$job_config" check-config --runtime
-   vaultkeep --user trigger --config "$job_config" install
-   vaultkeep --user trigger --config "$job_config" status
+   vaultkeep --user --config "$job_config" trigger install
+   vaultkeep --user --config "$job_config" validate
+   vaultkeep --user --config "$job_config" trigger status
    ```
 
-   Repeat for each job. Supply matching parameters for templated jobs. A fresh
-   monitor must observe the application running before a later shutdown can request
-   a backup; migration does not synthesize a missed shutdown event.
+   Before installation, the validation report identifies the missing monitor as
+   `setup incomplete`. Fix prerequisite failures before installing. Repeat for each job.
+   Supply matching parameters for templated jobs. A fresh monitor must observe the
+   application running before a later shutdown can request a backup; migration does
+   not synthesize a missed shutdown event.
 
 ## Changing automatic execution or retiring a job
 
@@ -101,7 +103,7 @@ normal per-job timer. For the opposite transition, disable/remove the existing t
 before enabling the trigger. YAML validation refuses both mechanisms enabled together;
 it cannot disable an already installed service merely because a file changed.
 
-`vaultkeep --user trigger --config JOB.yaml remove` disables/removes only that monitor unit.
+`vaultkeep --user --config JOB.yaml trigger remove` disables/removes only that monitor unit.
 Recovery state remains available. Moving/renaming a job or changing its ID/parameters
 changes its identity: disable/drain the old service and retain or archive its reviewed
 state before activating the new identity. Never delete a held runtime lock.
