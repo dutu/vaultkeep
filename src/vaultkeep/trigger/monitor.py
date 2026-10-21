@@ -937,19 +937,7 @@ class Monitor:
     def _attempt_is_protected(
         self, state: InstanceState, attempt_id: str, request: Request
     ) -> bool:
-        if attempt_id in (state.active_attempt_id, state.blocking_attempt_id):
-            return True
-        if self._attempt_has_summary(state, attempt_id):
-            return False
-        if (
-            state.pending_request is not None
-            and state.pending_request.request_id == request.request_id
-        ):
-            return True
-        return (
-            self.store.read_launch(attempt_id) is not None
-            or self.store.read_receipt(attempt_id) is not None
-        )
+        return self.store.attempt_is_protected(state, attempt_id, request)
 
     def _cleanup(self, state: InstanceState) -> None:
         entries: list[tuple[str, dict]] = []

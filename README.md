@@ -1089,6 +1089,19 @@ monitoring is responsive. Unknown outcomes or review warnings require
 [evidence review](docs/trigger/recovery.md). Older standalone Trigger installations
 require [migration](docs/trigger/migration.md) before starting these per-job monitors.
 
+For machine-readable Trigger activity, run:
+
+```bash
+vaultkeep --user trigger --config "$job_config" status --json
+```
+
+The JSON reports persisted activity as `idle`, `pending`, `active`, or `unknown`, with
+request/attempt IDs and a separate monitor status. Missing state is `unknown`.
+`active` includes unresolved attempts and does not verify live archive writing.
+The report covers Trigger-managed work only; `idle` cannot guarantee that an application
+can safely start or that another process will not start a backup. See the
+[JSON schema and limitations](docs/trigger/cli.md#json-status).
+
 ## Maintenance and removal
 
 ### Pause and resume for maintenance

@@ -187,9 +187,10 @@ class StateStore:
 
     # -- attempts -------------------------------------------------------------
     def list_attempt_ids(self) -> list[str]:
-        if not self.attempts_dir.is_dir():
+        try:
+            return sorted(path.name for path in self.attempts_dir.iterdir() if path.is_dir())
+        except FileNotFoundError:
             return []
-        return sorted(path.name for path in self.attempts_dir.iterdir() if path.is_dir())
 
     def write_request(self, request: Request) -> None:
         path = self.request_path(request.attempt_id)
@@ -240,6 +241,19 @@ class StateStore:
             return Receipt.from_dict(data)
         except (KeyError, ValueError, TypeError) as error:
             raise StateError(f"receipt {path} is malformed: {error}") from error
+
+    def attempt_is_protected(self, state: InstanceState, attempt_id: str, request: Request) -> bool:
+        """Whether recovery still references an attempt or must reconcile its evidence."""
+        if attempt_id in (state.active_attempt_id, state.blocking_attempt_id):
+            return True
+        if any(item.get("attempt_id") == attempt_id for item in state.attempt_summaries):
+            return False
+        if (
+            state.pending_request is not None
+            and state.pending_request.request_id == request.request_id
+        ):
+            return True
+        return self.read_launch(attempt_id) is not None or self.read_receipt(attempt_id) is not None
 
     def write_diagnostics(self, attempt_id: str, data: bytes) -> tuple[str, bool]:
         """Store capped raw diagnostics; returns (reference, truncated)."""

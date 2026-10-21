@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import logging
 import os
 import signal
@@ -112,6 +113,27 @@ def cmd_monitor(args: argparse.Namespace) -> int:
 
 
 # -- status -------------------------------------------------------------------
+def _monitor_status(scope: str | None) -> str:
+    """Probe the monitor's exclusive lifetime lock without taking an exclusive lock."""
+    try:
+        path = monitor_lock_path(scope)
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return "stopped"
+    except (BlockedError, OSError):
+        return "unknown"
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "running"
+        except OSError:
+            return "unknown"
+        return "stopped"
+    finally:
+        os.close(fd)
+
+
 def _monitor_runtime_status(scope: str | None = None) -> str:
     try:
         path = monitor_lock_path(scope)
@@ -176,9 +198,69 @@ def _print_instance(state: InstanceState, blocked_reason: str | None = None) -> 
     print(f"  last monitor update: {_format_age(state.last_monitor_update)}")
 
 
+def _cmd_status_json(args: argparse.Namespace, config: TriggerConfig, store: StateStore) -> int:
+    instance_id = args.instance_id or config.job_id
+    activity = "unknown"
+    pending_request_id = None
+    active_attempt_id = None
+    exit_code = EXIT_OK
+    try:
+        if args.instance_id is not None and args.instance_id not in (
+            set(store.list_instance_ids()) | set(store.list_blocked_ids())
+        ):
+            raise SelectionError(f"unknown instance: {instance_id}")
+        state = store.read_instance(instance_id)
+        blocked = store.read_blocked(instance_id)
+        if args.instance_id is not None and state is None and blocked is None:
+            raise SelectionError(f"unknown instance: {instance_id}")
+        # Missing state is not evidence of idleness. An unassociated launch can
+        # still supply positive evidence of an unresolved attempt.
+        recovery_state = state or InstanceState(instance_id=instance_id)
+        pending = recovery_state.pending_request
+        pending_request_id = pending.request_id if pending is not None else None
+        active_attempt_id = recovery_state.active_attempt_id
+        for attempt_id in store.list_attempt_ids():
+            request = store.read_request(attempt_id)
+            if request is None:
+                if store.read_launch(attempt_id) or store.read_receipt(attempt_id):
+                    raise StateError(f"attempt {attempt_id} has no request")
+                continue
+            if request.instance_id != instance_id:
+                continue
+            if request.attempt_id != attempt_id:
+                raise StateError(f"attempt {attempt_id} has contradictory request ownership")
+            if store.attempt_is_protected(recovery_state, attempt_id, request):
+                if active_attempt_id is not None and active_attempt_id != attempt_id:
+                    raise StateError(f"instance {instance_id} has multiple unreconciled attempts")
+                active_attempt_id = attempt_id
+        if active_attempt_id is not None:
+            activity = "active"
+        elif state is not None and blocked is None:
+            activity = "pending" if pending_request_id is not None else "idle"
+    except (StateError, OSError) as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        exit_code = EXIT_CONFIG
+    print(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": config.job_id,
+                "backup_activity": activity,
+                "pending_request_id": pending_request_id,
+                "active_attempt_id": active_attempt_id,
+                "monitor_status": _monitor_status(config.scope),
+            },
+            sort_keys=True,
+        )
+    )
+    return exit_code
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     config = _load(args)
     store = StateStore(state_root(config.scope))
+    if args.json:
+        return _cmd_status_json(args, config, store)
     runtime = _monitor_runtime_status(config.scope)
     print(f"service: {service_name(config)}")
     print(f"state root: {store.root}")
