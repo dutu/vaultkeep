@@ -342,6 +342,7 @@ stage_release() {
         "$SOURCE_DIR/" "$stage/src/"
     python3 -m venv "$stage/venv"
     "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/requirements.lock"
+    log "Preparing Vaultkeep $version in staging for validation..."
     install_packages "$stage"
     verify_release "$stage" "$version"
     python3 - "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR" <<'META'
@@ -361,7 +362,8 @@ META
 
 finalize_release_venv() {
     local release=$1 version=$2
-    "$release/venv/bin/python" -m pip install \
+    log "Finalizing Vaultkeep $version at $release (updating command paths)..."
+    "$release/venv/bin/python" -m pip install --quiet \
         --force-reinstall --no-build-isolation --no-deps "$release/src"
     verify_release "$release" "$version"
 }
@@ -745,7 +747,7 @@ verify_python() {
 
 install_packages() {
     local release=$1
-    "$release/venv/bin/python" -m pip install --no-build-isolation --no-deps "$release/src"
+    "$release/venv/bin/python" -m pip install --quiet --no-build-isolation --no-deps "$release/src"
 }
 
 verify_release() {
