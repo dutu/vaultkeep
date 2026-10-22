@@ -75,7 +75,7 @@ manager, and explicitly enables/starts its monitor. `update` requires an existin
 managed service, refreshes its command and restarts the monitor. Both require
 `trigger.enabled: true`. Monitor units are named
 `vaultkeep-trigger@<job-id>-<identity>.service`; `status` includes the exact unit
-name in diagnostics at `logging.level: info` or `debug`.
+name in diagnostics at `logging.level: debug`.
 
 `disable` stops and disables this monitor. `remove` also removes its generated unit.
 Both preserve recovery state and leave workers running. Drain workers and review
@@ -89,48 +89,94 @@ service separately. See [service operation](service-operation.md).
 
 ## Status
 
-`status` reads the selected job's recovery namespace. Its aligned report separates
-trigger enablement from monitor runtime (`RUNNING`, `STOPPED`, or unknown), and
-shows `Backup activity` (`IDLE`, `PENDING`, `ACTIVE`, or `UNKNOWN`), observation/update
-ages, pending and active attempt IDs, latest results, and review/block problems.
-Activity uses the same persisted evidence rules as [JSON status](#json-status),
-including unassociated attempts awaiting recovery. An active attempt also shows
-its exact `Worker service` name and a live `Worker` probe:
+`status` is a read-only report for the selected job. It separates trigger configuration,
+monitor runtime and freshness, current activity, monitoring health, the latest completed
+backup or attempt, and outstanding execution risks. Empty history and healthy observation
+sections are omitted. A normal stopped application is not a monitoring failure.
 
-| Worker | Meaning |
+```text
+Vaultkeep — Trigger status
+
+Job:      app
+Trigger:  ENABLED
+Monitor:  RUNNING (updated 1s ago)
+
+Current activity
+  Backup         IDLE
+  Trigger armed  YES
+
+Last backup
+  Result     SUCCESS
+  Completed  2026-10-22 09:47:00 UTC
+```
+
+Monitor lock ownership establishes runtime activity, not responsive observation.
+Updates older than twice the configured poll interval, unavailable updates, and future
+update timestamps require checking the monitor journal and running job validation.
+When the monitor is not running, a systemd probe distinguishes a missing, failed, or
+starting service when possible. Trigger `ENABLED` refers to job configuration, not
+systemd enablement.
+
+Current activity uses the same persisted evidence as [JSON status](#json-status),
+including unassociated attempts awaiting recovery. Live worker probes refine it:
+
+| Backup activity | Meaning |
 | --- | --- |
-| `RUNNING` | systemd reports the worker's command executing. A oneshot worker normally reports `activating/start` throughout execution. |
-| `QUEUED` | A systemd job is pending without confirmed execution of the worker's command. |
+| `IDLE` | No recorded pending or active attempt. |
+| `PENDING` | A request is waiting for dispatch. |
+| `STARTING` | systemd reports an activating worker. The oneshot worker can remain in this state throughout backup execution; this is not a claim that the backup child has not started. |
+| `RUNNING` | systemd reports `active/running`. This does not establish backup completion. |
+| `QUEUED` | A systemd job is pending without confirmed execution. |
 | `STOPPING` | The worker is deactivating. |
-| `STOPPED (...; awaiting reconciliation)` | The worker is inactive or failed with no pending job; its recorded attempt still awaits monitor reconciliation. This does not establish backup success. |
-| `UNKNOWN` | The systemd probe is unavailable or does not establish one of the states above. |
+| `STOPPED` / `FAILED` | The worker has ended; its attempt still awaits reconciliation. Neither establishes the backup outcome. |
+| `UNKNOWN` | State or the worker probe is inconclusive or unavailable. |
 
-Worker execution does not prove an archive is currently being written; it includes
-validation, unchanged checks, and other backup stages. Probes are bounded,
-synchronous snapshots and never start, stop, reset, or reconcile workers. JSON status
-remains a persisted-evidence report and does not perform these live worker probes.
+A receipt can establish child completion while its worker remains active. It is shown
+with current activity until reconciliation ends the attempt; it cannot replace the
+previous completed result. Probes never start, stop, reset, or reconcile workers.
+JSON status retains its existing schema and does not perform live service probes.
 
-For the latest failed, blocked, deferred, or unknown-outcome attempt, the human
-report includes `Last attempt`, `Backup exit code` or `Backup signal` when recorded,
-and `Attempt reason` when one was saved. Exit codes belong to the original backup
-child, not the worker service. `Diagnostic tail` shows up to the last ten nonblank
-lines of that attempt's retained child output, with each line limited to 500
-characters. It is an output excerpt, not an inferred root cause. `Diagnostics path`
-identifies the fixed per-attempt `log.txt` for full inspection. Missing, empty, or
-unreadable logs are reported explicitly without changing the recorded outcome.
-Status never reads logs from unrelated attempts or a receipt-supplied path.
-Successful results (`created`, `unchanged`, and `result_unknown`) do not print
-failure diagnostics. These details do not change the JSON schema or exit semantics.
+`Last backup` distinguishes `SUCCESS` (created), `UNCHANGED` (no new archive),
+`SUCCESS (backup result unknown)` (exit zero without a recognized result marker),
+and `FAILED`. Other outcomes appear under `Last completed attempt`: `BLOCKED`,
+`DEFERRED`, `EXECUTION ERROR`, or `UNKNOWN`. Exit codes and signals belong to the
+backup child. `Completed` comes from a retained receipt; `Recorded` is summary
+recording time and is not presented as backup completion time. Neither is invented
+when unavailable.
 
-Status creates no state or runtime files. Monitor service names
-and state paths appear in `info` diagnostics; fingerprints and probe details appear
-at `debug`. Reports and operational problems remain visible at every logging level;
-see [terminal output](../../README.md#terminal-output).
-It requires the YAML job so it can resolve the identity, even if the trigger is disabled.
+Failures include an attempt ID, a concise reason, and an action. Recognized finalization
+errors include the exact destination backup path from retained output. Missing evidence
+is identified as unavailable; a failed finalization does not establish corruption.
 
-Exit 0 means a readable report, including when the last backup failed. It does not
-prove that monitoring is responsive or backups are healthy. Corrupt/incompatible
-records produce exit 2; review warnings and unknown outcomes require evidence review.
+`Outstanding issue` identifies affected attempts whose execution or source consistency
+remains uncertain. A monitoring gap during an attempt means offline observation was
+interrupted, not that a backup trigger was missed or an archive was corrupted. Retained
+receipt timestamps identify the execution period, not the exact monitoring gap.
+When unavailable, the report says so. A completed result and an additional consistency
+risk may both appear; the same unknown outcome is not repeated as a separate issue.
+
+Review annotations are persisted on the attempt and in aggregate instance state. Resuming
+monitoring or completing a later successful backup does not resolve an earlier attempt's
+uncertainty. A matching final-check refusal receipt proves that attempt never invoked
+backup and resolves its execution risk, preserving its historical review annotation.
+Other risks and legacy aggregate warnings that cannot be attributed remain outstanding.
+The monitor avoids creating gap warnings when recorded completion preceded the gap,
+using actual process-observation evidence rather than a generic state-write timestamp.
+No warning expires by age. There is no acknowledgement or manual warning-clear command;
+see [recovery](recovery.md#execution-review-warnings).
+
+Normal reports omit service names, state directories, diagnostic paths, raw tails,
+and healthy attempt IDs. Set the job's `logging.level: debug` and rerun `status` for
+those details alongside the readable report. Failure diagnostics include up to ten
+nonblank lines, each capped at 500 characters, from the fixed per-attempt `log.txt`;
+full retained output remains in that file. Missing or unreadable diagnostics do not
+change the outcome. Status never follows a receipt-supplied diagnostic path.
+
+Reports and operational problems remain visible at every logging level; see
+[terminal output](../../README.md#terminal-output). Status creates no state or runtime
+files and requires the job YAML even when its trigger is disabled. Exit 0 means a
+readable report, including when the last backup failed; corrupt or incompatible
+records produce exit 2. Neither exit 0 nor a running service certifies backup health.
 
 ### JSON status
 

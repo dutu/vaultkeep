@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import signal
-from pathlib import Path
 from types import FrameType
 
 from vaultkeep.cli.output import Console, configure_logging
@@ -29,7 +28,7 @@ from vaultkeep.trigger.errors import (
 )
 from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.models import InstanceState, parse_utc, utc_now
-from vaultkeep.trigger.monitor import Monitor, unit_name_for
+from vaultkeep.trigger.monitor import Monitor
 from vaultkeep.trigger.notify import build_notifier
 from vaultkeep.trigger.paths import (
     monitor_lock_path,
@@ -40,8 +39,8 @@ from vaultkeep.trigger.preflight import runtime_preflight
 from vaultkeep.trigger.process import PsutilProcessProvider
 from vaultkeep.trigger.service import manage_service, service_name
 from vaultkeep.trigger.state import StateStore
+from vaultkeep.trigger.status import print_instance
 from vaultkeep.trigger.systemd import RealSystemdController
-from vaultkeep.trigger.version import DIAGNOSTICS_CAP_BYTES
 
 _LOG = logging.getLogger("vaultkeep.trigger")
 
@@ -104,26 +103,11 @@ def _monitor_status(scope: str | None) -> str:
 
 
 def _monitor_runtime_status(scope: str | None = None) -> str:
-    try:
-        path = monitor_lock_path(scope)
-    except BlockedError:
-        return "unavailable (no runtime directory)"
-    if not path.exists():
-        return "not running (no lock file)"
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return "unknown (lock file not readable)"
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            owner = path.read_text(encoding="utf-8").strip() or "unknown"
-            return f"running (lock held by pid {owner})"
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return "not running (lock is free)"
-    finally:
-        os.close(fd)
+    return {
+        "running": "running (lifetime lock held)",
+        "stopped": "not running (lock free or absent)",
+        "unknown": "unknown (runtime lock unavailable)",
+    }[_monitor_status(scope)]
 
 
 def _format_age(timestamp: str | None) -> str:
@@ -133,7 +117,8 @@ def _format_age(timestamp: str | None) -> str:
     now = parse_utc(utc_now())
     if now is None:
         return "unknown"
-    return f"{(now - parsed).total_seconds():.0f}s ago"
+    seconds = (now - parsed).total_seconds()
+    return f"{seconds:.0f}s ago" if seconds >= 0 else "unknown (timestamp is in the future)"
 
 
 def _backup_activity(
@@ -164,126 +149,6 @@ def _backup_activity(
     if state is not None and blocked_reason is None:
         return ("pending" if state.pending_request is not None else "idle"), None
     return "unknown", None
-
-
-def _worker_status(unit: str) -> str:
-    """Describe a live worker probe without inferring backup completion."""
-    worker = RealSystemdController().unit_state(unit)
-    if worker is None:
-        return "UNKNOWN (systemd unavailable)"
-    detail = f"{worker.active_state}/{worker.sub_state}"
-    if worker.load_state == "loaded":
-        # A Type=oneshot worker executes ExecStart in activating/start.
-        if (worker.active_state, worker.sub_state) in (
-            ("activating", "start"),
-            ("active", "running"),
-        ):
-            return f"RUNNING ({detail})"
-        if worker.active_state == "deactivating":
-            return f"STOPPING ({detail})"
-    if worker.job_pending:
-        return f"QUEUED ({detail})"
-    if not worker.is_active_or_pending():
-        return f"STOPPED ({detail}; awaiting reconciliation)"
-    return f"UNKNOWN ({detail})"
-
-
-def _last_attempt_rows(store: StateStore, state: InstanceState) -> list[tuple[str, str]]:
-    if not state.attempt_summaries:
-        return []
-    summary = state.attempt_summaries[-1]
-    outcome = summary["outcome"]
-    rows = [("Last attempt outcome", str(outcome))]
-    if outcome in ("created", "unchanged", "result_unknown"):
-        return rows
-    attempt_id = summary["attempt_id"]
-    rows.append(("Last attempt", attempt_id))
-    if summary.get("exit_code") is not None:
-        rows.append(("Backup exit code", str(summary["exit_code"])))
-    if summary.get("signal") is not None:
-        rows.append(("Backup signal", str(summary["signal"])))
-    if summary.get("reason"):
-        rows.append(("Attempt reason", summary["reason"]))
-    # Read only this attempt's fixed log path, never a path supplied by a receipt.
-    if Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
-        raise StateError(f"invalid last attempt ID: {attempt_id!r}")
-    path = store.log_path(attempt_id)
-    rows.append(("Diagnostics path", str(path)))
-    try:
-        with path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            handle.seek(max(0, handle.tell() - DIAGNOSTICS_CAP_BYTES))
-            diagnostics = handle.read(DIAGNOSTICS_CAP_BYTES)
-    except FileNotFoundError:
-        rows.append(("Diagnostics", "unavailable (not recorded or no longer retained)"))
-        return rows
-    except OSError as error:
-        rows.append(("Diagnostics", f"unavailable ({error})"))
-        return rows
-    lines = [line for line in diagnostics.decode("utf-8", "replace").splitlines() if line.strip()]
-    if not lines:
-        rows.append(("Diagnostics", "no output recorded"))
-        return rows
-    for index, line in enumerate(lines[-10:]):
-        # Keep child output from injecting terminal control sequences or unbounded rows.
-        line = "".join(character if character.isprintable() else " " for character in line)
-        if len(line) > 500:
-            line = line[:497] + "..."
-        rows.append(("Diagnostic tail" if index == 0 else "", line))
-    return rows
-
-
-def _print_instance(
-    output: Console,
-    state: InstanceState | None,
-    blocked_reason: str | None,
-    *,
-    instance_id: str,
-    activity: str,
-    active_attempt_id: str | None,
-    scope: str | None,
-    store: StateStore,
-) -> None:
-    rows = [("Backup activity", activity.upper())]
-    if active_attempt_id is not None:
-        unit = unit_name_for(active_attempt_id, scope)
-        if activity == "active":
-            rows.append(("Worker", _worker_status(unit)))
-        rows.append(("Active attempt", active_attempt_id))
-        rows.append(("Worker service", unit))
-    if blocked_reason is not None:
-        rows.append(("Dispatch blocked", blocked_reason))
-    if state is None:
-        rows.append(("State", "no recorded instances"))
-        output.fields(rows, section=f"Job {instance_id}")
-        return
-    rows.append(("Armed", "yes" if state.armed else "no"))
-    _LOG.debug("Instance %s config fingerprint: %s", state.instance_id, state.config_fingerprint)
-    if state.last_observation is not None:
-        obs = state.last_observation
-        detail = f" ({obs.reason})" if obs.reason else ""
-        rows.append(
-            ("Observation", f"{obs.observation.value}{detail} [{_format_age(obs.observed_at)}]")
-        )
-    else:
-        rows.append(("Observation", "none recorded"))
-    if state.pending_request is not None:
-        rows.append(("Pending request", state.pending_request.request_id))
-    if state.pending_request is not None and state.active_attempt_id is not None:
-        rows.append(
-            (
-                "Blocked behind attempt",
-                f"{state.blocking_attempt_id} "
-                f"(waiting {_format_age(state.blocked_wait_started_at)})",
-            )
-        )
-    if state.rejection is not None and state.rejection.consecutive:
-        rows.append(("Submission rejections", str(state.rejection.consecutive)))
-    if state.review_required:
-        rows.append(("Review required", state.review_reason or "yes"))
-    rows.extend(_last_attempt_rows(store, state))
-    rows.append(("Last monitor update", _format_age(state.last_monitor_update)))
-    output.fields(rows, section=f"Job {state.instance_id}")
 
 
 def _cmd_status_json(args: argparse.Namespace, config: TriggerConfig, store: StateStore) -> int:
@@ -331,32 +196,24 @@ def cmd_status(args: argparse.Namespace) -> int:
         return _cmd_status_json(args, config, store)
     runtime = _monitor_runtime_status(config.scope)
     output = Console(no_color=args.no_color)
-    _LOG.info("Monitor service unit: %s", service_name(config))
-    _LOG.info("Trigger state root: %s", store.root)
+    _LOG.debug("Monitor service unit: %s", service_name(config))
+    _LOG.debug("Trigger state root: %s", store.root)
     _LOG.debug("Monitor runtime probe: %s", runtime)
     activity = (
         "RUNNING"
         if runtime.startswith("running")
         else ("STOPPED" if runtime.startswith(("not running", "stopped")) else "unknown")
     )
-    output.heading("Trigger status")
-    output.fields(
-        [
-            ("Job", config.job_id),
-            ("Trigger", "ENABLED" if config.enabled_instances() else "DISABLED"),
-            ("Monitor", activity),
-        ]
-    )
-    if activity == "unknown":
-        output.issue(f"Monitor runtime state is {runtime}.", warning=True)
     instance_ids = sorted(set(store.list_instance_ids()) | set(store.list_blocked_ids()))
     if args.instance_id is not None and args.instance_id not in instance_ids:
         raise SelectionError(f"unknown instance: {args.instance_id}")
     exit_code = EXIT_OK
+    records = []
     for instance_id in instance_ids or [config.job_id]:
         if args.instance_id is not None and instance_id != args.instance_id:
             continue
         blocked_error: StateError | None = None
+        state_error: StateError | None = None
         try:
             blocked_reason = store.read_blocked(instance_id)
         except StateError as error:
@@ -366,12 +223,50 @@ def cmd_status(args: argparse.Namespace) -> int:
         try:
             state = store.read_instance(instance_id)
         except StateError as error:
-            output.issue(error)
-            rows = [("Backup activity", "UNKNOWN"), ("State", "unavailable")]
-            if blocked_reason is not None:
-                rows.append(("Dispatch blocked", blocked_reason))
-            output.fields(rows, section=f"Job {instance_id}")
+            state = None
+            state_error = error
             exit_code = EXIT_CONFIG
+        records.append((instance_id, state, blocked_reason, blocked_error, state_error))
+    monitor = activity.upper()
+    if activity == "STOPPED":
+        unit = RealSystemdController().unit_state(service_name(config))
+        if unit is not None:
+            if unit.active_state == "failed":
+                monitor = "FAILED"
+            elif unit.load_state == "not-found":
+                monitor = "NOT INSTALLED"
+            elif unit.active_state == "activating":
+                monitor = "STARTING"
+    selected = next((record[1] for record in records if record[0] == config.job_id), records[0][1])
+    freshness = _format_age(selected.last_monitor_update) if selected else "unknown"
+    output.heading("Trigger status")
+    output.fields(
+        [
+            ("Job", config.job_id),
+            ("Trigger", "ENABLED" if config.enabled_instances() else "DISABLED"),
+            ("Monitor", output.status(monitor) + f" (updated {freshness})"),
+        ]
+    )
+    for instance_id, state, blocked_reason, blocked_error, state_error in records:
+        if len(records) > 1:
+            output.fields([("Instance", instance_id)])
+        if state_error:
+            output.issue(state_error)
+            output.fields(
+                [
+                    ("Backup", "UNKNOWN"),
+                    ("State", "Unavailable; preserve records and follow recovery instructions"),
+                ],
+                section="Current activity",
+            )
+            if blocked_reason:
+                output.fields(
+                    [
+                        ("Dispatch blocked", blocked_reason),
+                        ("Action", "Preserve state and follow recovery instructions"),
+                    ],
+                    section="Monitoring health",
+                )
             continue
         active_attempt_id = state.active_attempt_id if state is not None else None
         try:
@@ -384,7 +279,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             output.issue(error)
             backup_activity = "unknown"
             exit_code = EXIT_CONFIG
-        _print_instance(
+        print_instance(
             output,
             state,
             blocked_reason,
@@ -393,6 +288,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             active_attempt_id=active_attempt_id,
             scope=config.scope,
             store=store,
+            verbose=config.log_level == "DEBUG",
+            monitor=monitor,
+            enabled=bool(config.enabled_instances()),
+            poll_seconds=config.poll_seconds,
         )
     return exit_code
 

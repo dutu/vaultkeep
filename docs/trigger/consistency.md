@@ -28,8 +28,10 @@ data is consistent.
 - Recovery checks for gaps before reporting receipts received while monitoring was
   down. A delayed poll beyond twice the larger configured monitor/instance interval
   also marks possible execution for review. Affected success messages explicitly carry
-  that warning. A later observed-safe `created` result can clear the current warning,
-  while historical attempt annotations remain.
+  that warning. Later successful backups, including `created`, do not resolve an
+  earlier attempt's uncertainty. A matching final-check refusal can resolve its own
+  execution risk because the child never ran, while keeping historical annotations.
+  See [warning evidence and resolution](recovery.md#execution-review-warnings).
 
 ## Deadlines
 

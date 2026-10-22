@@ -64,7 +64,7 @@ systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
 systemctl --user list-jobs --no-pager
 ```
 
-Read observation and last-update ages, not just service activity or the monitor lock.
+Read the monitor update age and monitoring-health section, not just service activity or the lock.
 A successful `status` exit does not mean the monitor or backups are healthy. Child
 diagnostics under the fixed state root can contain job output; review/redact them
 before sharing. Preserve requests/receipts when investigating uncertain execution.
@@ -101,7 +101,7 @@ validation should be fixed before restarting; the monitor unit retries failed st
 ## A second monitor refuses to start (exit 3)
 
 Another monitor holds `monitor.lock`. The message names the owning PID. `status` reports
-lock ownership and observation age independently; a held lock does not by itself prove
+lock ownership and update age together; a held lock does not by itself prove
 responsive monitoring.
 Do not remove a held lock file to bypass ownership. Stop the extra monitor normally
 and keep workers independent; unlinking a live lock can permit two monitor owners.
@@ -137,11 +137,14 @@ See the application guides for [Bisq](apps/bisq.md),
 ## Is a backup running?
 
 Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`. `Monitor:
-RUNNING` describes the shutdown monitor. Read `Backup activity` and, for an active
-attempt, `Worker` to check the backup separately. A oneshot worker normally shows
-`RUNNING (activating/start)` during execution. `ACTIVE` alone includes queued or
-unresolved attempts. `STOPPED (...; awaiting reconciliation)` is not a success
-claim, and `UNKNOWN` means execution could not be confirmed.
+RUNNING` describes the shutdown monitor. `Current activity` describes the backup
+separately. `STARTING` means an activating worker; a oneshot service can stay in this
+state throughout backup execution. `RUNNING` requires `active/running`. `STOPPED`
+or `FAILED` with an unresolved attempt is not a backup success claim, and `UNKNOWN`
+means execution could not be confirmed. These are snapshots, not archive progress.
+
+Set `logging.level: debug` in the job and repeat `status` for exact worker units and
+raw service states alongside the readable report.
 
 Use the exact `Worker service` from that report to inspect the attempt:
 
@@ -159,35 +162,36 @@ investigating an unresolved attempt.
 ## Why did a backup fail?
 
 1. Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`.
-   Read `Last attempt outcome`, `Backup exit code` or `Backup signal`, any
-   `Attempt reason`, and `Diagnostic tail`. The exit code is the backup child's
-   original code; the systemd worker may have a different exit code.
+   Read `Last backup` or `Last completed attempt`, the original exit code or signal,
+   `Reason`, any exact `Backup` path, and `Action`. A failed finalization does not
+   establish corruption. Current work and the previous result are reported separately.
 
-2. For more context, copy `Diagnostics path` from that report:
+2. For full context, set the job's `logging.level: debug` and rerun `status`.
+   Read `Attempt diagnostics`, then copy `Diagnostics path`:
 
    ```sh
    tail -n 40 '<diagnostics-path>'
    ```
 
-   The status excerpt includes at most ten nonblank lines, each capped at 500
-   characters. The log retains up to 256 KiB of combined child output. It can
-   contain job output; review and redact it before sharing.
+   Debug output includes at most ten nonblank lines, each capped at 500 characters.
+   The private log retains up to 256 KiB of combined child output. Restore the desired
+   logging level after diagnosis; review and redact output before sharing.
 
-3. If diagnostics were not recorded or are no longer retained, use `Last attempt`
-   and the job identity to inspect the worker journal:
+3. If diagnostics were not recorded or are no longer retained, use the reported attempt
+   ID and job identity to inspect the worker journal:
 
    ```sh
    journalctl --user -u 'vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service' --no-pager
    ```
 
    Missing or unreadable diagnostics do not change the saved outcome or establish
-   a cause. Inspect any reported permissions error. Summary records can outlive
-   detailed logs under normal retention; do not delete recovery state to retry.
+   a cause. Summary records can outlive detailed logs; preserve recovery state.
 
 ## A backup is "blocked"
 
 A pending request is waiting behind an active or unresolved attempt for the same
-instance. `status` shows the blocking attempt ID and wait age. Trigger does not
+instance. `status` shows the pending backup waiting for the previous attempt;
+debug output identifies the active attempt and its worker unit. Trigger does not
 terminate the blocking worker; see [recovery](recovery.md) and
 [service operation](service-operation.md).
 
@@ -230,7 +234,10 @@ new-archive claim.
 not be established. `review_required` is a separate safety warning, for example after
 a restart or monitoring gap overlapped execution. Neither means a backup is safe to
 replay or an archive is safe to discard. A later `unchanged` result does not clear a
-consistency warning. Preserve state and follow [manual review](recovery.md#operator-review-and-repair).
+consistency warning; neither does a later newly created archive. A final-check refusal
+can resolve its own execution risk because the child never ran, while keeping the
+historical annotation. See [warning evidence](recovery.md#execution-review-warnings).
+Preserve state and follow [manual review](recovery.md#operator-review-and-repair).
 
 ## Runtime config checks pass but backup fails
 

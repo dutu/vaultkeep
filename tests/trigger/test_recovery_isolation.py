@@ -214,7 +214,7 @@ def test_status_reports_readable_instances_and_block_when_another_record_is_corr
     assert main(["--user", "--config", str(path), "trigger", "status"]) == 2
     output = capsys.readouterr()
     assert "corrupt instance state requires review" in output.out
-    assert "Job healthy" in output.out and "FAILED:" in output.err
+    assert "Instance:  healthy" in output.out and "FAILED:" in output.err
     assert {path: path.read_bytes() for path in store.root.rglob("*.json")} == before
 
 

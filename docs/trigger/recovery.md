@@ -113,6 +113,35 @@ the deployed systemd version before enabling execution. Code 2 is an integration
 generic failures, timeouts, and unclassified codes remain inconclusive. This is a
 deployment assumption and a remaining validation gap, not a diagnostic proof engine.
 
+## Execution review warnings
+
+A process restart, ambiguous/unavailable inspection, or an observation gap during
+possible backup execution records a review annotation. It is separate from the worker's
+immutable outcome. Resuming monitoring does not fill that gap. A later successful
+backup, including a newly created archive, cannot establish the safety of the earlier
+attempt or reverse any retention it performed, so it does not clear that risk.
+
+Gap detection uses the last actual process observation. A notification or other state
+write alone is not proof of observation. A receipt already reconciled before a gap,
+or valid completion timestamps preceding the last process observation, excludes that
+later gap from the child execution. Missing, future, or contradictory timing evidence
+cannot establish such an exclusion. Worker/job termination is still reconciled separately.
+
+A matching `blocked` receipt from the worker's final process check establishes that the
+backup child never ran. The monitor resolves the active execution review for that
+attempt while keeping its historical annotation, summary, and immutable receipt.
+It clears the aggregate warning only when the existing reason identifies that attempt
+and no other reviewed attempt requires attention. Any other outstanding risk remains;
+a legacy aggregate warning with unknown attribution is preserved for evidence review.
+New warnings identify their attempt in the existing reason fields. This requires no
+schema change, migration, or new persistence structure.
+
+Resolved final-check events remain available in retained history and debug status,
+rather than appearing as outstanding execution risks. There is no time-based expiry,
+automatic archive repair, or acknowledgement command. Preserve existing evidence and
+follow the review procedure below when the remaining uncertainty cannot be resolved
+from the stored records.
+
 ## Operator review and repair
 
 1. Inspect `vaultkeep --user --config JOB.yaml trigger status`, the monitor journal, the selected worker unit/job,

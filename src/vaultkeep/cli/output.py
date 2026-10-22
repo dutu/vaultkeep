@@ -21,6 +21,12 @@ _COLORS = {
     "FAILED": "1;31",
     "ERROR": "1;31",
     "RUNNING": "36",
+    "STARTING": "36",
+    "SUCCESS": "32",
+    "UNCHANGED": "32",
+    "UNKNOWN": "1;33",
+    "BLOCKED": "1;33",
+    "EXECUTION ERROR": "1;31",
 }
 
 

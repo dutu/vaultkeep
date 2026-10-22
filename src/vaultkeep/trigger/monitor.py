@@ -214,18 +214,38 @@ class Monitor:
             # Persistence failures still abort the monitor; uncertain state must not
             # authorize dispatch when its blocking decision cannot be made durable.
 
-    def _annotate_monitor_gap(self, state: InstanceState) -> None:
+    def _annotate_monitor_gap(
+        self,
+        state: InstanceState,
+        reason: str = "monitoring gap overlapped possible execution",
+    ) -> None:
         attempt_id = state.active_attempt_id
         if attempt_id is None:
             return
         launch = self.store.read_launch(attempt_id)
-        if launch is None or launch.rejected_before_queue:
-            return
         receipt = self.store.read_receipt(attempt_id)
-        last_update = parse_utc(state.last_monitor_update)
-        ended = parse_utc(receipt.ended_at) if receipt else None
-        if last_update is None or ended is None or ended > last_update:
-            self._flag_review(state, attempt_id, "monitoring gap overlapped possible execution")
+        if receipt is None and (launch is None or launch.rejected_before_queue):
+            return
+        if receipt is not None:
+            # A final-check refusal proves the backup child never ran. A receipt
+            # already reconciled before the gap proves that child had finished.
+            if receipt.outcome is AttemptOutcome.BLOCKED or state.active_outcome_pending:
+                return
+            observed = parse_utc(
+                state.last_observation.observed_at if state.last_observation else None
+            )
+            started = parse_utc(receipt.started_at)
+            ended = parse_utc(receipt.ended_at)
+            now = parse_utc(utc_now())
+            if (
+                started is not None
+                and ended is not None
+                and observed is not None
+                and now is not None
+                and started <= ended <= observed <= now
+            ):
+                return
+        self._flag_review(state, attempt_id, reason)
 
     # -- state ----------------------------------------------------------------
     def _load_state(self, instance_id: str) -> InstanceState:
@@ -283,10 +303,8 @@ class Monitor:
         state.pending_request = None
         state.armed = False
         if state.active_attempt_id is not None:
-            self._flag_review(
-                state,
-                state.active_attempt_id,
-                "instance disabled or removed while execution was unresolved",
+            self._annotate_monitor_gap(
+                state, "instance disabled or removed while execution was unresolved"
             )
             self._reconcile_attempt(state, instance, state.active_attempt_id)
         self._maybe_notify_overdue(state)
@@ -303,9 +321,7 @@ class Monitor:
             and self._clock() - previous_poll
             > 2 * max(instance.poll_seconds, self.config.poll_seconds)
         ):
-            self._flag_review(
-                state, state.active_attempt_id, "process observation was delayed during execution"
-            )
+            self._annotate_monitor_gap(state, "process observation was delayed during execution")
         self._reconcile_attempt_if_active(state, instance)
         self._handle_observation(instance, state)
         self._maybe_notify_overdue(state)
@@ -364,8 +380,12 @@ class Monitor:
 
     @staticmethod
     def _flag_review(state: InstanceState, attempt_id: str, reason: str) -> None:
+        # Keep attribution in the existing reason fields. An older aggregate
+        # warning with no known reason must not be reassigned to a newer attempt.
+        reason = f"attempt {attempt_id}: {reason}"
+        if not state.review_required:
+            state.review_reason = reason
         state.review_required = True
-        state.review_reason = state.review_reason or reason
         if state.active_attempt_id == attempt_id:
             state.active_review_required = True
             state.active_review_reason = state.active_review_reason or reason
@@ -601,6 +621,8 @@ class Monitor:
                 state.rejection.consecutive = 0
             if not self._attempt_has_summary(state, attempt_id):
                 self._apply_receipt(state, receipt)
+            if receipt.outcome is AttemptOutcome.BLOCKED:
+                self._resolve_blocked_review(state, receipt)
             # The receipt describes the child; systemd still owns the worker/job lifetime.
             unit_state = self.controller.unit_state(unit_name_for(attempt_id, self.config.scope))
             if unit_state is None or unit_state.is_active_or_pending():
@@ -682,14 +704,63 @@ class Monitor:
         )
         state.active_outcome_pending = True
 
+    @staticmethod
+    def _resolve_blocked_review(state: InstanceState, receipt: Receipt) -> None:
+        """Resolve only this attempt's risk when its final check prevented execution.
+
+        Historical review annotations and the worker receipt remain intact. Missing
+        aggregate attribution is not proof that this was the only outstanding risk.
+        """
+        summary = next(
+            item for item in state.attempt_summaries if item["attempt_id"] == receipt.attempt_id
+        )
+        if (
+            summary["outcome"] != receipt.outcome.value
+            or summary["request_id"] != receipt.request_id
+        ):
+            raise StateError(f"attempt {receipt.attempt_id} has contradictory receipt summary")
+        reason = state.review_reason or ""
+        # Older observation warnings also identify the attempt in a fixed prefix.
+        legacy_prefixes = [
+            f"instance observation was {observation.value} during attempt {receipt.attempt_id}"
+            for observation in Observation
+        ]
+        attributable = reason.startswith(f"attempt {receipt.attempt_id}: ") or any(
+            reason == prefix or reason.startswith(prefix + ":") for prefix in legacy_prefixes
+        )
+        if state.active_review_required or (state.review_required and attributable):
+            summary["review_required"] = True
+            _LOG.info(
+                "%s: execution review resolved for attempt %s: final check blocked backup (%s)",
+                state.instance_id,
+                receipt.attempt_id,
+                state.active_review_reason or state.review_reason,
+            )
+        state.active_review_required = False
+        state.active_review_reason = None
+        if not state.review_required or not attributable:
+            return
+        other_reviews = [
+            summary
+            for summary in state.attempt_summaries
+            if summary.get("review_required")
+            and summary["outcome"] != AttemptOutcome.BLOCKED.value
+            and summary["attempt_id"] != receipt.attempt_id
+        ]
+        if other_reviews:
+            oldest = other_reviews[0]
+            state.review_reason = (
+                f"attempt {oldest['attempt_id']}: execution safety requires review"
+            )
+        else:
+            state.review_required = False
+            state.review_reason = None
+
     def _complete_receipt(self, state: InstanceState, receipt: Receipt) -> None:
         """Announce completion only after systemd confirms the entire attempt ended."""
         if receipt.outcome is AttemptOutcome.DEFERRED:
             return
         review = state.active_review_required
-        if receipt.outcome is AttemptOutcome.CREATED and not review:
-            state.review_required = False
-            state.review_reason = None
         self._notify_terminal(state, receipt)
         if review:
             self._notify_once(

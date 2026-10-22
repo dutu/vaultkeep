@@ -1376,8 +1376,8 @@ vaultkeep --user --config "$job_config" trigger status
 ```
 
 `install` creates and enables a service named
-`vaultkeep-trigger@<job-id>-<identity>.service`. `status` prints its exact name and
-state path. Repeat these steps for each job; monitors operate independently.
+`vaultkeep-trigger@<job-id>-<identity>.service`. With `logging.level: debug`,
+`status` prints its exact name and state path in diagnostics. Repeat these steps for each job; monitors operate independently.
 Installing Vaultkeep itself starts no monitor, enables no service, and does not
 configure lingering. Optional notifications use `notify-send` and a usable desktop
 session. See [service lifetime](docs/trigger/service-operation.md#lifecycle-limits).
@@ -1390,23 +1390,35 @@ vaultkeep --user --config "$job_config" trigger status
 systemctl --user list-units --all 'vaultkeep-trigger@*.service' 'vaultkeep-trigger-exec@*.service'
 ```
 
-Read `Backup activity` separately from `Monitor`: `IDLE` means no recorded work,
-`PENDING` means a request is waiting, `ACTIVE` means an attempt is tracked, and
-`UNKNOWN` means the available evidence is insufficient. For an active attempt,
-`Worker` reports the current systemd state and `Worker service` names its exact unit.
-`RUNNING (activating/start)` is normal while a oneshot backup worker executes.
-`QUEUED` means a systemd job is pending; `STOPPED (...; awaiting reconciliation)`
-means the worker has ended but the monitor has not yet cleared its attempt.
-An unavailable worker probe reports `UNKNOWN`. These are snapshots, not archive
-progress or a guarantee that another process cannot start a backup.
+Read `Monitor` with its update age, then `Current activity` and `Last backup`.
+`IDLE` means no recorded work; `PENDING` means a request is waiting. `STARTING`
+means systemd reports an activating worker. Because the worker is a oneshot service,
+it can remain `STARTING` throughout backup execution. `RUNNING` requires an
+`active/running` worker. `STOPPED` or `FAILED` activity still awaiting reconciliation
+does not establish the backup outcome. `UNKNOWN` means evidence is insufficient.
 
-For a failed, blocked, deferred, or unknown-outcome attempt, status also shows its
-ID, the backup's exit code or termination signal when recorded, any recorded
-attempt reason, and a short tail of its saved output. `Diagnostics path` points to
-the complete retained log. Missing or unreadable diagnostics are reported explicitly;
-the attempt outcome remains available. See [failure diagnosis](docs/trigger/troubleshooting.md#why-did-a-backup-fail).
+`Last backup` reports the most recent completed result separately from current work.
+Failures include the attempt ID, original backup exit code or signal when recorded,
+a concise reason, and a corrective action. Recognized finalization errors identify the
+exact backup path. A receipt supplies completion time; a summary's recording time is
+labelled `Recorded`. No timestamp or archive outcome is inferred from missing evidence.
 
-Use the exact service name printed by `status` to inspect logs:
+`Monitoring health` explains current operational problems. `Outstanding issue`
+identifies unresolved execution or source-consistency uncertainty. A monitoring gap
+during backup does not establish archive corruption or a missed trigger. Resuming
+monitoring or completing a later backup does not establish the safety of an earlier
+attempt. Those risks remain outstanding. A matching receipt proving that the worker's
+final check prevented backup execution resolves that attempt's execution risk;
+its historical annotation is retained. Resolved annotations stay out of active warnings.
+See [status meanings](docs/trigger/cli.md#status) and [recovery](docs/trigger/recovery.md).
+
+For detailed investigation, set the job's `logging.level` to `debug` and rerun
+`trigger status`. The readable report then includes exact worker units, diagnostic
+paths, and capped raw error tails; diagnostic logging names the monitor unit and
+state directory. The complete retained child output remains in its private log.
+See [failure diagnosis](docs/trigger/troubleshooting.md#why-did-a-backup-fail).
+
+Use the monitor service name from debug diagnostics to inspect logs:
 
 ```bash
 journalctl --user -u 'vaultkeep-trigger@<job-id>-<identity>.service' -n 100 --no-pager
@@ -1433,7 +1445,7 @@ running. Drain workers before switching to scheduled execution. For a temporary
 maintenance pause, use `systemctl --user stop <monitor-unit>` to preserve enablement.
 
 `status` is read-only. Exit 0 means a readable report, including when a backup failed.
-Compare observation ages with lock ownership; a held lock alone does not prove that
+Compare monitor update ages with lock ownership; a held lock alone does not prove that
 monitoring is responsive. Unknown outcomes or review warnings require
 [evidence review](docs/trigger/recovery.md). Older standalone Trigger installations
 require [migration](docs/trigger/migration.md) before starting these per-job monitors.
