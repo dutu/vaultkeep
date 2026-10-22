@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 
+from vaultkeep.progress import STALE_SECONDS, read_progress
 from vaultkeep.trigger.config import INSTANCE_ID_PATTERN, InstanceConfig, TriggerConfig
 from vaultkeep.trigger.detection import DetectionResult, detect
 from vaultkeep.trigger.environment import build_child_environment
@@ -150,6 +151,7 @@ class Monitor:
         self._states: dict[str, InstanceState] = {}
         self._preflight_version: str | None = None
         self._last_poll: dict[str, float] = {}
+        self._last_activity: dict[str, tuple[str, str, str]] = {}
         self._blocked_instances: dict[str, str] = {}
         for instance_id in self.store.list_blocked_ids():
             try:
@@ -192,6 +194,7 @@ class Monitor:
             self._annotate_monitor_gap(state)
             self._reconcile_attempt(state, instance, state.active_attempt_id)
         self._maybe_notify_overdue(state)
+        self._notify_activity(state)
         if instance is None or not instance.enabled:
             if state.active_attempt_id is not None or state.pending_request is not None:
                 state.latest_request_id = ""
@@ -308,6 +311,7 @@ class Monitor:
             )
             self._reconcile_attempt(state, instance, state.active_attempt_id)
         self._maybe_notify_overdue(state)
+        self._notify_activity(state)
         self._update_blocked_wait(state)
         self._persist(state)
         self._cleanup(state)
@@ -327,6 +331,7 @@ class Monitor:
         self._maybe_notify_overdue(state)
         self._update_blocked_wait(state)
         self._dispatch(state, instance)
+        self._notify_activity(state)
         self._persist(state)
         self._cleanup(state)
 
@@ -550,20 +555,74 @@ class Monitor:
         state.pending_created_at = utc_now()
         state.retry_not_before = _retry_timestamp()
 
-    @staticmethod
-    def _clear_active(state: InstanceState) -> None:
+    def _clear_active(self, state: InstanceState) -> None:
+        self._last_activity.pop(state.instance_id, None)
         state.active_attempt_id = None
         state.active_request_id = None
         state.active_outcome_pending = False
         state.active_review_required = False
         state.active_review_reason = None
 
-    def _notify_once(self, state: InstanceState, marker: str, title: str, body: str) -> None:
+    def _notify_once(
+        self,
+        state: InstanceState,
+        marker: str,
+        title: str,
+        body: str,
+        *,
+        activity: bool = False,
+        finished: bool = False,
+    ) -> None:
         if marker in state.notification_markers:
             return
         state.notification_markers.append(marker)
         self._persist(state)
-        self.notifier.notify(title, body)
+        self.notifier.notify(
+            title, body, key=state.instance_id if activity else None, finished=finished
+        )
+
+    def _notify_activity(self, state: InstanceState) -> None:
+        """Publish observed phases, never treating optional telemetry as a result."""
+        attempt_id = state.active_attempt_id
+        if not self.config.notifications.enabled or attempt_id is None:
+            return
+        activity = "finishing"
+        phase = "Finishing backup; awaiting result"
+        if not state.active_outcome_pending:
+            record = read_progress(self.store.progress_path(attempt_id), attempt_id)
+            started = parse_utc(record.started_at) if record else None
+            phase_started = parse_utc(record.phase_started_at) if record else None
+            updated = parse_utc(record.updated_at) if record else None
+            now = _now_dt()
+            if (
+                record is None
+                or started is None
+                or phase_started is None
+                or updated is None
+                or not started <= phase_started <= updated <= now
+                or (now - updated).total_seconds() > STALE_SECONDS
+                or (
+                    record.state != "finished"
+                    and self.provider.alive(record.pid, record.create_time) is not True
+                )
+            ):
+                # Avoid inventing activity before the first progress record. If
+                # previously observed progress becomes unusable, stop claiming it
+                # is still running on the desktop.
+                if state.instance_id not in self._last_activity:
+                    return
+                activity, phase = "unknown", "Backup progress unavailable; awaiting result"
+            elif record.state != "finished":
+                activity, phase = record.state, record.phase
+        current = (attempt_id, activity, phase)
+        if self._last_activity.get(state.instance_id) == current:
+            return
+        self._last_activity[state.instance_id] = current
+        self.notifier.notify(
+            f"VaultKeep Trigger: backup {activity}",
+            f"instance {state.instance_id}: {phase}",
+            key=state.instance_id,
+        )
 
     @staticmethod
     def _ensure_rejection_state(state: InstanceState, request_id: str) -> RejectionState:
@@ -589,6 +648,7 @@ class Monitor:
             marker,
             "VaultKeep Trigger: backup requested",
             f"instance {instance.id}: confirmed shutdown, starting backup",
+            activity=True,
         )
 
     # -- reconciliation -------------------------------------------------------
@@ -684,6 +744,8 @@ class Monitor:
             f"{attempt_id}:unknown-notified",
             "VaultKeep Trigger: outcome unknown",
             f"instance {state.instance_id}: attempt {attempt_id} requires review",
+            activity=True,
+            finished=True,
         )
 
     def _apply_receipt(
@@ -793,6 +855,8 @@ class Monitor:
             marker,
             "VaultKeep Trigger: backup finished",
             f"instance {state.instance_id}: {body}",
+            activity=True,
+            finished=True,
         )
 
     def _record_summary(

@@ -1380,7 +1380,43 @@ vaultkeep --user --config "$job_config" trigger status
 `status` prints its exact name and state path in diagnostics. Repeat these steps for each job; monitors operate independently.
 Installing Vaultkeep itself starts no monitor, enables no service, and does not
 configure lingering. Optional notifications use `notify-send` and a usable desktop
-session. See [service lifetime](docs/trigger/service-operation.md#lifecycle-limits).
+session. To enable them:
+
+1. If `notify-send` is missing, have an administrator install it:
+
+   ```bash
+   sudo apt-get install libnotify-bin
+   ```
+
+   Test delivery from the backup owner's graphical session:
+
+   ```bash
+   notify-send "Vaultkeep" "Desktop notifications are available"
+   ```
+
+   Expect a desktop notification unless desktop settings suppress it.
+
+2. Add this setting under the job's existing `trigger` section:
+
+   ```yaml
+   trigger:
+     notifications:
+       enabled: true
+   ```
+
+3. For an installed monitor, validate the edited job and apply it:
+
+   ```bash
+   vaultkeep --user --config "$job_config" validate
+   vaultkeep --user --config "$job_config" trigger update
+   ```
+
+The backup notification updates when the observed phase changes, for example from
+“Creating and compressing archive” to “Verifying archive”, and shows the final result
+after the worker ends. Delivery uses the backup owner's desktop session; popup
+visibility and expiration depend on desktop settings. See [notifications and session
+setup](docs/trigger/notifications.md) and
+[service lifetime](docs/trigger/service-operation.md#lifecycle-limits).
 
 ### Trigger operation and health
 

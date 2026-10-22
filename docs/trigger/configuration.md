@@ -112,7 +112,10 @@ disable/drain the old service and review its recovery evidence first.
 `trigger.notifications` accepts `enabled` (default `false`), `command` (default
 `notify-send`), and positive integer `timeout_ms` (default `5000`). The command is
 invoked directly without a shell. Notifications are optional; delivery failure never
-changes the backup outcome. See [notifications](notifications.md).
+changes the backup outcome. Enabling them includes observed backup phase updates.
+With `notify-send`, start, activity, and final result replace one notification per
+instance. Custom commands continue to receive title and body as two arguments and
+deliver separate messages. See [notifications and session setup](notifications.md).
 
 Requests freeze matcher settings, job paths, parameters and environment, rather than
 job contents or executable bytes. Review live file replacements with the same care as

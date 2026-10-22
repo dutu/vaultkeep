@@ -126,9 +126,13 @@ class FakeController:
 class RecordingNotifier:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.options: list[tuple[str | None, bool]] = []
 
-    def notify(self, title: str, body: str) -> None:
+    def notify(
+        self, title: str, body: str, *, key: str | None = None, finished: bool = False
+    ) -> None:
         self.calls.append((title, body))
+        self.options.append((key, finished))
 
 
 def make_matcher(
