@@ -205,7 +205,7 @@ sudo ./install.sh install --dry-run
 sudo ./install.sh install
 ```
 
-Installer messages use level prefixes and terminal colors. Add `--no-color` to
+The installer shows its plan, live stages, and final result. Add `--no-color` to
 install, update, or uninstall commands to disable colors; see
 [terminal output](#terminal-output) for details.
 
@@ -625,19 +625,48 @@ Use `--user` for per-user job configuration, per-user state, and systemd user ti
 
 #### Terminal output
 
-Installer messages, validation reports, install/update confirmations, and backup
-diagnostics prefix each line with a level:
+Human-readable reports use short sections and aligned fields. Validation puts the
+overall result first and separates configuration checks, backup history, and enabled
+automation. For example:
 
 ```text
-INFO: Configuration: valid
-WARNING: Runtime checks: skipped (--schema-only)
-ERROR: Monitor service: not installed
+Vaultkeep — Validation
+
+Job:     electrum-main
+Mode:    user
+Result:  SETUP INCOMPLETE
+
+Configuration
+  Configuration  VALID
+  Backup paths   OK
+
+Backup
+  History  no completed run recorded
+
+Trigger monitoring
+  Trigger                        ENABLED
+  Trigger runtime prerequisites  OK
+  Monitor service                NOT INSTALLED
+  Monitor updates                no recorded state
+
+Issue: Monitor service is not installed; automatic backups are unavailable.
+Next: vaultkeep --user --config /path/to/job.yaml trigger install
 ```
 
-Level prefixes are cyan for `INFO`, yellow for `WARNING`, and red for `ERROR` on
-capable terminals. Redirected or captured output and `TERM=dumb` use plain text.
-Disable colors explicitly with `--no-color`, or set a nonempty `NO_COLOR`
-environment variable. Level prefixes remain visible when colors are disabled.
+Reports remain visible at every `logging.level`. Set the job's `logging.level` to
+`warning` or `error` for concise reports, `info` for additional operational diagnostics,
+or `debug` for internal checks. Diagnostic messages go to stderr with their severity
+(`DEBUG`, `INFO`, `WARNING`, `ERROR`); report fields have no logging prefixes. Full
+systemd unit names and detailed prerequisite information appear in diagnostics.
+Actionable failures and warnings remain visible even at `logging.level: error`.
+`trigger monitor` continues to log its ongoing operational events at the configured
+level. These settings do not change command results or exit codes.
+
+Colors highlight status values: green for success, yellow for warnings or incomplete
+setup, red for failure, and cyan for running stages. Headings, paths, timestamps,
+and ordinary values use the default terminal color. Redirected or captured output
+and `TERM=dumb` use plain text. Disable colors with `--no-color`, or set a nonempty
+`NO_COLOR` environment variable:
 
 ```bash
 sudo ./install.sh install --no-color
@@ -646,10 +675,22 @@ vaultkeep --no-color --user --config /path/to/job.yaml validate
 vaultkeep --no-color --user --config /path/to/job.yaml trigger install
 ```
 
-Validation reports remain on stdout, with detailed errors on stderr; exit codes
-are unchanged. Version output, Trigger status JSON, and backup result markers
-such as `run: created` retain their existing format. Output from external tools
-such as apt and pip keeps those tools' formatting.
+The installer shows each stage as `RUNNING...` immediately, with elapsed seconds,
+then `OK` or `FAILED`. Capable interactive terminals refresh the current line;
+redirected output keeps ordinary stage lines, including activity updates every ten
+seconds. Completed stages stay in order. `--no-color` disables colors while retaining
+interactive line updates. Routine apt/pip output goes into the complete diagnostic
+transcript, whose path is printed at the start and end. A failed installation names
+the stage, shows recent diagnostic context, and retains the transcript after rollback.
+The transcript is a private file in the temporary directory (normally
+`/tmp/vaultkeep-install.*.log`); inspect it before temporary-file cleanup or reboot,
+and remove it when no longer needed. `--dry-run` continues to show detailed planned
+commands without creating a transcript or changing the deployment.
+
+Validation reports remain on stdout, with detailed errors on stderr. Version output,
+Trigger status JSON, schedule listings, and backup result markers such as
+`run: created` retain their existing format. Use `trigger status --json` for scripts
+that need Trigger activity; human-readable reports may evolve.
 
 ### Check the installed version
 
@@ -671,14 +712,14 @@ as a health check. It validates the whole job and checks the runtime prerequisit
 installation, and health of its enabled Trigger or Schedule in the selected user or
 system mode. Trigger requires user mode and a non-root application owner.
 
-The report shows `Trigger: enabled`, `Schedule: enabled`, or both disabled. It includes
+The report shows `Trigger` or `Schedule` as `ENABLED`, or both as `DISABLED`. It includes
 backup source/destination checks and any recorded last-run failure. For Trigger it
 checks the monitor service, recent monitor updates, the loaded configuration, process
 observations, and recovery warnings. For Schedule it checks the timer, next scheduled
 run, and backup service result. Missing backup history alone is not a failure.
 
-Before the job's automation is installed, expect `not installed` and
-`Result: setup incomplete`; the other available checks still run. Correct failed
+Before the job's automation is installed, expect `NOT INSTALLED` and
+`Result: SETUP INCOMPLETE`; the other available checks still run. Correct failed
 prerequisites, then use `trigger install` or `schedule install` explicitly. Re-run
 validation after installation. A missing, disabled, stopped, or unhealthy monitor/timer
 is reported; validation never installs, starts, restarts, or repairs services or state.
@@ -688,9 +729,17 @@ and automation health failures exit nonzero (normally 3); backup destination/sou
 state errors retain their specific [exit codes](#logs-and-troubleshooting). After starting
 a new monitor, allow it to record its first observation before expecting a healthy result.
 
+A `Configuration` value of `VALID` means the configuration passed its checks. Overall `OK` means
+all applicable backup and automation checks passed. `SETUP INCOMPLETE` identifies
+missing automation installation; other reported failures still need attention.
+`FAILED` means a required validation or health check failed. Missing monitor history
+is shown as context when the monitor has not been installed, rather than as a second
+independent error. These outcomes preserve the existing exit codes.
+
 Use `--schema-only` for YAML structure checks on a machine without the job's source,
 destination, or systemd environment. Its output explicitly says runtime checks were
-skipped; it does not establish readiness or health.
+skipped; its `VALID` result applies only to configuration structure and does not
+establish readiness or health.
 
 Complete validation creates a temporary directory and file in the destination, checks
 the same atomic directory rename used to finalize backups, then removes the probe.
@@ -728,7 +777,7 @@ an account-owned `XDG_RUNTIME_DIR`. Validation reports missing runtime prerequis
    vaultkeep --user --config "$job_config" verify
    ```
 
-   Validation should report both automation settings disabled and `Result: healthy`.
+   Validation should report both automation settings disabled and `Result: OK`.
    A successful run reports `run: created` or `run: unchanged`. No service installation
    is needed for manual operation.
 
@@ -754,9 +803,9 @@ an account-owned `XDG_RUNTIME_DIR`. Validation reports missing runtime prerequis
    vaultkeep --user --config "$job_config" validate
    ```
 
-   Before installation, `Timer: not installed` and `Result: setup incomplete` are
-   expected. Fix any other failed checks before installing. After setup, expect
-   an enabled, active timer, a next run time, and `Result: healthy`.
+   Before installation, expect `NOT INSTALLED` for `Timer` and
+   `Result: SETUP INCOMPLETE`. Fix any other failed checks before installing. After setup, expect
+   an enabled, active timer, a next run time, and `Result: OK`.
    [Schedule options](#configure-a-job-timer) include hourly, weekly, monthly, and
    randomized time windows.
 
@@ -774,9 +823,9 @@ an account-owned `XDG_RUNTIME_DIR`. Validation reports missing runtime prerequis
    vaultkeep --user --config "$job_config" validate
    ```
 
-   Before installation, `Monitor service: not installed` and `Result: setup incomplete`
-   are expected. Fix any other failed checks before installing. Allow the monitor
-   to record its first observation, then expect `Result: healthy`. It must observe
+   Before installation, expect `NOT INSTALLED` for `Monitor service` and
+   `Result: SETUP INCOMPLETE`. Fix any other failed checks before installing. Allow the monitor
+   to record its first observation, then expect `Result: OK`. It must observe
    the application running before a later confirmed shutdown can request a backup.
    For interactive foreground monitoring, use `trigger monitor` instead of installing
    a service. Run only one monitor for the selected job.
@@ -1311,7 +1360,7 @@ manager and a private, account-owned `XDG_RUNTIME_DIR`; a desktop session is opt
    For shared job templates, put the selected string parameters in `trigger.params`;
    validation uses these defaults and accepts `--param KEY=VALUE` overrides. Supply
    matching parameters to manual runs. Before installation, expect
-   `Monitor service: not installed` and `Result: setup incomplete`. Fix any prerequisite
+   `NOT INSTALLED` for `Monitor service` and `Result: SETUP INCOMPLETE`. Fix any prerequisite
    failures before continuing to installation. Runtime checks inspect the user manager,
    worker template, permissions, and actual job availability. They do not certify
    application consistency or matcher coverage.

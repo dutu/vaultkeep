@@ -56,7 +56,7 @@ def test_long_stage_repeats_with_elapsed_time_and_stops_on_exit(
     with progress_module.terminal_progress() as report:
         assert report is not None
         report("Hashing source files")
-        assert output.getvalue() == "INFO: [00:00] Hashing source files\n"
+        assert output.getvalue() == "[00:00] Hashing source files\n"
         now[0] = 62.0
         assert output.heartbeat_seen.wait(timeout=2)
 
@@ -90,10 +90,10 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
     assert "Checking existing backups" in output.getvalue()
     if result == "created":
         assert output.getvalue().endswith(
-            "INFO: Archive: /backups/app.tar.zst\n"
-            "INFO: Size: 1.5 KiB\n"
-            "INFO: Duration: 2.5s\n"
-            "INFO: Backups removed by retention: 2\n"
+            "Archive:                       /backups/app.tar.zst\n"
+            "Size:                          1.5 KiB\n"
+            "Duration:                      2.5s\n"
+            "Backups removed by retention:  2\n"
         )
     else:
         assert "Archive:" not in output.getvalue()
@@ -201,9 +201,10 @@ def test_summary_follows_result_when_output_streams_share_a_terminal(
 
     assert commands.main(["--config", "app.yaml", "run"]) == 0
     assert output.getvalue().startswith(
-        "run: created\nINFO: Archive: /backups/app.tar.zst\nINFO: Size: 0 B\n"
+        "run: created\nArchive:                       /backups/app.tar.zst\n"
+        "Size:                          0 B\n"
     )
-    assert output.getvalue().endswith("INFO: Backups removed by retention: 0\n")
+    assert output.getvalue().endswith("Backups removed by retention:  0\n")
 
 
 def test_no_color_reaches_progress_and_summary(monkeypatch, capsys, progress_threads):
@@ -220,8 +221,8 @@ def test_no_color_reaches_progress_and_summary(monkeypatch, capsys, progress_thr
 
     assert commands.main(["--no-color", "--config", "app.yaml", "run"]) == 0
     assert capsys.readouterr().out == "run: created\n"
-    assert output.getvalue().startswith("INFO: [00:00] Checking existing backups\n")
-    assert "INFO: Archive: /backups/app.tar.zst\n" in output.getvalue()
+    assert output.getvalue().startswith("[00:00] Checking existing backups\n")
+    assert "Archive:                       /backups/app.tar.zst\n" in output.getvalue()
     assert "\033[" not in output.getvalue()
     assert not progress_threads[0].is_alive()
 

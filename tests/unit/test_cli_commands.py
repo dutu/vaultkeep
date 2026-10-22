@@ -26,9 +26,9 @@ def test_version_does_not_require_a_command(capsys: Any) -> None:
 def test_schema_only_validation_accepts_disabled_template(capsys: Any) -> None:
     assert main(["--config", str(EXAMPLE_CONFIG), "validate", "--schema-only"]) == 0
     output = capsys.readouterr().out
-    assert "Configuration: valid" in output
-    assert "Schedule: disabled\nINFO: Trigger: disabled" in output
-    assert "Runtime checks: skipped (--schema-only)" in output
+    assert "  Configuration   VALID" in output
+    assert "  Schedule  DISABLED\n  Trigger   DISABLED" in output
+    assert "Runtime checks  skipped (--schema-only)" in output
 
 
 def test_schema_only_validation_uses_config_path(tmp_path: Path, capsys: Any) -> None:
@@ -95,9 +95,9 @@ def test_full_validation_probes_destination_and_leaves_no_artifacts(
 ) -> None:
     assert main(["--config", str(local_job), "validate"]) == 0
     output = capsys.readouterr().out
-    assert "Backup sources and destination: valid" in output
-    assert "Schedule: disabled\nINFO: Trigger: disabled" in output
-    assert "Result: healthy" in output
+    assert "  Backup paths   OK" in output
+    assert "  Schedule  DISABLED\n  Trigger   DISABLED" in output
+    assert "Result:  OK" in output
     assert list((local_job.parent / "destination").iterdir()) == []
 
 

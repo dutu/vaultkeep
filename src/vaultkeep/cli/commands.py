@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from contextlib import suppress
 from time import monotonic
 
-from vaultkeep.cli.output import Console
+from vaultkeep.cli.output import Console, command_logging
 from vaultkeep.cli.parser import create_parser
 from vaultkeep.cli.progress import terminal_progress
 from vaultkeep.config import parse_runtime_parameters
@@ -34,6 +34,11 @@ from vaultkeep.workflow import (
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Vaultkeep command-line interface."""
+    with command_logging():
+        return _main(argv)
+
+
+def _main(argv: Sequence[str] | None) -> int:
     arguments = list(argv) if argv is not None else sys.argv[1:]
     parser = create_parser()
     namespace = parser.parse_args(arguments)
@@ -57,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         runtime_params = parse_runtime_parameters(namespace.param)
     except ConfigurationError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 3
     try:
         if namespace.command == "validate":
@@ -123,25 +128,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("\n".join(manager.sync(dry_run=namespace.dry_run)))
             return 0
     except ConfigurationError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 3
     except StateError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 15
     except DestinationError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 5
     except HookError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 11
     except LockError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 10
     except TimerError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 14
     except VaultkeepError as error:
-        output.print(error, level="ERROR", file=sys.stderr)
+        output.issue(error)
         return 7
     print(f"{result.command}: {result.result}", flush=True)
     if result.files:
@@ -155,29 +160,25 @@ def _print_file_results(result: CommandResult, output: Console) -> None:
     """Keep per-file diagnostics on stderr and stdout's Trigger marker unchanged."""
     with suppress(OSError):
         for outcome in result.files:
-            output.print(
-                f"{outcome.source.name!r}: {outcome.result}",
-                level="ERROR" if outcome.result == "failed" else "INFO",
-                file=sys.stderr,
-            )
+            output.print(f"{outcome.source.name!r}: {outcome.result}", file=sys.stderr)
             if outcome.archive_path is not None and outcome.result == "created":
                 output.print(f"  Archive: {outcome.archive_path}", file=sys.stderr)
             if outcome.error is not None:
-                output.print(f"  {outcome.error}", level="ERROR", file=sys.stderr)
+                output.issue(outcome.error)
 
 
 def _print_run_summary(result: CommandResult, elapsed: float, output: Console) -> None:
     """Present completed backup facts on the terminal without rereading the archive."""
-    lines = []
+    rows = []
     if result.archive_path is not None:
-        lines.append(f"Archive: {result.archive_path}")
+        rows.append(("Archive", str(result.archive_path)))
     if result.archive_size is not None:
-        lines.append(f"Size: {_format_size(result.archive_size)}")
-    lines.append(f"Duration: {elapsed:.1f}s")
-    lines.append(f"Backups removed by retention: {result.removed}")
+        rows.append(("Size", _format_size(result.archive_size)))
+    rows.append(("Duration", f"{elapsed:.1f}s"))
+    rows.append(("Backups removed by retention", str(result.removed)))
     # Losing the summary stream must not turn a completed backup into a failure.
     with suppress(OSError):
-        output.print("\n".join(lines), file=sys.stderr)
+        output.fields(rows, file=sys.stderr)
 
 
 def _format_size(size: int) -> str:

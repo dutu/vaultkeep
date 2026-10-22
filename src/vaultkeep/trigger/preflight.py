@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from vaultkeep.trigger.childproc import ChildRunner, RealChildRunner
@@ -54,6 +55,7 @@ def runtime_preflight(
     *,
     runner: ChildRunner | None = None,
     validate_backup: bool = True,
+    warning: Callable[[str], None] | None = None,
 ) -> str | None:
     """Check readiness and return the installed version without mutating state/services."""
     validate_vaultkeep_executable(config)
@@ -97,8 +99,12 @@ def runtime_preflight(
         raise IntegrationError("failed to execute VaultKeep version preflight")
     version = result.stdout_tail.strip() if result.exit_code == 0 and result.stdout_tail else None
     if version != installed_version():
-        _LOG.warning(
-            "configured Vaultkeep executable version differs from this installation %s",
-            installed_version(),
+        message = (
+            "configured Vaultkeep executable version differs from this installation "
+            f"{installed_version()}"
         )
+        if warning is None:
+            _LOG.warning(message)
+        else:
+            warning(message)
     return version

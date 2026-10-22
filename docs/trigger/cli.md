@@ -25,7 +25,8 @@ Trigger always uses the systemd user manager and user-mode backups. Parameters
 override the job's `trigger.params` defaults. Use the application-wide
 `vaultkeep --version` to inspect the installed version.
 
-Install/update confirmations and error diagnostics include level prefixes. Add
+Install/update confirmations use concise status fields. Diagnostic logging keeps
+severity prefixes. Add
 the global `--no-color` option before the command to disable terminal colors, for
 example `vaultkeep --no-color --user --config JOB.yaml trigger install`. See
 [terminal output](../../README.md#terminal-output) for color and redirection rules.
@@ -47,8 +48,8 @@ Missing state or ambiguous/unavailable process observations cannot establish hea
 Backup history is read without reconstruction or repair. Use matching `--param`
 values; enabled Trigger's `trigger.params` defaults apply to this validation command.
 
-Before installation, it reports `Monitor service: not installed` and
-`Result: setup incomplete`, while continuing other available checks. Install the
+Before installation, it reports `Monitor service` as `NOT INSTALLED` and
+`Result: SETUP INCOMPLETE`, while continuing other available checks. Install the
 monitor explicitly, then validate again. Validation never starts, enables, restarts,
 or repairs services or recovery state. Full backup validation may create and remove
 a temporary destination writability probe. `--schema-only` skips all runtime,
@@ -73,7 +74,8 @@ transitions can occur during or immediately after a report.
 manager, and explicitly enables/starts its monitor. `update` requires an existing
 managed service, refreshes its command and restarts the monitor. Both require
 `trigger.enabled: true`. Monitor units are named
-`vaultkeep-trigger@<job-id>-<identity>.service`; `status` prints the exact unit name.
+`vaultkeep-trigger@<job-id>-<identity>.service`; `status` includes the exact unit
+name in diagnostics at `logging.level: info` or `debug`.
 
 `disable` stops and disables this monitor. `remove` also removes its generated unit.
 Both preserve recovery state and leave workers running. Drain workers and review
@@ -87,9 +89,13 @@ service separately. See [service operation](service-operation.md).
 
 ## Status
 
-`status` reads the selected job's recovery namespace. It prints its service name,
-state root, lock status, observation/update ages, pending and active attempt IDs,
-latest result, and review/block diagnostics. It creates no state or runtime files.
+`status` reads the selected job's recovery namespace. Its aligned report separates
+trigger enablement from monitor runtime (`RUNNING`, `STOPPED`, or unknown), and
+shows observation/update ages, pending and active attempt IDs, latest results, and
+review/block problems. It creates no state or runtime files. Full service names
+and state paths appear in `info` diagnostics; fingerprints and probe details appear
+at `debug`. Reports and operational problems remain visible at every logging level;
+see [terminal output](../../README.md#terminal-output).
 It requires the YAML job so it can resolve the identity, even if the trigger is disabled.
 
 Exit 0 means a readable report, including when the last backup failed. It does not

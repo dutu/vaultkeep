@@ -154,6 +154,11 @@ def run_installer(
     return result
 
 
+def diagnostic_log(result: subprocess.CompletedProcess[str]) -> Path:
+    line = next(line for line in result.stdout.splitlines() if line.startswith("Diagnostics: "))
+    return Path(line.removeprefix("Diagnostics: "))
+
+
 def manifest(host: dict[str, str]) -> dict:
     return json.loads(
         (Path(host["VAULTKEEP_INSTALL_PREFIX"]) / "install-manifest.json").read_text()
@@ -183,7 +188,7 @@ def test_installer_errors_have_explicit_prefix_in_plain_logs(
     host["TERM"] = "xterm"
     result = run_installer(host, *arguments, check=False)
     assert result.returncode == status
-    assert result.stderr.startswith(f"ERROR: install.sh: {message}\n")
+    assert result.stderr.startswith(f"FAILED: install.sh: {message}\n")
     assert "\033[" not in result.stderr
 
 
@@ -230,7 +235,7 @@ def test_installer_error_prefix_on_a_terminal(
         os.close(slave)
     output = read_terminal(master)
     assert result.returncode == 2
-    prefix = "\033[1;31mERROR:\033[0m" if colored else "ERROR:"
+    prefix = "\033[1;31mFAILED\033[0m:" if colored else "FAILED:"
     assert output.decode().startswith(f"{prefix} install.sh: unknown mode: invalid")
     if not colored:
         assert b"\033[" not in output
@@ -337,7 +342,9 @@ def test_dry_run_is_read_only(host: dict[str, str]) -> None:
     result = run_installer(host, "install", "--dry-run")
     assert "Trigger is included; monitoring remains opt-in" in result.stdout
     assert "PLAN stage release" in result.stdout
-    assert all(line.startswith("INFO: ") for line in result.stdout.splitlines())
+    assert "INFO:" not in result.stdout
+    assert "Installation plan" in result.stdout
+    assert "Result: dry run completed" in result.stdout
     assert "\033[" not in result.stdout
     assert "activity checks are not a live quiescence guarantee" in result.stdout
     assert snapshot(host) == before
@@ -365,7 +372,20 @@ def test_update_needs_manifest(host: dict[str, str]) -> None:
 
 def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> None:
     wheelhouse_available(host)
-    run_installer(host, "install")
+    result = run_installer(host, "install")
+    assert result.stdout.startswith("Vaultkeep — Installation\n\n")
+    assert "Result: INSTALLED" in result.stdout
+    assert "INFO:" not in result.stdout and "Looking in links" not in result.stdout
+    assert result.stdout.index("Installation plan") < result.stdout.index("System dependencies")
+    assert result.stdout.index("Python environment") < result.stdout.index("Application")
+    assert result.stdout.index("Release activation") < result.stdout.index("Result: INSTALLED")
+    assert "RUNNING... (0s)" in result.stdout
+    assert "\033" not in result.stdout + result.stderr
+    transcript = diagnostic_log(result)
+    assert transcript.stat().st_mode & 0o777 == 0o600
+    assert "Looking in links" in transcript.read_text()
+    assert "source_digest:" in transcript.read_text()
+    assert "Stage: Release activation OK" in transcript.read_text()
     data = manifest(host)
     assert data["schema_version"] == 3
     assert "components" not in data
@@ -634,7 +654,7 @@ def test_uninstall_preserves_user_evidence(host: dict[str, str], purge: bool) ->
     monitor_before = monitor.read_bytes()
     before = evidence.read_bytes()
     result = run_installer(host, "uninstall", "--dry-run", *(["--purge"] if purge else []))
-    assert "preserve every user's Trigger" in result.stdout
+    assert "User homes, wallets, archives and recovery evidence are preserved" in result.stdout
     run_installer(host, "uninstall", *(["--purge"] if purge else []))
     assert evidence.read_bytes() == before
     assert not worker.exists()
@@ -671,7 +691,13 @@ os.execv({sys.executable!r}, ['python3', *sys.argv[1:]])
 """,
     )
     result = run_installer(host, "install", check=False)
-    assert result.returncode != 0
+    assert result.returncode == (128 + int(signum) if signum else 1)
+    assert "Python environment" in result.stdout
+    assert "FAILED" in result.stdout
+    assert "Result: FAILED" in result.stdout
+    assert "Result: INSTALLED" not in result.stdout
+    assert "Python environment failed" in result.stderr
+    assert diagnostic_log(result).is_file()
     prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
     assert not list((prefix / ".staging").iterdir())
     assert not list((prefix / "releases").iterdir())
@@ -915,11 +941,195 @@ def test_installer_levels_and_no_color_reach_helper(host, no_color):
         os.close(slave)
     output = read_terminal(master).decode().replace("\r\n", "\n")
     assert result.returncode == 1
-    info = "INFO:" if no_color else "\033[36mINFO:\033[0m"
-    warning = "WARNING:" if no_color else "\033[1;33mWARNING:\033[0m"
+    info = "INFO:"
+    warning = "WARNING:" if no_color else "\033[1;33mWARNING\033[0m:"
     error = "ERROR:" if no_color else "\033[1;31mERROR:\033[0m"
     assert output == (
         f"{info} first\n{info} second\n{warning} attention\n"
         f"{error} installer: unknown installer check: unsupported\n"
     )
     assert not Path(host["VAULTKEEP_INSTALL_PREFIX"]).exists()
+
+
+def progress_script(log_path: Path, duration: float) -> str:
+    import shlex
+
+    definitions = INSTALLER.read_text().partition("\nSOURCE_DIR=$(script_dir)")[0]
+    return (
+        definitions
+        + f"""
+parse_args "$@"
+INSTALL_LOG={shlex.quote(str(log_path))}
+exec >"$INSTALL_LOG" 2>&1
+trap 'report_failure $?' EXIT
+stage_start 'Python environment'
+sleep {duration}
+stage_finish
+stage_start 'Application'
+stage_finish
+printf '\\nResult: INSTALLED\\n' >&3
+"""
+    )
+
+
+def test_redirected_progress_is_live_and_has_elapsed_heartbeat(tmp_path):
+    import select
+
+    log_path = tmp_path / "progress.log"
+    with subprocess.Popen(
+        ["bash", "-c", progress_script(log_path, 11), "install.sh", "install"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        assert select.select([process.stdout], [], [], 3)[0], "stage start was not immediate"
+        first = process.stdout.readline()
+        assert "Python environment" in first and "RUNNING... (0s)" in first
+        assert process.poll() is None
+        out, err = process.communicate(timeout=15)
+    output = first + out
+    assert process.returncode == 0, err
+    assert "RUNNING... (10s)" in output
+    assert (
+        output.index("Python environment") < output.index("Application") < output.index("Result:")
+    )
+    assert len([line for line in output.splitlines() if " OK (" in line]) == 2
+    assert "\033" not in output and "\r" not in output
+
+
+@pytest.mark.parametrize("no_color", [False, True])
+def test_terminal_progress_refreshes_only_current_stage(tmp_path, no_color):
+    import pty
+
+    master, slave = pty.openpty()
+    environment = {**os.environ, "TERM": "xterm", "NO_COLOR": ""}
+    try:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                progress_script(tmp_path / "progress.log", 2.2),
+                "install.sh",
+                "install",
+                *(["--no-color"] if no_color else []),
+            ],
+            stdout=slave,
+            stderr=slave,
+            env=environment,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        os.close(slave)
+    output = read_terminal(master).decode()
+    assert result.returncode == 0, output
+    assert "\r\033[2K" in output
+    assert "(1s)" in output and "(2s)" in output
+    assert output.count("Result: INSTALLED") == 1
+    if no_color:
+        assert "\033[32m" not in output and "\033[36m" not in output
+    else:
+        assert "\033[36mRUNNING...\033[0m" in output
+        assert "\033[32mOK\033[0m" in output
+        assert "\033[32mPython environment" not in output
+
+
+def test_warning_during_terminal_stage_keeps_stage_history_readable(tmp_path):
+    import pty
+
+    script = progress_script(tmp_path / "progress.log", 0.1).replace(
+        "sleep 0.1", 'warning "installed environment requires repair"\nsleep 0.1'
+    )
+    master, slave = pty.openpty()
+    try:
+        result = subprocess.run(
+            ["bash", "-c", script, "install.sh", "install", "--no-color"],
+            stdout=slave,
+            stderr=slave,
+            env={**os.environ, "TERM": "xterm"},
+            timeout=10,
+            check=False,
+        )
+    finally:
+        os.close(slave)
+    output = read_terminal(master).decode()
+    assert result.returncode == 0, output
+    assert "\r\033[2KWARNING: installed environment requires repair\r\n" in output
+    assert output.count("OK (") == 2
+    assert output.count("Result: INSTALLED") == 1
+
+
+def test_progress_helper_does_not_keep_installer_lock_or_outlive_parent(tmp_path):
+    import select
+    import shlex
+
+    definitions = INSTALLER.read_text().partition("\nSOURCE_DIR=$(script_dir)")[0]
+    lock_path = tmp_path / "install.lock"
+    script = (
+        definitions
+        + f"""
+exec 9>{shlex.quote(str(lock_path))}
+flock -n 9
+exec >/dev/null 2>&1
+stage_start 'Python environment'
+read -r response
+"""
+    )
+    with subprocess.Popen(
+        ["bash", "-c", script, "install.sh", "install"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        assert select.select([process.stdout], [], [], 3)[0]
+        assert "RUNNING..." in process.stdout.readline()
+        process.kill()
+        process.wait(timeout=3)
+        assert subprocess.run(["flock", "-n", str(lock_path), "true"], timeout=3).returncode == 0
+        # The heartbeat inherits the report stream, so this also detects an orphan
+        # that keeps writing after the installer has disappeared.
+        process.communicate(timeout=3)
+
+
+def test_7zip_failure_keeps_stdout_and_stderr_diagnostics(host, tmp_path):
+    import shlex
+
+    fake = Path(host["PATH"].split(":")[0])
+    executable(
+        fake / "7z",
+        '#!/bin/sh\nprintf "archive check failed\\n"\nprintf "tool detail\\n" >&2\nexit 1\n',
+    )
+    source = INSTALLER.read_text()
+    definitions = source.partition("\nSOURCE_DIR=$(script_dir)")[0]
+    check = source[
+        source.index("check_7z_compatibility() {") : source.index("candidate_version() {")
+    ]
+    transcript = tmp_path / "installer.log"
+    script = (
+        definitions
+        + check
+        + f"""
+INSTALL_LOG={shlex.quote(str(transcript))}
+VK_TESTING=0
+exec >"$INSTALL_LOG" 2>&1
+trap 'report_failure $?' EXIT
+stage_start '7zip compatibility'
+check_7z_compatibility
+stage_finish
+"""
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "install.sh", "install"],
+        env=host,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "7zip compatibility" in result.stdout and "Result: FAILED" in result.stdout
+    assert "archive check failed" in result.stderr and "tool detail" in result.stderr
+    assert (
+        "archive check failed" in transcript.read_text() and "tool detail" in transcript.read_text()
+    )

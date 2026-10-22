@@ -127,3 +127,23 @@ def test_root_can_inspect_trigger_version_and_help(monkeypatch, capsys) -> None:
     help_output = capsys.readouterr().out
     assert "user-mode only" in help_output
     assert "check-config" not in help_output
+
+
+@pytest.mark.parametrize(
+    "runtime, status",
+    [("running (lock held by pid 123)", "RUNNING"), ("not running (lock is free)", "STOPPED")],
+)
+def test_human_status_separates_runtime_from_configuration(
+    tmp_path, valid_config, monkeypatch, capsys, runtime, status
+):
+    valid_config["logging"]["level"] = "error"
+    monkeypatch.setattr("vaultkeep.trigger.cli.state_root", lambda _scope: tmp_path / "state")
+    monkeypatch.setattr("vaultkeep.trigger.cli._monitor_runtime_status", lambda _scope: runtime)
+    assert main(["--user", "--config", str(job(tmp_path, valid_config)), "trigger", "status"]) == 0
+    output = capsys.readouterr()
+    assert output.out.startswith("Vaultkeep — Trigger status\n\n")
+    assert "Trigger:  DISABLED" in output.out
+    assert f"Monitor:  {status}" in output.out
+    assert "no recorded instances" in output.out
+    assert "vaultkeep-trigger@" not in output.out
+    assert output.err == ""

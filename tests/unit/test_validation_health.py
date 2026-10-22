@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import replace
 
@@ -11,11 +12,17 @@ import pytest
 from vaultkeep.cli import main, validation
 from vaultkeep.scheduling import TimerManager, TimerPaths
 from vaultkeep.state.identity import job_identity_hash, job_state_path
-from vaultkeep.state.models import LastRunState, LocalState
+from vaultkeep.state.models import LastRunState, LastSuccessfulBackup, LocalState
 from vaultkeep.trigger.config import load_config
 from vaultkeep.trigger.errors import BlockedError
 from vaultkeep.trigger.models import InstanceState, Observation, ObservationRecord, utc_now
 from vaultkeep.trigger.state import StateStore
+
+
+def report_text(text):
+    """Normalize alignment for health assertions; rendering has separate exact tests."""
+    text = re.sub(r"(?m)^  (\S.*?) {2,}", r"\1: ", text)
+    return re.sub(r"(?m)^(Job|Mode|Result): +", r"\1: ", text)
 
 
 @pytest.fixture
@@ -85,14 +92,15 @@ def test_missing_monitor_reports_incomplete_and_checks_remaining_state(
         validation, "_unit_properties", lambda *args, **kwargs: {"LoadState": "not-found"}
     )
     assert main(["--user", "--config", str(path), "validate"]) != 0
-    output = capsys.readouterr().out
-    assert "Trigger: enabled" in output and "Schedule:" not in output
-    assert "Backup sources and destination: valid" in output
-    assert "Trigger runtime prerequisites: passed" in output
-    assert "Monitor service: not installed" in output
+    output = report_text(capsys.readouterr().out)
+    assert "Trigger: ENABLED" in output and "Schedule:" not in output
+    assert "Backup paths: OK" in output
+    assert "Trigger runtime prerequisites: OK" in output
+    assert "Monitor service: NOT INSTALLED" in output
     assert "Monitor updates: no recorded state" in output
-    assert "Result: setup incomplete" in output
-    assert calls == [{"validate_backup": False}]
+    assert "Result: SETUP INCOMPLETE" in output
+    assert len(calls) == 1 and calls[0]["validate_backup"] is False
+    assert callable(calls[0]["warning"])
     assert not (path.parent / "trigger-state").exists()
 
 
@@ -100,10 +108,10 @@ def test_healthy_trigger(health_job, monkeypatch, capsys):
     path = write_job(health_job, trigger=True)
     trigger_state(path, monkeypatch)
     assert main(["--user", "--config", str(path), "validate"]) == 0
-    output = capsys.readouterr().out
-    assert "Monitor service: installed, enabled, running" in output
+    output = report_text(capsys.readouterr().out)
+    assert "Monitor service: RUNNING" in output
     assert "Monitor updates: current" in output
-    assert "Result: healthy" in output
+    assert "Result: OK" in output
 
 
 @pytest.mark.parametrize(
@@ -118,9 +126,9 @@ def test_trigger_state_health_failures(health_job, monkeypatch, capsys, updates,
     path = write_job(health_job, trigger=True)
     trigger_state(path, monkeypatch, **updates)
     assert main(["--user", "--config", str(path), "validate"]) != 0
-    output = capsys.readouterr().out
+    output = report_text(capsys.readouterr().out)
     assert message in output
-    assert "Result: healthy" not in output
+    assert "Result: OK" not in output
 
 
 @pytest.mark.parametrize("active, enabled", [("failed", "enabled"), ("inactive", "disabled")])
@@ -133,7 +141,7 @@ def test_trigger_service_failure(health_job, monkeypatch, capsys, active, enable
         lambda *args, **kwargs: properties(ActiveState=active, UnitFileState=enabled),
     )
     assert main(["--user", "--config", str(path), "validate"]) != 0
-    assert "Result: failed" in capsys.readouterr().out
+    assert "Result: FAILED" in report_text(capsys.readouterr().out)
 
 
 def test_failed_prerequisites_do_not_hide_missing_monitor(health_job, monkeypatch, capsys):
@@ -149,8 +157,9 @@ def test_failed_prerequisites_do_not_hide_missing_monitor(health_job, monkeypatc
     )
     assert main(["--user", "--config", str(path), "validate"]) != 0
     output = capsys.readouterr()
+    output_out = report_text(output.out)
     assert "worker template is missing" in output.err
-    assert "Monitor service: not installed" in output.out
+    assert "Monitor service: NOT INSTALLED" in output_out
 
 
 @pytest.mark.parametrize("user_mode, uid", [(False, 1000), (False, 0), (True, 0)])
@@ -164,7 +173,7 @@ def test_trigger_rejects_system_mode_or_root(health_job, monkeypatch, capsys, us
     monkeypatch.setattr(validation, "runtime_preflight", unexpected)
     monkeypatch.setattr(validation, "_unit_properties", unexpected)
     assert main([*(["--user"] if user_mode else []), "--config", str(path), "validate"]) != 0
-    assert "unsupported" in capsys.readouterr().out
+    assert "unsupported" in report_text(capsys.readouterr().out)
 
 
 def test_schema_only_skips_all_automation_checks(health_job, monkeypatch, capsys):
@@ -177,7 +186,7 @@ def test_schema_only_skips_all_automation_checks(health_job, monkeypatch, capsys
     monkeypatch.setattr(validation, "validate_job", unexpected)
     monkeypatch.setattr(validation, "runtime_preflight", unexpected)
     assert main(["--config", str(path), "validate", "--schema-only"]) == 0
-    assert "Runtime checks: skipped" in capsys.readouterr().out
+    assert "Runtime checks: skipped" in report_text(capsys.readouterr().out)
 
 
 def test_backup_preflight_does_not_reenter_automation_health(health_job, monkeypatch, capsys):
@@ -188,7 +197,7 @@ def test_backup_preflight_does_not_reenter_automation_health(health_job, monkeyp
 
     monkeypatch.setattr(validation, "runtime_preflight", unexpected)
     assert main(["--user", "--config", str(path), "validate", "--backup-only"]) == 0
-    assert capsys.readouterr().out.strip() == "validate: valid"
+    assert report_text(capsys.readouterr().out).strip() == "validate: valid"
 
 
 @pytest.mark.parametrize("user_mode", [False, True])
@@ -230,10 +239,10 @@ def test_schedule_checks_selected_manager_and_installation(
     before = sorted(path.parent.rglob("*"))
     code = main([*(["--user"] if user_mode else []), "--config", str(path), "validate"])
     assert (code == 0) == installed
-    output = capsys.readouterr().out
-    assert "Schedule: enabled" in output and "Trigger:" not in output
-    assert "Schedule runtime prerequisites: passed" in output
-    assert ("Next scheduled run:" in output) if installed else ("Timer: not installed" in output)
+    output = report_text(capsys.readouterr().out)
+    assert "Schedule: ENABLED" in output and "Trigger:" not in output
+    assert "Schedule runtime prerequisites: OK" in output
+    assert ("Next scheduled run:" in output) if installed else ("Timer: NOT INSTALLED" in output)
     assert "vaultkeep@app.timer" in calls
     assert "vaultkeep@app.service" in calls
     assert before == sorted(path.parent.rglob("*"))
@@ -265,7 +274,7 @@ def test_recorded_backup_failure_is_unhealthy(health_job, capsys):
         ).model_dump_json()
     )
     assert main(["--user", "--config", str(path), "validate"]) != 0
-    assert "Last backup: failed" in capsys.readouterr().out
+    assert "Last result: failed" in report_text(capsys.readouterr().out)
 
 
 @pytest.mark.parametrize("stdout,code", [("", 1), ("LoadState=loaded\n", 0)])
@@ -297,8 +306,9 @@ def test_source_failure_still_reports_automation_installation(health_job, monkey
     )
     assert main(["--user", "--config", str(path), "validate"]) == 5
     output = capsys.readouterr()
+    output_out = report_text(output.out)
     assert "Configured source does not exist" in output.err
-    assert "Monitor service: not installed" in output.out
+    assert "Monitor service: NOT INSTALLED" in output_out
 
 
 @pytest.mark.parametrize(
@@ -331,7 +341,7 @@ def test_ambiguous_observation_and_recorded_failure_are_unhealthy(
     path = write_job(health_job, trigger=True)
     trigger_state(path, monkeypatch, **updates)
     assert main(["--user", "--config", str(path), "validate"]) != 0
-    assert expected in capsys.readouterr().out
+    assert expected in report_text(capsys.readouterr().out)
 
 
 def test_corrupt_trigger_state_is_reported_without_repair(health_job, monkeypatch, capsys):
@@ -341,7 +351,8 @@ def test_corrupt_trigger_state_is_reported_without_repair(health_job, monkeypatc
     state_path.write_text("{broken")
     assert main(["--user", "--config", str(path), "validate"]) == 15
     output = capsys.readouterr()
-    assert "Trigger recovery checks: failed" in output.out
+    output_out = report_text(output.out)
+    assert "Trigger recovery checks: FAILED" in output_out
     assert state_path.read_text() == "{broken"
 
 
@@ -367,7 +378,7 @@ def test_per_file_failure_uses_file_identity_and_readable_name(health_job, capsy
         ).model_dump_json()
     )
     assert main(["--user", "--config", str(path), "validate"]) != 0
-    assert "Last backup (wallet.dat): failed" in capsys.readouterr().out
+    assert "Last result (wallet.dat): failed" in report_text(capsys.readouterr().out)
 
 
 @pytest.mark.parametrize("user_mode", [False, True])
@@ -397,4 +408,83 @@ def test_schedule_health_failures(health_job, monkeypatch, capsys, user_mode, pr
 
     monkeypatch.setattr(validation, "_unit_properties", inspect)
     assert main([*(["--user"] if user_mode else []), "--config", str(path), "validate"]) != 0
-    assert "Result: failed" in capsys.readouterr().out
+    assert "Result: FAILED" in report_text(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("level", ["error", "warning", "info", "debug"])
+def test_report_survives_log_level_and_suppresses_secondary_missing_state_error(
+    health_job, monkeypatch, capsys, level
+):
+    path = write_job(health_job, trigger=True)
+    data = json.loads(path.read_text())
+    data["logging"]["level"] = level
+    path.write_text(json.dumps(data))
+    monkeypatch.setattr(validation, "runtime_preflight", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        validation, "_unit_properties", lambda *args, **kwargs: {"LoadState": "not-found"}
+    )
+
+    assert main(["--user", "--config", str(path), "validate"]) == 3
+    output = capsys.readouterr()
+    assert output.out.startswith(
+        "Vaultkeep — Validation\n\nJob:     app\nMode:    user\nResult:  SETUP INCOMPLETE\n"
+    )
+    assert output.out.index("Result:") < output.out.index("\nConfiguration\n")
+    assert "Configuration  VALID" in output.out
+    assert "no completed run recorded" in output.out
+    assert "no recorded state" in output.out
+    assert output.out.count("Issue:") == 1
+    assert "Monitor service is not installed; automatic backups are unavailable." in output.out
+    assert "trigger install" in output.out
+    assert "INFO:" not in output.out and "ERROR:" not in output.out
+    assert ("Monitor service unit: vaultkeep-trigger@" in output.err) == (
+        level in ("info", "debug")
+    )
+    assert ("DEBUG:" in output.err and "Checking" in output.err) == (level == "debug")
+    assert "no recorded state" not in output.err
+    assert "\033" not in output.out + output.err
+
+
+def test_backup_timestamp_and_result_are_separate_fields(health_job, capsys):
+    path = write_job(health_job)
+    state_path = job_state_path(path, "app", state_root=path.parent / "state/vaultkeep/jobs")
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        LocalState(
+            job_id="app",
+            job_identity_hash=job_identity_hash(path, "app"),
+            last_run=LastRunState(at_utc="2026-10-21T19:29:29Z", result="unchanged"),
+            last_unchanged_at_utc="2026-10-21T19:29:29Z",
+            last_successful_backup=LastSuccessfulBackup(
+                source_digest="sha256:" + "a" * 64,
+                config_fingerprint="sha256:" + "b" * 64,
+                backup_id="c" * 32,
+                created_at_utc="2026-10-20T19:29:29Z",
+                backup_path="/backup/archive.tar.zst",
+                application_version="test",
+            ),
+            application_version="test",
+        ).model_dump_json()
+    )
+
+    assert main(["--user", "--config", str(path), "validate"]) == 0
+    output = capsys.readouterr().out
+    assert "  Last backup  2026-10-21 19:29:29 UTC\n  Last result  unchanged\n" in output
+
+
+def test_preflight_warning_is_visible_at_error_log_level(health_job, monkeypatch, capsys):
+    path = write_job(health_job, trigger=True)
+    data = json.loads(path.read_text())
+    data["logging"]["level"] = "error"
+    path.write_text(json.dumps(data))
+    trigger_state(path, monkeypatch)
+
+    def prerequisites(*args, warning, **kwargs):
+        warning("configured Vaultkeep executable version differs from this installation test")
+
+    monkeypatch.setattr(validation, "runtime_preflight", prerequisites)
+    assert main(["--user", "--config", str(path), "validate"]) == 0
+    output = capsys.readouterr()
+    assert "WARNING" in output.out
+    assert output.out.count("executable version differs") == 1
+    assert output.err == ""

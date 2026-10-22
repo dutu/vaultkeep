@@ -56,37 +56,164 @@ Usage:
 EOF
 }
 
+# Report descriptors stay attached to the caller while operations go to the transcript.
+exec 3>&1 4>&2
+INSTALL_LOG=""
+CURRENT_STAGE=""
+STAGE_STARTED=0
+HEARTBEAT_PID=""
+REPORT_FAILED=0
+FAILED_STAGE=""
+
+color_status() {
+    local value=$1 descriptor=${2:-3} color=""
+    if [[ "$NO_COLORS" == 0 && -t "$descriptor" && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
+        case "$value" in
+            OK|VALID|INSTALLED) color=32 ;;
+            WARNING|"SETUP INCOMPLETE") color='1;33' ;;
+            FAILED|ERROR) color='1;31' ;;
+            RUNNING...) color=36 ;;
+        esac
+    fi
+    if [[ -n "$color" ]]; then
+        printf '\033[%sm%s\033[0m' "$color" "$value"
+    else
+        printf '%s' "$value"
+    fi
+}
+
+report_field() {
+    printf '  %-23s %s\n' "$1" "$(color_status "$2")" >&3
+}
+
 log() {
-    message INFO "$*"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        printf '%s\n' "$*"
+    else
+        message INFO "$*"
+    fi
 }
 
 message() {
-    local level=$1 text=$2 color prefix line
-    prefix="$level:"
-    if [[ "$NO_COLORS" == 0 && -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
-        case "$level" in
-            INFO) color=36 ;;
-            WARNING) color='1;33' ;;
-            ERROR) color='1;31' ;;
-        esac
-        prefix=$'\033['"${color}m${prefix}"$'\033[0m'
-    fi
+    local level=$1 text=$2 line
     while IFS= read -r line || [[ -n "$line" ]]; do
-        printf '%s %s\n' "$prefix" "$line"
+        printf '%s: %s\n' "$level" "$line"
     done <<<"$text"
 }
 
 warning() {
-    message WARNING "$*" >&2
+    local refresh=0
+    if [[ -n "$CURRENT_STAGE" && -t 3 && "${TERM:-dumb}" != dumb ]]; then
+        stop_heartbeat
+        printf '\r\033[2K' >&3
+        refresh=1
+    fi
+    printf '%s: %s\n' "$(color_status WARNING 4)" "$*" >&4
+    [[ -z "$INSTALL_LOG" ]] || message WARNING "$*" >&2
+    if [[ "$refresh" == 1 ]]; then
+        stage_line "$CURRENT_STAGE" RUNNING... "$((SECONDS - STAGE_STARTED))"
+        start_heartbeat
+    fi
 }
 
 error() {
-    message ERROR "$SCRIPT_NAME: $*" >&2
+    if [[ -n "$INSTALL_LOG" ]]; then
+        message ERROR "$SCRIPT_NAME: $*" >&2
+    else
+        printf '%s: %s: %s\n' "$(color_status FAILED 4)" "$SCRIPT_NAME" "$*" >&4
+    fi
 }
 
 die() {
     error "$*"
     exit 1
+}
+
+stage_line() {
+    local stage=$1 state=$2 elapsed=$3
+    if [[ -t 3 && "${TERM:-dumb}" != dumb ]]; then
+        printf '\r\033[2K' >&3
+    fi
+    printf '  %-23s %s (%ss)' "$stage" "$(color_status "$state")" "$elapsed" >&3
+    if [[ ! -t 3 || "${TERM:-dumb}" == dumb || "$state" != RUNNING... ]]; then
+        printf '\n' >&3
+    fi
+}
+
+stop_heartbeat() {
+    if [[ -n "$HEARTBEAT_PID" ]]; then
+        kill "$HEARTBEAT_PID" 2>/dev/null || true
+        wait "$HEARTBEAT_PID" 2>/dev/null || true
+        HEARTBEAT_PID=""
+    fi
+}
+
+stage_finish() {
+    [[ -n "$CURRENT_STAGE" ]] || return 0
+    stop_heartbeat
+    stage_line "$CURRENT_STAGE" "${1:-OK}" "$((SECONDS - STAGE_STARTED))"
+    log "Stage: $CURRENT_STAGE ${1:-OK} ($((SECONDS - STAGE_STARTED))s)"
+    CURRENT_STAGE=""
+}
+
+stage_start() {
+    [[ "$DRY_RUN" == 0 ]] || return 0
+    stage_finish
+    CURRENT_STAGE=$1
+    STAGE_STARTED=$SECONDS
+    log "Stage: $CURRENT_STAGE RUNNING..."
+    stage_line "$CURRENT_STAGE" RUNNING... 0
+    start_heartbeat
+}
+
+start_heartbeat() {
+    # A single writer refreshes only this stage. Redirected output gets periodic
+    # ordinary lines; no terminal control sequences or subprocess chatter.
+    (
+        timer=""
+        trap '[[ -z "$timer" ]] || kill "$timer" 2>/dev/null; exit 0' TERM INT HUP
+        while kill -0 "$$" 2>/dev/null; do
+            sleep 1 &
+            timer=$!
+            wait "$timer"
+            timer=""
+            elapsed=$((SECONDS - STAGE_STARTED))
+            if [[ -t 3 && "${TERM:-dumb}" != dumb ]] || ((elapsed % 10 == 0)); then
+                stage_line "$CURRENT_STAGE" RUNNING... "$elapsed"
+            fi
+        done
+    ) 9>&- &
+    HEARTBEAT_PID=$!
+}
+
+report_failure() {
+    local status=$1
+    [[ "$status" != 0 && "$REPORT_FAILED" == 0 ]] || return 0
+    REPORT_FAILED=1
+    local failed_stage=${FAILED_STAGE:-${CURRENT_STAGE:-installation}}
+    stage_finish FAILED
+    printf 'Issue: %s failed (exit %s).\n' "$failed_stage" "$status" >&4
+    printf '\nResult: %s\n' "$(color_status FAILED)" >&3
+    if [[ -n "$INSTALL_LOG" ]]; then
+        printf 'Diagnostics: %s\n' "$INSTALL_LOG" >&4
+        # Retain the full transcript; surface recent context without rerunning apt/pip.
+        tail -n 30 "$INSTALL_LOG" >&4
+    fi
+}
+
+installation_result() {
+    local version=$1 previous=$2
+    stage_finish
+    if [[ "$DRY_RUN" == 1 ]]; then
+        printf '\nResult: dry run completed; no changes made\n' >&3
+        return
+    fi
+    printf '\nResult: %s\n\n' "$(color_status INSTALLED)" >&3
+    report_field Version "$version"
+    report_field Executable "$VK_BIN_LINK"
+    report_field 'Previous release' "$([[ -n "$previous" ]] && echo retained || echo none)"
+    printf '\nNext: Validate jobs and explicitly resume previously active schedules.\n' >&3
+    printf 'Diagnostics: %s\n' "$INSTALL_LOG" >&3
 }
 
 parse_args() {
@@ -232,9 +359,9 @@ check_7z_compatibility() {
     printf 'vaultkeep installer check\n' >"$tmp/payload.txt"
     tar -C "$tmp" -cf "$tmp/payload.tar" payload.txt
     7z a -t7z -mhe=on -sccUTF-8 -bd -pvaultkeep-installer-test \
-        -- "$tmp/payload.tar.7z" "$tmp/payload.tar" >/dev/null
+        -- "$tmp/payload.tar.7z" "$tmp/payload.tar"
     7z t -bd -sccUTF-8 -pvaultkeep-installer-test \
-        -- "$tmp/payload.tar.7z" >/dev/null
+        -- "$tmp/payload.tar.7z"
 }
 
 candidate_version() {
@@ -297,6 +424,17 @@ ensure_checkout() {
 
 plan_install_or_update() {
     local version=$1 digest=$2
+    local previous=none
+    [[ ! -f "$VK_MANIFEST" ]] || previous=$(manifest_value version)
+    printf 'Source:    %s\nVersion:   %s\nPrevious:  %s\n' "$SOURCE_DIR" "$version" "$previous" >&3
+    printf '\nInstallation plan\n' >&3
+    report_field Installation "$VK_PREFIX"
+    report_field Python '3.13+'
+    report_field 'Trigger support' 'included (opt-in)'
+    report_field 'Existing data' preserved
+    report_field Schedules 'manual resume required'
+    printf '\n' >&3
+    warning 'Pause schedules and drain running backups/monitors before maintenance; resume schedules explicitly afterward. Enablement and timer timestamps are preserved.'
     log "Vaultkeep $MODE plan"
     log "  source: $SOURCE_DIR"
     log "  version: $version"
@@ -365,8 +503,10 @@ stage_release() {
         --exclude='.aws/' --exclude='.codex/' --exclude='.agents/' --exclude='.coverage*' \
         --exclude='.env' --exclude='.env.*' \
         "$SOURCE_DIR/" "$stage/src/"
+    stage_start "Python environment"
     python3 -m venv "$stage/venv"
     "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/requirements.lock"
+    stage_start Application
     log "Preparing Vaultkeep $version in staging for validation..."
     install_packages "$stage"
     verify_release "$stage" "$version"
@@ -489,7 +629,8 @@ begin_commit_transaction() {
 finish_commit_transaction() {
     [[ "$DRY_RUN" == 0 ]] || return 0
     ROLLBACK_ACTIVE=0
-    trap - EXIT INT TERM HUP
+    trap 'report_failure $?' EXIT
+    trap - INT TERM HUP
     rm -rf "$ROLLBACK_TMP"
 }
 
@@ -507,6 +648,8 @@ rollback_commit() {
     trap - EXIT INT TERM HUP
     set +e
     [[ "$status" != 0 ]] || status=1
+    FAILED_STAGE=$CURRENT_STAGE
+    stage_finish FAILED
     error "installer transaction failed (exit $status); cleaning up; schedules remain paused"
     if [[ "$ROLLBACK_ACTIVE" == 1 ]]; then
         local index path
@@ -539,6 +682,7 @@ rollback_commit() {
     else
         error "rollback incomplete; recovery snapshots retained at $ROLLBACK_TMP"
     fi
+    report_failure "$status"
     exit "$status"
 }
 
@@ -595,6 +739,7 @@ validate_existing_mode() {
 }
 
 install_or_update() {
+    stage_start Preflight
     preflight_host
     ensure_checkout
     local version digest previous_release="" active_release="" mode_result=0 rebuild=1
@@ -618,7 +763,10 @@ install_or_update() {
     fi
     RELEASE_ID=$version
     digest=$(source_digest)
+    stage_finish
     plan_install_or_update "$version" "$digest"
+    [[ "$DRY_RUN" == 1 ]] || printf '\nInstalling\n' >&3
+    stage_start "Safety checks"
     if validate_existing_mode "$version" "$digest"; then
         mode_result=0
     else
@@ -631,6 +779,7 @@ install_or_update() {
     # A clean supported host may bootstrap Debian's missing interpreter. An
     # existing incompatible interpreter was already rejected before any mutation.
     if ! command -v python3 >/dev/null 2>&1; then
+        stage_start "System dependencies"
         if [[ "$DRY_RUN" == 1 ]]; then
             log "PLAN apt installs Debian python3; verify >=3.13 before venv creation"
         else
@@ -639,6 +788,7 @@ install_or_update() {
             support ownership "$SOURCE_DIR" "$COMPONENTS"
         fi
     fi
+    stage_start "Deployment lock and activity"
     acquire_lock
     if [[ -f "$VK_MANIFEST" ]]; then
         manifest_after=$(sha256sum "$VK_MANIFEST")
@@ -666,10 +816,12 @@ install_or_update() {
     log "  retained release after success: $previous_release"
     if [[ "$rebuild" == 0 && "$DRY_RUN" == 0 && "$(support needs-reconciliation "$COMPONENTS")" == 0 ]]; then
         log "Vaultkeep $version verified; no deployment changes required"
+        installation_result "$version" "$previous_release"
         return
     fi
     start_transaction
     if [[ "$rebuild" == 1 ]]; then
+        stage_start "System dependencies"
         install_dependencies
         if [[ "$DRY_RUN" == 0 ]]; then
             verify_python
@@ -677,19 +829,26 @@ install_or_update() {
         fi
         verify_executables
         check_7z_compatibility
+        stage_start "Directory preparation"
         prepare_directories
+        stage_start "Systemd template checks"
         verify_systemd_templates
+        stage_start "Release staging"
         stage_release "$version" "$digest"
     fi
+    stage_start "Activation safety checks"
     prepare_directories
     refuse_active_services
     support_or_plan_ownership
     begin_commit_transaction
     prepare_registry
+    stage_start "Release finalization"
     if [[ "$DRY_RUN" == 0 && "$rebuild" == 1 ]]; then
         replace_release_from_staging "$version"
     fi
+    stage_start "Systemd units and links"
     install_units_and_links
+    stage_start "Release activation"
     install_examples
     write_manifest "$version" "$digest" "$previous_release"
     daemon_reload
@@ -699,7 +858,7 @@ install_or_update() {
         refuse_active_services
     fi
     finish_commit_transaction
-    log "Vaultkeep $version installed. Validate jobs/configuration and resume previously active schedules explicitly."
+    installation_result "$version" "$previous_release"
 }
 
 validate_manifest_for_uninstall() {
@@ -712,6 +871,9 @@ validate_manifest_for_uninstall() {
 }
 
 uninstall_plan() {
+    printf 'Uninstallation plan\n' >&3
+    printf '  User homes, wallets, archives and recovery evidence are preserved.\n' >&3
+    report_field "Configuration/state" "$([[ "$PURGE" == 1 ]] && echo 'purge system data' || echo preserved)"
     log "Vaultkeep uninstall plan"
     log "  require stopped/disabled schedules and drained services/workers/jobs in all running managers"
     log "  remove $VK_SERVICE_UNIT $VK_TIMER_UNIT $VK_BIN_LINK"
@@ -731,15 +893,19 @@ uninstall_plan() {
 }
 
 uninstall_vaultkeep() {
+    stage_start Preflight
     preflight_host
     validate_manifest_for_uninstall
     acquire_lock
     validate_manifest_for_uninstall
+    stage_finish
     uninstall_plan
+    stage_start "Safety checks"
     refuse_active_services
     if [[ "$DRY_RUN" == 1 ]]; then
         return
     fi
+    stage_start Uninstallation
     # Repeat the live manager inventory immediately before removal.
     refuse_active_services
     rm -f "$VK_SERVICE_UNIT" "$VK_TIMER_UNIT" "$VK_BIN_LINK"
@@ -757,7 +923,9 @@ uninstall_vaultkeep() {
         rm -rf "$VK_CONFIG_ROOT" "$VK_VAR_ROOT"
     fi
     rm -rf "$VK_PREFIX"
-    log "Vaultkeep uninstalled; user homes and backup destinations preserved"
+    stage_finish
+    printf '\nResult: uninstalled; user homes and backup destinations preserved\n' >&3
+    printf 'Diagnostics: %s\n' "$INSTALL_LOG" >&3
 }
 
 
@@ -803,6 +971,16 @@ rollback_failure() {
 
 main() {
     parse_args "$@"
+    printf 'Vaultkeep — %s\n\n' "$([[ "$MODE" == uninstall ]] && echo Uninstallation || echo Installation)" >&3
+    if [[ "$DRY_RUN" == 0 ]]; then
+        INSTALL_LOG=$(mktemp "${TMPDIR:-/tmp}/vaultkeep-install.XXXXXX.log")
+        printf 'Diagnostics: %s\n\n' "$INSTALL_LOG" >&3
+        trap 'report_failure $?' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
+        exec >"$INSTALL_LOG" 2>&1
+    fi
     case "$MODE" in
         install|update) install_or_update ;;
         uninstall) uninstall_vaultkeep ;;

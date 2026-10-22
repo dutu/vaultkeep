@@ -165,7 +165,7 @@ schedule:
 ```
 
 Validate the enabled schedule, then install its user timer explicitly. Before
-installation, validation reports `Timer: not installed` and `setup incomplete`;
+installation, validation reports `NOT INSTALLED` for `Timer` and `SETUP INCOMPLETE`;
 fix any prerequisite failures before continuing. Re-run validation after setup
 to check user timer health. See [validation results](../README.md#validate-a-job-configuration).
 

@@ -8,8 +8,9 @@ before `validate`, or before Trigger's `monitor` or `status`. The job YAML selec
 ## Installer candidate fails `--version`
 
 The installer checks the candidate in staging before activating it. If a command
-fails, its error output follows the `command failed` line. Read that diagnostic
-to identify the cause. A successful `vaultkeep --version` after a staging failure
+fails, the installer marks its stage `FAILED` and shows recent diagnostic context.
+The complete ordered subprocess output is retained in the private transcript named
+by `Diagnostics:`; inspect that file if the displayed context is insufficient. A successful `vaultkeep --version` after a staging failure
 checks the existing installation and does not mean the candidate passed.
 
 For `ModuleNotFoundError: No module named 'vaultkeep.cli.output'`, the source
@@ -27,11 +28,12 @@ installation and job validation succeed.
 
 ## Installer reports `inconclusive unit properties`
 
-Installer failures are written to stderr with an explicit `ERROR:` prefix, shown
-in red on terminals. Redirected logs stay plain text. Set `NO_COLOR=1` to disable
-color, or add `--no-color` after the install/update/uninstall mode; terminals with
-`TERM=dumb` also use plain text. Normal installer messages use `INFO:` and warnings
-use `WARNING:`. See [terminal output](../../README.md#terminal-output).
+The normal installer report names the failed stage and shows `Result: FAILED`.
+Detailed subprocess errors go to stderr and remain in the diagnostic transcript;
+those diagnostic messages may use severity prefixes. Colors highlight status values.
+Redirected output stays plain text. Set `NO_COLOR=1` or add `--no-color` after the
+install/update/uninstall mode to disable color; `TERM=dumb` also uses plain text.
+See [terminal output](../../README.md#terminal-output).
 
 Before the worker template has been installed, the user manager can report the
 worker instance as `not-found`, `inactive`, and `dead` without an `ExecStart`
@@ -75,8 +77,8 @@ Run the complete check as the application owner:
 vaultkeep --user --config /absolute/path/job.yaml validate
 ```
 
-Read each named check. A missing monitor is reported as `Monitor service: not installed`
-and `Result: setup incomplete`; correct any runtime failures and explicitly run
+Read each named check. A missing monitor has `Monitor service` set to `NOT INSTALLED`
+and `Result: SETUP INCOMPLETE`; correct any runtime failures and explicitly run
 `vaultkeep --user --config /absolute/path/job.yaml trigger install`, then validate again.
 For an installed monitor, disabled/inactive/failed systemd state, stale monitor updates,
 a configuration fingerprint mismatch, recovery blocks/review warnings, and recorded

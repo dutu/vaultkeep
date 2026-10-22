@@ -8,10 +8,9 @@ import json
 import logging
 import os
 import signal
-import sys
 from types import FrameType
 
-from vaultkeep.cli.output import Console
+from vaultkeep.cli.output import Console, configure_logging
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
 from vaultkeep.trigger.config import (
@@ -45,21 +44,13 @@ from vaultkeep.trigger.systemd import RealSystemdController
 _LOG = logging.getLogger("vaultkeep.trigger")
 
 
-def _configure_logging(level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
-
-
 def _load(args: argparse.Namespace) -> TriggerConfig:
     try:
         params = parse_runtime_parameters(args.param)
     except JobConfigurationError as error:
         raise SelectionError(str(error)) from error
     config = load_config(args.config, runtime_params=params)
-    _configure_logging(config.log_level)
+    configure_logging(config.log_level, no_color=args.no_color)
     return config
 
 
@@ -143,35 +134,41 @@ def _format_age(timestamp: str | None) -> str:
     return f"{(now - parsed).total_seconds():.0f}s ago"
 
 
-def _print_instance(state: InstanceState, blocked_reason: str | None = None) -> None:
-    print(f"instance {state.instance_id}")
+def _print_instance(
+    output: Console, state: InstanceState, blocked_reason: str | None = None
+) -> None:
+    rows = [("Armed", "yes" if state.armed else "no")]
     if blocked_reason is not None:
-        print(f"  dispatch blocked: {blocked_reason}")
-    print(f"  config fingerprint: {state.config_fingerprint or 'unknown'}")
-    print(f"  armed: {state.armed}")
+        rows.append(("Dispatch blocked", blocked_reason))
+    _LOG.debug("Instance %s config fingerprint: %s", state.instance_id, state.config_fingerprint)
     if state.last_observation is not None:
         obs = state.last_observation
         detail = f" ({obs.reason})" if obs.reason else ""
-        print(f"  observation: {obs.observation.value}{detail} [{_format_age(obs.observed_at)}]")
+        rows.append(
+            ("Observation", f"{obs.observation.value}{detail} [{_format_age(obs.observed_at)}]")
+        )
     else:
-        print("  observation: none recorded")
+        rows.append(("Observation", "none recorded"))
     if state.pending_request is not None:
-        print(f"  pending request: {state.pending_request.request_id}")
+        rows.append(("Pending request", state.pending_request.request_id))
     if state.active_attempt_id is not None:
-        print(f"  active attempt: {state.active_attempt_id}")
+        rows.append(("Active attempt", state.active_attempt_id))
     if state.pending_request is not None and state.active_attempt_id is not None:
-        print(
-            f"  blocked behind attempt {state.blocking_attempt_id} "
-            f"(waiting {_format_age(state.blocked_wait_started_at)})"
+        rows.append(
+            (
+                "Blocked behind attempt",
+                f"{state.blocking_attempt_id} "
+                f"(waiting {_format_age(state.blocked_wait_started_at)})",
+            )
         )
     if state.rejection is not None and state.rejection.consecutive:
-        print(f"  consecutive submission rejections: {state.rejection.consecutive}")
+        rows.append(("Submission rejections", str(state.rejection.consecutive)))
     if state.review_required:
-        print(f"  review required: {state.review_reason}")
+        rows.append(("Review required", state.review_reason or "yes"))
     if state.attempt_summaries:
-        latest = state.attempt_summaries[-1]
-        print(f"  last attempt outcome: {latest.get('outcome')}")
-    print(f"  last monitor update: {_format_age(state.last_monitor_update)}")
+        rows.append(("Last attempt outcome", str(state.attempt_summaries[-1].get("outcome"))))
+    rows.append(("Last monitor update", _format_age(state.last_monitor_update)))
+    output.fields(rows, section=f"Job {state.instance_id}")
 
 
 def _cmd_status_json(args: argparse.Namespace, config: TriggerConfig, store: StateStore) -> int:
@@ -214,9 +211,7 @@ def _cmd_status_json(args: argparse.Namespace, config: TriggerConfig, store: Sta
         elif state is not None and blocked is None:
             activity = "pending" if pending_request_id is not None else "idle"
     except (StateError, OSError) as error:
-        Console(no_color=args.no_color).print(
-            f"{type(error).__name__}: {error}", level="ERROR", file=sys.stderr
-        )
+        Console(no_color=args.no_color).issue(f"{type(error).__name__}: {error}")
         exit_code = EXIT_CONFIG
     print(
         json.dumps(
@@ -240,12 +235,28 @@ def cmd_status(args: argparse.Namespace) -> int:
     if args.json:
         return _cmd_status_json(args, config, store)
     runtime = _monitor_runtime_status(config.scope)
-    print(f"service: {service_name(config)}")
-    print(f"state root: {store.root}")
-    print(f"monitor: {runtime}")
+    output = Console(no_color=args.no_color)
+    _LOG.info("Monitor service unit: %s", service_name(config))
+    _LOG.info("Trigger state root: %s", store.root)
+    _LOG.debug("Monitor runtime probe: %s", runtime)
+    activity = (
+        "RUNNING"
+        if runtime.startswith("running")
+        else ("STOPPED" if runtime.startswith(("not running", "stopped")) else "unknown")
+    )
+    output.heading("Trigger status")
+    output.fields(
+        [
+            ("Job", config.job_id),
+            ("Trigger", "ENABLED" if config.enabled_instances() else "DISABLED"),
+            ("Monitor", activity),
+        ]
+    )
+    if activity == "unknown":
+        output.issue(f"Monitor runtime state is {runtime}.", warning=True)
     instance_ids = sorted(set(store.list_instance_ids()) | set(store.list_blocked_ids()))
     if not instance_ids:
-        print("state: no recorded instances")
+        output.fields([("State", "no recorded instances")], section="Activity")
         return EXIT_OK
     if args.instance_id is not None and args.instance_id not in instance_ids:
         raise SelectionError(f"unknown instance: {args.instance_id}")
@@ -257,26 +268,22 @@ def cmd_status(args: argparse.Namespace) -> int:
             blocked_reason = store.read_blocked(instance_id)
         except StateError as error:
             blocked_reason = str(error)
-            Console(no_color=args.no_color).print(
-                f"StateError: {error}", level="ERROR", file=sys.stderr
-            )
             exit_code = EXIT_CONFIG
         try:
             state = store.read_instance(instance_id)
         except StateError as error:
-            Console(no_color=args.no_color).print(
-                f"StateError: {error}", level="ERROR", file=sys.stderr
-            )
-            print(f"instance {instance_id}\n  state unavailable")
+            output.issue(error)
+            rows = [("State", "unavailable")]
             if blocked_reason is not None:
-                print(f"  dispatch blocked: {blocked_reason}")
+                rows.append(("Dispatch blocked", blocked_reason))
+            output.fields(rows, section=f"Job {instance_id}")
             exit_code = EXIT_CONFIG
             continue
         if state is None:
             if blocked_reason is not None:
-                print(f"instance {instance_id}\n  dispatch blocked: {blocked_reason}")
+                output.fields([("Dispatch blocked", blocked_reason)], section=f"Job {instance_id}")
             continue
-        _print_instance(state, blocked_reason)
+        _print_instance(output, state, blocked_reason)
     return exit_code
 
 
@@ -305,10 +312,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if not args.user_mode:
         parser.error("Trigger supports user mode only; specify --user before trigger")
     if os.geteuid() == 0:
-        Console(no_color=args.no_color).print(
-            "Trigger cannot run as root; run it without sudo as the application owner.",
-            level="ERROR",
-            file=sys.stderr,
+        Console(no_color=args.no_color).issue(
+            "Trigger cannot run as root; run it without sudo as the application owner."
         )
         return EXIT_CONFIG
     if command != "exec-worker" and args.config is None:
@@ -323,17 +328,25 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         config = _load(args)
         if command in ("install", "update"):
             validate_vaultkeep_executable(config)
-            runtime_preflight(config, RealSystemdController(), state_root(config.scope))
+            runtime_preflight(
+                config,
+                RealSystemdController(),
+                state_root(config.scope),
+                warning=lambda message: Console(no_color=args.no_color).issue(
+                    message, warning=True
+                ),
+            )
         manage_service(config, command)
-        Console(no_color=args.no_color).print(f"{command}: {service_name(config)}")
+        _LOG.info("Monitor service unit: %s", service_name(config))
+        Console(no_color=args.no_color).fields(
+            [
+                (f"Trigger {command}", "OK"),
+            ]
+        )
         return EXIT_OK
     except TriggerError as error:
-        Console(no_color=args.no_color).print(
-            f"{type(error).__name__}: {error}", level="ERROR", file=sys.stderr
-        )
+        Console(no_color=args.no_color).issue(f"{type(error).__name__}: {error}")
         return error.exit_code
     except OSError as error:
-        Console(no_color=args.no_color).print(
-            f"Trigger filesystem error: {error}", level="ERROR", file=sys.stderr
-        )
+        Console(no_color=args.no_color).issue(f"Trigger filesystem error: {error}")
         return EXIT_CONFIG
