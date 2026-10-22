@@ -1414,7 +1414,11 @@ session. To enable them:
 The backup notification updates when the observed phase changes, for example from
 “Creating and compressing archive” to “Verifying archive”, and shows the final result
 after the worker ends. Delivery uses the backup owner's desktop session; popup
-visibility and expiration depend on desktop settings. See [notifications and session
+visibility and expiration depend on desktop settings. The monitor automatically
+finds a usable notification bus for that account, including session-specific buses
+used by NoMachine desktops inside LXC. Manual environment imports are not required
+for a single accessible desktop session. Discovery uses `busctl`, supplied by systemd.
+See [notifications and session
 setup](docs/trigger/notifications.md) and
 [service lifetime](docs/trigger/service-operation.md#lifecycle-limits).
 

@@ -38,6 +38,8 @@ Other alerts, such as overdue and review-required warnings, remain separate.
 Replacement IDs and the last displayed phase are kept only in monitor memory. A
 monitor restart can create a new activity notification for an ongoing backup. An
 unavailable desktop, failed delivery, or user dismissal does not stop a backup.
+Changing the selected session bus clears replacement IDs so another desktop does
+not receive IDs allocated by the previous session.
 
 Activity uses the same attempt-specific progress records as `trigger status`. Invalid,
 stale, or mismatched records and unavailable processes do not establish a running
@@ -73,27 +75,41 @@ constants and are not configuration.
 
 ## Session bus
 
-A `systemd --user` service may lack `DBUS_SESSION_BUS_ADDRESS`. Delivery failure, a
-missing `notify-send`, an unavailable session, or a timeout is silently ignored by
-the current notifier. Nonzero delivery exits are also ignored; there is no delivery
-confirmation or notification-failure log.
-Deployment may explicitly import the variable from the graphical session before
-restarting the monitor:
+With `notify-send`, the monitor resolves the desktop notification bus automatically
+for each delivery. It first looks for a running notification service on the inherited
+`DBUS_SESSION_BUS_ADDRESS`, then the standard `$XDG_RUNTIME_DIR/bus`. If neither has
+a running notification service, it reads
+graphical process environments belonging to the backup account and selects a single
+usable notification bus. This supports session-specific `/tmp/dbus-...` buses, such
+as the NoMachine desktop inside an LXC container, without manual imports or a monitor
+restart after the desktop session changes.
 
-```sh
-systemctl --user import-environment DBUS_SESSION_BUS_ADDRESS
-vaultkeep --user --config /absolute/path/job.yaml trigger update
-```
+Discovery accepts local Unix sockets only, checks the bus peer's user identity, and
+uses systemd's `busctl` to verify that `org.freedesktop.Notifications` is running or
+available for activation. It ignores processes without `DISPLAY` or `WAYLAND_DISPLAY`,
+other users, unreadable process environments, and stale/unusable buses. If fallback
+discovery finds multiple usable desktop buses, it skips delivery and logs the
+ambiguity. A running service on the inherited or standard user bus takes precedence
+over discovery. If no running daemon is found, an activatable service can be used,
+preferring the inherited/standard user bus.
+No session address is saved to disk, no new bus is created, and the systemd manager's
+environment is not changed. Only the notification child receives the selected address;
+backup workers and custom notification commands retain their existing environments.
 
-Run the import from the graphical session where the variable is set, and apply the
-normal config validation gate before the restart. Importing it does not update an
-already running process. It changes the user manager's environment for subsequently
-started services. Trigger never imports the
-entire shell environment as a hidden validation side effect.
+Discovery and delivery share `timeout_ms`. Discovery takes at most half that budget,
+capped at two seconds, and individual probes are bounded. Both run in the notification
+worker and never block backup monitoring. Each new message resolves the session again;
+an unavailable desktop does not queue notifications for a later login.
 
-Notifications target the backup owner's desktop session. Root-mode services and
-manual or timer-driven backups do not gain phase notifications from this setting.
-It does not select another logged-in user or route alerts between multiple graphical
-sessions.
+Missing commands, unavailable or ambiguous sessions, delivery timeouts, invalid
+notification IDs, and nonzero exits are logged as warnings in the monitor journal.
+Command failure details are limited to one bounded line. Delivery remains best-effort;
+successful command execution does not confirm that the desktop displayed a popup.
+See [troubleshooting](troubleshooting.md#notifications-do-not-appear).
+
+Notifications target a desktop running as the backup owner in the same environment.
+For LXC, that means a desktop inside the container. Routing to the host or an SSH
+client's desktop requires separate integration. Root-mode services and manual or
+timer-driven backups do not gain phase notifications from this setting.
 
 [User guide](../../README.md#trigger-operation-and-health)

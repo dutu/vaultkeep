@@ -42,6 +42,13 @@ They skip when the tool is absent or a sandbox blocks its `SO_PASSCRED` socket
 operation. Run them outside that sandbox to validate the actual systemd parser;
 verification does not start services.
 
+The desktop-notification integration test creates disposable D-Bus servers and a
+notification daemon, sends real `Notify` calls, and replaces the simulated desktop
+session without restarting the notifier. It requires `dbus-daemon`, `busctl`, and
+optional system Python `dbus`/`gi` bindings (`python3-dbus` and `python3-gi` on Debian).
+It skips when those tools are unavailable or the sandbox blocks Unix sockets. It
+does not contact a real desktop or change systemd services or manager environments.
+
 Root pytest runs backup, Trigger, installer, and installed-worker contract tests in
 one process. Trigger fixtures live under `tests/trigger/` with explicit package
 imports, so test modules do not collide.

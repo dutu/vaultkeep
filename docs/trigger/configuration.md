@@ -115,7 +115,9 @@ invoked directly without a shell. Notifications are optional; delivery failure n
 changes the backup outcome. Enabling them includes observed backup phase updates.
 With `notify-send`, start, activity, and final result replace one notification per
 instance. Custom commands continue to receive title and body as two arguments and
-deliver separate messages. See [notifications and session setup](notifications.md).
+deliver separate messages. Native `notify-send` delivery automatically resolves the
+desktop bus using systemd's `busctl`; discovery and delivery share `timeout_ms`.
+See [notifications and session setup](notifications.md).
 
 Requests freeze matcher settings, job paths, parameters and environment, rather than
 job contents or executable bytes. Review live file replacements with the same care as
