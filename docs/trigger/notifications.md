@@ -14,7 +14,8 @@ settings. Notifications remain disabled unless `trigger.notifications.enabled` i
   retry creates a new attempt but does **not** repeat the start alert.
 - Current backup activity, including preparation, creating/compressing the archive,
   verification, and finishing while awaiting the result. Updates follow observed
-  changes during normal monitor polling. An unchanged phase is resent every ten
+  changes during normal monitor polling. The first notification for each phase omits
+  elapsed time. An unchanged phase is resent every ten
   seconds with its elapsed time, for example `Checking existing backups (20s)`.
   The timer resets when the phase changes. Updates occur on the first monitor poll
   after the interval; short phases between polls may not be displayed.

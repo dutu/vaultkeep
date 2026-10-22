@@ -662,11 +662,13 @@ class Monitor:
             self._last_activity[state.instance_id] = previous
         elif monotonic_now - previous.notified_at < _ACTIVITY_UPDATE_SECONDS:
             return
+        else:
+            elapsed = max(0, int(monotonic_now - previous.started_at))
+            phase += f" ({elapsed}s)"
         previous.notified_at = monotonic_now
-        elapsed = max(0, int(monotonic_now - previous.started_at))
         self.notifier.notify(
             f"VaultKeep Trigger: backup {activity}",
-            f"instance {state.instance_id}: {phase} ({elapsed}s)",
+            f"instance {state.instance_id}: {phase}",
             key=state.instance_id,
         )
 

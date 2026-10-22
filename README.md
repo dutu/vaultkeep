@@ -1414,6 +1414,7 @@ session. To enable them:
 The backup notification updates when the observed phase changes, for example from
 “Creating and compressing archive” to “Verifying archive”, and refreshes every ten
 seconds with the current phase's elapsed time, such as `Checking existing backups (20s)`.
+The first notification for each phase omits elapsed time.
 After the worker ends, the final result includes the local completion time and remains
 until you dismiss it. Changes to the `Current activity` / `Application` state also
 produce separate notifications after the first observation establishes a baseline.
