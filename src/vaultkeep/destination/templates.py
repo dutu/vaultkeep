@@ -15,6 +15,7 @@ from vaultkeep.errors import DestinationTemplateError
 
 _FORMATTER = string.Formatter()
 _BACKUP_ID_LENGTH = 32
+STAGING_DIRECTORY_PREFIX = "~$.partial-vaultkeep-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +114,7 @@ def allocate_job_backup_paths(
     while final_directory.exists() or final_directory.is_symlink():
         final_directory = root / f"{base_name}-{number}"
         number += 1
-    staging_directory = root / f".partial-vaultkeep-{job_id}-{backup_id}"
+    staging_directory = root / f"{STAGING_DIRECTORY_PREFIX}{job_id}-{backup_id}"
     archive_name = f"{base_name}.{archive_format}"
     return BackupPaths(
         root=root,
@@ -129,7 +130,7 @@ def allocate_job_backup_paths(
 
 
 def create_staging_directory(paths: BackupPaths) -> None:
-    """Create the private hidden staging directory without overwriting anything."""
+    """Create the private staging directory without overwriting anything."""
     if paths.final_directory.exists() or paths.final_directory.is_symlink():
         raise DestinationTemplateError(
             f"Final backup directory already exists: {paths.final_directory}"

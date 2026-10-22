@@ -895,8 +895,12 @@ Possible successful results:
 
 An unchanged run does not create an archive or apply retention.
 
+Temporary backups use `~$.partial-vaultkeep-<job>-<backup-id>` directory names.
+On destinations managed by synchronization software, verify that temporary
+directories are excluded and completed backups are uploaded.
+
 If a run fails before the final directory rename, Vaultkeep removes that attempt's
-`.partial-vaultkeep-*` directory. If cleanup also fails, a warning identifies the
+`~$.partial-vaultkeep-*` directory. If cleanup also fails, a warning identifies the
 remaining path and the original backup error is still reported. Committed backups
 are preserved if a later operation fails. An abrupt termination, such as a power
 loss or forced kill, can leave partial directories for manual cleanup once no

@@ -12,6 +12,7 @@ from pathlib import Path
 from vaultkeep.archive.checksums import verify_checksum_sidecar
 from vaultkeep.config.models import JobConfig
 from vaultkeep.destination.manifest import BackupManifest, load_manifest
+from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
 from vaultkeep.errors import DestinationDiscoveryError, ManifestError
 from vaultkeep.state.models import BackupStateRecord
 
@@ -86,7 +87,7 @@ def discover_backups(
     backups: list[DiscoveredBackup] = []
     malformed: list[MalformedDestinationEntry] = []
     for child in children:
-        if child.name.startswith("."):
+        if child.name.startswith((".", STAGING_DIRECTORY_PREFIX)):
             continue
         match = matcher.fullmatch(child.name)
         if match is None:

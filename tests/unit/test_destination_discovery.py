@@ -74,6 +74,21 @@ def test_discovery_returns_valid_records_and_ignores_unrelated(
     assert discovered.state_records[0].job_id == "app"
 
 
+def test_discovery_ignores_staging_even_when_it_matches_the_final_template(
+    tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    valid_config["destination"]["name_template"] = "{timestamp_utc}"
+    config = _config(tmp_path, valid_config)
+    committed = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    for name in ("~$.partial-vaultkeep-app-orphan", ".partial-vaultkeep-app-orphan"):
+        (tmp_path / name).mkdir()
+
+    discovered = discover_backups(config)
+
+    assert [backup.directory for backup in discovered.backups] == [committed]
+    assert discovered.malformed == ()
+
+
 @pytest.mark.parametrize(
     "template",
     [
@@ -125,6 +140,7 @@ def test_allocation_skips_files_directories_and_dangling_symlinks(
     )
 
     assert paths.final_directory == tmp_path / f"{base_name}-4"
+    assert paths.staging_directory == tmp_path / f"~$.partial-vaultkeep-app-{'a' * 32}"
     assert (tmp_path / base_name).read_bytes() == b"preserve"
     assert (tmp_path / f"{base_name}-2").is_dir()
     assert (tmp_path / f"{base_name}-3").is_symlink()

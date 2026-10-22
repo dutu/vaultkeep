@@ -111,7 +111,7 @@ def test_destination_probe_never_removes_an_existing_rename_target(
 
 
 def _staging(tmp_path: Path) -> Path:
-    staging = tmp_path / ".partial-vaultkeep-app-abc"
+    staging = tmp_path / "~$.partial-vaultkeep-app-abc"
     staging.mkdir()
     (staging / "archive.tar.zst").write_bytes(b"archive")
     (staging / "archive.tar.zst.sha256").write_text("checksum", encoding="utf-8")
@@ -160,8 +160,9 @@ def test_finalize_rejects_nonregular_staging_content(tmp_path: Path) -> None:
         finalize_backup_directory(staging, tmp_path / "final")
 
 
-def test_finalize_requires_hidden_partial_prefix(tmp_path: Path) -> None:
-    staging = tmp_path / "ordinary"
+@pytest.mark.parametrize("name", ["ordinary", ".partial-vaultkeep-app-abc"])
+def test_finalize_requires_staging_prefix(tmp_path: Path, name: str) -> None:
+    staging = tmp_path / name
     staging.mkdir()
 
     with pytest.raises(DestinationFinalizeError, match="prefix"):

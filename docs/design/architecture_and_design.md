@@ -894,7 +894,7 @@ The backup manifest is authoritative for backup identity and timestamps. Discove
 Discovery rules:
 
 1. list only immediate children of the destination root;
-2. ignore hidden temporary entries;
+2. ignore dot-prefixed entries and temporary staging directories;
 3. strictly match directory names against the configured base-name template with an optional numeric collision suffix or legacy backup-ID suffix;
 4. ignore all nonmatching entries;
 5. require exactly one regular JSON manifest, derive its base name, and validate the base name and directory layout;
@@ -914,7 +914,7 @@ Temporary entries must never match final templates.
 Example temporary directory:
 
 ```text
-.partial-vaultkeep-myapp-550e8400e29b41d4a716446655440000/
+~$.partial-vaultkeep-myapp-550e8400e29b41d4a716446655440000/
 ```
 
 Backup creation:
@@ -1121,7 +1121,7 @@ A finer tier's configured count is a maximum. The tier retains fewer recovery po
 
 Only complete, valid backups recognized through the configured naming rule and manifest participate in retention.
 
-Vaultkeep ignores unrelated and hidden temporary destination entries. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `list` and `prune --dry-run` still report the complete state.
+Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `list` and `prune --dry-run` still report the complete state.
 
 A backup is eligible for deletion only when:
 

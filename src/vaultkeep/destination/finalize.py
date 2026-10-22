@@ -10,6 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
 from vaultkeep.errors import (
     DestinationCommitDurabilityError,
     DestinationError,
@@ -57,9 +58,9 @@ def finalize_backup_directory(staging_path: Path, final_path: Path) -> None:
         raise DestinationFinalizeError(
             "Staging and final backup directories must share one destination parent"
         )
-    if not staging_path.name.startswith(".partial-vaultkeep-"):
+    if not staging_path.name.startswith(STAGING_DIRECTORY_PREFIX):
         raise DestinationFinalizeError(
-            "Staging directory name must use the hidden .partial-vaultkeep- prefix"
+            f"Staging directory name must use the {STAGING_DIRECTORY_PREFIX} prefix"
         )
     _validate_staging_directory(staging_path)
     _flush_staging_files(staging_path)

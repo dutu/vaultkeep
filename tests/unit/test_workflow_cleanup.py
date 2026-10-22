@@ -95,7 +95,7 @@ def test_precommit_failure_removes_only_current_partial_and_preserves_previous_b
             rename = finalize_module._rename_noreplace
 
             def deny_backup_rename(source: Path, target: Path) -> None:
-                if source.name.startswith(".partial-vaultkeep-"):
+                if source.name.startswith("~$.partial-vaultkeep-"):
                     raise PermissionError(errno.EACCES, "rename denied", str(target))
                 rename(source, target)
 
@@ -129,7 +129,7 @@ def test_cleanup_failure_reports_remaining_path_and_preserves_original_error(
 
     assert caught.value is original_error
     (partial,) = (job.parent / "backups").iterdir()
-    assert partial.name.startswith(".partial-vaultkeep-")
+    assert partial.name.startswith("~$.partial-vaultkeep-")
     assert f"Cannot remove partial backup directory {partial}" in caplog.text
     assert "cleanup denied" in caplog.text
 
@@ -191,7 +191,7 @@ def test_parent_flush_failure_preserves_committed_backup(
         _run(job)
 
     (backup,) = destination.iterdir()
-    assert not backup.name.startswith(".partial-")
+    assert not backup.name.startswith("~$.partial-")
     assert len(list(backup.iterdir())) == 3
     assert workflow.verify_backups(job).backups == 1
 
@@ -206,5 +206,5 @@ def test_failure_after_commit_preserves_backup(job: Path, monkeypatch: pytest.Mo
         _run(job)
 
     (backup,) = (job.parent / "backups").iterdir()
-    assert not backup.name.startswith(".partial-")
+    assert not backup.name.startswith("~$.partial-")
     assert workflow.verify_backups(job).backups == 1
