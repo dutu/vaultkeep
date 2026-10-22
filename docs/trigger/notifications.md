@@ -28,7 +28,9 @@ settings. Notifications remain disabled unless `trigger.notifications.enabled` i
   result_unknown, failure, or blocked. A receipt arriving earlier is recorded without
   prematurely announcing completion. The result includes the completion date and time
   in the monitor's local timezone. For an unknown outcome without a receipt, it shows
-  the time the monitor established that outcome.
+  the time the monitor established that outcome. The `review required` suffix applies
+  only to warnings about that attempt. Older unresolved warnings remain in retained
+  records and debug status without qualifying later results.
 - `review_required`, when an observation gap or restart overlapped execution.
 - `outcome_unknown`, when a worker is absent with no completion evidence.
 - An overdue notification when an attempt exceeds its advisory deadline.

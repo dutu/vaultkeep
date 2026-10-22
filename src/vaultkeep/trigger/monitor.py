@@ -896,7 +896,7 @@ class Monitor:
             body = f"integration error: {receipt.integration_error}"
         else:
             body = f"failed (exit {receipt.exit_code}, signal {receipt.signal})"
-        if state.active_review_required or state.review_required:
+        if state.active_review_required:
             body += "; review required"
         self._notify_once(
             state,

@@ -553,8 +553,26 @@ def test_application_notification_reports_unknown_and_recovery(store, monkeypatc
         (AttemptOutcome.BACKUP_FAILED, "failed (exit 1, signal None)"),
     ],
 )
-def test_receipt_takes_precedence_over_phase_notifications(live_activity, store, outcome, body):
+@pytest.mark.parametrize("historical_review", [False, True])
+def test_receipt_takes_precedence_over_phase_notifications(
+    live_activity, store, outcome, body, historical_review
+):
     monitor, controller, notifier, request, reporter = live_activity
+    if historical_review:
+        state = store.read_instance(request.instance_id)
+        state.review_required = True
+        state.review_reason = (
+            "attempt earlier-attempt: monitoring gap overlapped possible execution"
+        )
+        state.attempt_summaries.append(
+            {
+                "attempt_id": "earlier-attempt",
+                "request_id": "earlier-request",
+                "outcome": "created",
+                "review_required": True,
+            }
+        )
+        store.write_instance(state)
     reporter.report("Verifying archive")
     store.write_receipt(
         Receipt(
@@ -582,6 +600,13 @@ def test_receipt_takes_precedence_over_phase_notifications(live_activity, store,
         f"instance electrum-main: {body}",
     )
     assert notifier.options[-1] == (request.instance_id, True)
+    state = store.read_instance(request.instance_id)
+    assert state.active_attempt_id is None
+    assert not state.attempt_summaries[-1]["review_required"]
+    assert state.review_required is historical_review
+    if historical_review:
+        assert state.attempt_summaries[0]["review_required"]
+        assert state.review_reason.startswith("attempt earlier-attempt:")
 
 
 @pytest.mark.parametrize(
