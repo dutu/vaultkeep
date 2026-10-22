@@ -108,6 +108,41 @@ def test_individual_archives_restore_and_only_changed_wallets_are_backed_up(file
     assert _run(file_job).result == "unchanged"
 
 
+def test_numbered_directories_and_legacy_backups_share_manageable_histories(file_job: Path) -> None:
+    document = json.loads(file_job.read_text())
+    document["destination"]["name_template"] = "backup-{job}-{timestamp_utc:%Y%m%d}"
+    document["retention"]["hourly"] = 24
+    file_job.write_text(json.dumps(document))
+    first = _run(file_job)
+    original = first.files[0].archive_path
+    assert original is not None
+    assert original.parent.name == "backup-app-20261021"
+
+    workflow.datetime.current += timedelta(hours=1)
+    (file_job.parent / "wallets" / "personal wallet").write_text("changed wallet")
+    second = _run(file_job)
+    numbered = second.files[0].archive_path
+    assert numbered is not None
+    assert numbered.parent.name == "backup-app-20261021-2"
+    assert numbered.name == original.name
+    assert original.is_file()
+    assert workflow.verify_backups(file_job).backups == 3
+
+    manifest = json.loads((original.parent / f"{original.parent.name}.json").read_text())
+    legacy = original.parent.with_name(f"{original.parent.name}-{manifest['backup_id']}")
+    original.parent.rename(legacy)
+    shutil.rmtree(file_job.parent / "state")
+    assert _run(file_job).result == "unchanged"
+    assert workflow.verify_backups(file_job).backups == 3
+    assert workflow.list_backups(file_job)[0].backups == 3
+
+    document["retention"]["hourly"] = 1
+    file_job.write_text(json.dumps(document))
+    assert workflow.prune_backups(file_job, dry_run=False).removed == 1
+    assert not legacy.exists()
+    assert numbered.is_file()
+
+
 def test_deleted_renamed_and_excluded_wallet_histories_remain_manageable(file_job: Path) -> None:
     first = _run(file_job)
     source = file_job.parent / "wallets"

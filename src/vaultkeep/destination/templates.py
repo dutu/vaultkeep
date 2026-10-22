@@ -108,7 +108,11 @@ def allocate_job_backup_paths(
         archive_format=archive_format,
         runtime_params=runtime_params,
     )
-    final_directory = root / f"{base_name}-{backup_id}"
+    final_directory = root / base_name
+    number = 2
+    while final_directory.exists() or final_directory.is_symlink():
+        final_directory = root / f"{base_name}-{number}"
+        number += 1
     staging_directory = root / f".partial-vaultkeep-{job_id}-{backup_id}"
     archive_name = f"{base_name}.{archive_format}"
     return BackupPaths(

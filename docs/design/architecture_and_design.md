@@ -808,11 +808,11 @@ Example result:
 
 ```text
 /mnt/backups/myapp/
-├── backup-myapp-20260723T090000Z-550e8400e29b41d4a716446655440000/
+├── backup-myapp-20260723T090000Z/
 │   ├── backup-myapp-20260723T090000Z.tar.zst
 │   ├── backup-myapp-20260723T090000Z.tar.zst.sha256
 │   └── backup-myapp-20260723T090000Z.json
-├── backup-myapp-20260723T130000Z-6ba7b8109dad41d180b400c04fd430c8/
+├── backup-myapp-20260723T130000Z/
 │   ├── backup-myapp-20260723T130000Z.tar.zst
 │   ├── backup-myapp-20260723T130000Z.tar.zst.sha256
 │   └── backup-myapp-20260723T130000Z.json
@@ -821,16 +821,16 @@ Example result:
 
 Unrelated entries must be ignored.
 
-Vaultkeep renders `destination.name_template` once for each new backup and calls the result the **backup base name**. The backup base name is the common artifact stem before Vaultkeep appends the backup ID to the directory name. It derives every final name:
+Vaultkeep renders `destination.name_template` once for each new backup and calls the result the **backup base name**. The backup base name is the common artifact stem and the preferred directory name. It derives every final name:
 
 ```text
-directory: <backup-base-name>-<backup_id>
+directory: <backup-base-name>
 archive:   <backup-base-name>.<archive-format>
 checksum:  <backup-base-name>.<archive-format>.sha256
 manifest:  <backup-base-name>.json
 ```
 
-`archive-format` is `tar.zst` or `tar.7z`. The backup ID appears only in the directory name because the directory already provides a unique namespace for its files.
+`archive-format` is `tar.zst` or `tar.7z`. The directory provides a separate namespace for its files. Only directory names receive a numeric suffix when the preferred name is occupied; artifact filenames keep the original base name.
 
 ## 11.2 Template fields
 
@@ -885,9 +885,9 @@ Templates must:
 - include a timestamp;
 - not contain `{backup_id}`.
 
-Vaultkeep appends `-{backup_id}` to the rendered backup base name. The ID prevents directory-name collisions when two backups receive the same second-resolution timestamp, the system clock moves backward, or existing backup directories are copied into the destination. It also binds the final directory name to the manifest identity. Vaultkeep never overwrites an existing final directory and never resolves a collision by appending an inferred numeric suffix.
+Vaultkeep uses the rendered backup base name as the preferred directory name. When a path already occupies that name, allocation selects the first available suffix starting at `-2`, then `-3`, and so on. Files, directories, and dangling symbolic links all occupy names. Vaultkeep never overwrites an existing path. A collision after allocation fails safely at staging creation or the atomic no-overwrite rename; a later run selects an available name.
 
-The backup manifest is authoritative for backup identity and timestamps. Discovery validates that a directory name matches the configured base-name template plus the fixed backup-ID suffix; it does not reconstruct authoritative metadata from the name.
+The backup manifest is authoritative for backup identity and timestamps. Discovery accepts the configured base-name template with no suffix, a numeric collision suffix, or a legacy backup-ID suffix. The manifest filename identifies the base name without ambiguously stripping numeric template fields. Discovery validates the base name against the template and the directory against that base name. Legacy backup-ID suffixes must match the manifest ID. Discovery does not reconstruct authoritative metadata from directory names.
 
 ## 11.4 Destination discovery
 
@@ -895,9 +895,9 @@ Discovery rules:
 
 1. list only immediate children of the destination root;
 2. ignore hidden temporary entries;
-3. strictly match directory names against the configured base-name template plus `-{backup_id}`;
+3. strictly match directory names against the configured base-name template with an optional numeric collision suffix or legacy backup-ID suffix;
 4. ignore all nonmatching entries;
-5. derive the backup base name and expected `<backup-base-name>.json` manifest path;
+5. require exactly one regular JSON manifest, derive its base name, and validate the base name and directory layout;
 6. validate the manifest and derive the archive and checksum names from its archive format;
 7. return normalized backup records;
 8. warn about malformed matching entries;
@@ -929,7 +929,7 @@ Backup creation:
 
 The final directory rename is the backup commit point. Before this point, failures remove partial artifacts and leave the previous successful state unchanged. After this point, the backup is committed and must be reported as created even if retention, local-state persistence, or later operations fail.
 
-Temporary and final directories are on the same destination filesystem. Finalization must never overwrite an existing path. Each manifest contains a collision-resistant backup ID, and every final directory name includes that backup ID.
+Temporary and final directories are on the same destination filesystem. Finalization must never overwrite an existing path. Each manifest contains a collision-resistant backup ID; new final directory names use the template base name with a numeric suffix only when needed.
 
 After writing files, Vaultkeep flushes file data and directory metadata where the destination filesystem supports it. The documented durability guarantee for CIFS and NFS is limited to behavior verified by the integration-test matrix.
 
@@ -973,7 +973,7 @@ The manifest must not contain secrets.
 
 The manifest is immutable after the backup directory commit point. It records facts about archive creation and does not contain `unchanged_at` or other later run-history fields. An unchanged run must not rewrite a committed manifest.
 
-`backup_id` is a lowercase 32-character UUIDv4 hexadecimal value generated once after change detection and reused in the temporary directory, final directory, manifest, local state, and operational output.
+`backup_id` is a lowercase 32-character UUIDv4 hexadecimal value generated once after change detection and reused in the temporary directory, manifest, local state, and operational output.
 
 ## 13.2 Local state
 
@@ -2141,7 +2141,7 @@ destination:
   root: /mnt/backups/example
 
   # Vaultkeep derives the directory, archive, checksum, and manifest names
-  # from this shared base. The backup ID is appended only to the directory.
+  # from this shared base. Only directory names receive numeric suffixes on collision.
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 
   # Optional marker that must exist below destination.root.
@@ -2664,7 +2664,7 @@ The v1 decisions are closed:
 1. YAML is parsed as YAML 1.2 with `ruamel.yaml` safe, pure-Python loading and validated with strict Pydantic v2 models.
 2. Exclusions use the documented GitWildMatch subset without negation.
 3. TAR preserves modification times, while the source digest excludes modification time. ACLs, extended attributes, and SELinux attributes are excluded.
-4. Every backup uses its own backup-ID-suffixed directory; its archive, checksum, and JSON manifest share the rendered base name without the backup ID.
+4. Every backup uses its own directory named from the rendered base name, with a numeric suffix starting at `-2` when that name is occupied; its archive, checksum, and JSON manifest share the unchanged base name.
 5. V1 lifecycle hooks are `before_check`, `before_archive`, `after_archive`, `on_success`, `on_failure`, and `on_unchanged`; they use shell command strings executed by `/bin/sh -c`, a controlled environment, bounded output, timeouts, and fixed failure semantics.
 6. A matching but malformed backup blocks destructive pruning and is never automatically deleted.
 7. A source change during hashing or archiving fails immediately without an automatic retry.

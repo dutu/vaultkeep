@@ -145,13 +145,13 @@ For a normal run, Vaultkeep:
 Each final backup directory contains:
 
 ```text
-backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/
+backup-app-20260723T090000Z/
 ├── backup-app-20260723T090000Z.tar.zst
 ├── backup-app-20260723T090000Z.tar.zst.sha256
 └── backup-app-20260723T090000Z.json
 ```
 
-`destination.name_template` produces the shared base name. Vaultkeep appends the backup ID only to the directory name and derives the archive, checksum, and manifest names from the unchanged base name. The archive is directly readable with standard tools. Vaultkeep does not use a proprietary repository format or incremental archive chain.
+`destination.name_template` produces the shared base name. Vaultkeep uses this name for the directory and derives the archive, checksum, and manifest names from it. If the directory name is already occupied, Vaultkeep appends `-2`, `-3`, and so on only to the directory name. The archive is directly readable with standard tools. Vaultkeep does not use a proprietary repository format or incremental archive chain.
 
 ### Important boundaries
 
@@ -451,10 +451,10 @@ every selected wallet.
 
 ### Destination name templates
 
-`destination.name_template` controls the backup base name used for each new backup. The backup base name is the rendered template value before Vaultkeep appends the backup ID. Vaultkeep renders the template once after source change detection and derives the final artifact names from that rendered base name:
+`destination.name_template` controls the backup base name used for each new backup. The backup base name is the rendered template value. Vaultkeep renders the template once after source change detection and derives the final artifact names from that rendered base name:
 
 ```text
-directory: <backup-base-name>-<backup_id>
+directory: <backup-base-name>
 archive:   <backup-base-name>.<archive-format>
 checksum:  <backup-base-name>.<archive-format>.sha256
 manifest:  <backup-base-name>.json
@@ -489,7 +489,9 @@ destination:
 
 Template output must be a single safe path name below `destination.root`: it cannot be empty, contain `/`, contain `\`, contain `..`, contain null or control characters, or escape the destination root. Template conversions such as `{job!r}`, nested fields, missing runtime parameters, and unsupported format specifiers are rejected.
 
-Do not include `{backup_id}` in `destination.name_template`. Vaultkeep generates a lowercase 32-character backup ID and appends it only to the final directory name. Hook `command` values are not templates and do not expand `{job}`-style placeholders.
+If a path with the rendered directory name already exists, Vaultkeep uses the first available numbered name: `<backup-base-name>-2`, `<backup-base-name>-3`, and so on. The archive, checksum, and manifest filenames keep the original base name. Existing files, directories, and symbolic links are never overwritten. If a selected path becomes occupied before finalization, the run fails safely; a later run selects an available name. Existing backups with backup-ID directory suffixes remain supported by listing, verification, state reconstruction, and retention.
+
+Do not include `{backup_id}` in `destination.name_template`. Vaultkeep keeps its randomly generated backup ID in the manifest and local state. Hook `command` values are not templates and do not expand `{job}`-style placeholders.
 
 ### Runtime template parameters
 
@@ -1233,7 +1235,7 @@ Restore into an empty staging directory:
 ```bash
 mkdir -p /restore/staging
 zstd --decompress --stdout \
-  /path/to/backups/app/backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/backup-app-20260723T090000Z.tar.zst \
+  /path/to/backups/app/backup-app-20260723T090000Z/backup-app-20260723T090000Z.tar.zst \
   | tar --extract --file=- --directory=/restore/staging
 ```
 
@@ -1246,7 +1248,7 @@ Extract the inner TAR; 7-Zip prompts for the password:
 ```bash
 mkdir -p /restore/staging /restore/work
 cd /restore/work
-7z x /path/to/backups/app/backup-app-20260723T090000Z-550e8400e29b41d4a716446655440000/backup-app-20260723T090000Z.tar.7z
+7z x /path/to/backups/app/backup-app-20260723T090000Z/backup-app-20260723T090000Z.tar.7z
 tar --extract --file=app.tar --directory=/restore/staging
 ```
 

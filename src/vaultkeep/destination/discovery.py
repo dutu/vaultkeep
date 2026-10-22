@@ -17,6 +17,7 @@ from vaultkeep.state.models import BackupStateRecord
 
 _FORMATTER = string.Formatter()
 _BACKUP_ID = r"[0-9a-f]{32}"
+_COLLISION_NUMBER = r"(?:[2-9]|[1-9][0-9]+)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,12 +71,13 @@ def discover_backups(
 ) -> DiscoveryResult:
     """Return valid configured-job backups and matching malformed entries."""
     root = Path(config.destination.root)
-    matcher = _directory_matcher(
+    base_matcher = _base_name_matcher(
         config.destination.name_template,
         config.job.id,
         config.archive.format,
         runtime_params=runtime_params,
     )
+    matcher = re.compile(rf"(?:{base_matcher.pattern})(?:-(?:{_BACKUP_ID}|{_COLLISION_NUMBER}))?")
     try:
         children = tuple(root.iterdir())
     except OSError as error:
@@ -90,13 +92,15 @@ def discover_backups(
         if match is None:
             continue
         try:
-            backups.append(_validate_backup_directory(child, match.group("base"), config))
+            backups.append(_validate_backup_directory(child, base_matcher, config))
         except (DestinationDiscoveryError, ManifestError) as error:
             malformed.append(MalformedDestinationEntry(child, str(error)))
     return DiscoveryResult(tuple(backups), tuple(malformed))
 
 
-def _validate_backup_directory(path: Path, base_name: str, config: JobConfig) -> DiscoveredBackup:
+def _validate_backup_directory(
+    path: Path, base_matcher: re.Pattern[str], config: JobConfig
+) -> DiscoveredBackup:
     try:
         directory_status = path.lstat()
     except OSError as error:
@@ -107,10 +111,30 @@ def _validate_backup_directory(path: Path, base_name: str, config: JobConfig) ->
         raise DestinationDiscoveryError(f"Matching destination entry is not a directory: {path}")
     if path.is_symlink():
         raise DestinationDiscoveryError(f"Matching destination entry is a symbolic link: {path}")
-    manifest_path = path / f"{base_name}.json"
+    try:
+        manifests = tuple(child for child in path.iterdir() if child.suffix == ".json")
+    except OSError as error:
+        raise DestinationDiscoveryError(
+            f"Cannot inspect backup directory {path}: {error}"
+        ) from error
+    if len(manifests) != 1:
+        raise DestinationDiscoveryError(
+            f"Backup directory must contain exactly one manifest: {path}"
+        )
+    manifest_path = manifests[0]
+    _require_regular_file(manifest_path)
+    base_name = manifest_path.stem
+    if base_matcher.fullmatch(base_name) is None:
+        raise DestinationDiscoveryError(
+            f"Manifest name does not match destination template: {path}"
+        )
     manifest = load_manifest(manifest_path)
-    backup_id = path.name.removesuffix("").rsplit("-", 1)[-1]
-    if manifest.job != config.job.id or manifest.backup_id != backup_id:
+    suffix = path.name.removeprefix(base_name)
+    if re.fullmatch(rf"-{_BACKUP_ID}", suffix):
+        valid_name = suffix == f"-{manifest.backup_id}"
+    else:
+        valid_name = not suffix or re.fullmatch(rf"-{_COLLISION_NUMBER}", suffix) is not None
+    if not path.name.startswith(base_name) or not valid_name or manifest.job != config.job.id:
         raise DestinationDiscoveryError(f"Manifest identity does not match directory name: {path}")
     if manifest.archive_format != config.archive.format:
         raise DestinationDiscoveryError(
@@ -158,14 +182,14 @@ def _require_exact_artifacts(directory: Path, expected: set[str]) -> None:
         )
 
 
-def _directory_matcher(
+def _base_name_matcher(
     template: str,
     job_id: str,
     archive_format: str,
     *,
     runtime_params: Mapping[str, str] | None = None,
 ) -> re.Pattern[str]:
-    """Build a conservative matcher for the configured name template and ID suffix."""
+    """Build a conservative matcher for the configured backup base-name template."""
     fragments: list[str] = []
     parameters = dict(runtime_params or {})
     try:
@@ -197,7 +221,7 @@ def _directory_matcher(
             fragments.append(r"[^/\\\x00]+?")
         else:
             raise DestinationDiscoveryError(f"Unsupported destination template field: {field}")
-    return re.compile(rf"(?P<base>{''.join(fragments)})-(?P<backup_id>{_BACKUP_ID})")
+    return re.compile("".join(fragments))
 
 
 def _source_hash_precision(format_spec: str) -> int:
