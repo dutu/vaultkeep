@@ -13,6 +13,7 @@ from pathlib import Path
 from types import TracebackType
 
 from vaultkeep.progress import STALE_SECONDS, read_progress
+from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.config import INSTANCE_ID_PATTERN, InstanceConfig, TriggerConfig
 from vaultkeep.trigger.detection import DetectionResult, detect
 from vaultkeep.trigger.environment import build_child_environment
@@ -50,6 +51,7 @@ from vaultkeep.trigger.version import (
 from vaultkeep.version import installed_version
 
 _LOG = logging.getLogger("vaultkeep.trigger.monitor")
+_ACTIVITY_UPDATE_SECONDS = 10
 
 
 def unit_name_for(attempt_id: str, scope: str | None = None) -> str:
@@ -126,6 +128,13 @@ class _Budget:
     next_due: dict[str, float]
 
 
+@dataclass(slots=True)
+class _Activity:
+    identity: tuple[str, str, str, str | None]
+    started_at: float
+    notified_at: float
+
+
 class Monitor:
     """Own instance lifecycle state and dispatch workers."""
 
@@ -151,7 +160,9 @@ class Monitor:
         self._states: dict[str, InstanceState] = {}
         self._preflight_version: str | None = None
         self._last_poll: dict[str, float] = {}
-        self._last_activity: dict[str, tuple[str, str, str]] = {}
+        self._last_activity: dict[str, _Activity] = {}
+        self._last_application: dict[str, str] = {}
+        self._started_at = utc_now()
         self._blocked_instances: dict[str, str] = {}
         for instance_id in self.store.list_blocked_ids():
             try:
@@ -349,6 +360,7 @@ class Monitor:
         )
         for event in events:
             self._log_event(instance.id, event)
+        self._notify_application(instance, state)
 
         # A restart or monitoring gap during an active attempt is review_required.
         if (
@@ -367,6 +379,26 @@ class Monitor:
             vaultkeep=str(self.config.vaultkeep),
             environment=build_child_environment(),
             preflight_version=self._preflight_version,
+        )
+
+    def _notify_application(self, instance: InstanceConfig, state: InstanceState) -> None:
+        if not self.config.notifications.enabled:
+            return
+        application, _detail = application_status(
+            state,
+            self.store,
+            reliable=True,
+            poll_seconds=max(instance.poll_seconds, self.config.poll_seconds),
+            monitor_started_at=self._started_at,
+        )
+        previous = self._last_application.get(instance.id)
+        self._last_application[instance.id] = application
+        # The first fresh observation establishes the baseline after startup.
+        if previous is None or previous == application:
+            return
+        self.notifier.notify(
+            "VaultKeep Trigger: application state changed",
+            f"instance {instance.id}: Application {previous} → {application}",
         )
 
     @staticmethod
@@ -572,11 +604,15 @@ class Monitor:
         *,
         activity: bool = False,
         finished: bool = False,
+        ended_at: str | None = None,
     ) -> None:
         if marker in state.notification_markers:
             return
         state.notification_markers.append(marker)
         self._persist(state)
+        if finished:
+            local_time = (parse_utc(ended_at) or _now_dt()).astimezone()
+            body += f"\n{local_time:%Y-%m-%d %H:%M:%S %Z} (local time)"
         self.notifier.notify(
             title, body, key=state.instance_id if activity else None, finished=finished
         )
@@ -588,6 +624,8 @@ class Monitor:
             return
         activity = "finishing"
         phase = "Finishing backup; awaiting result"
+        phase_started_at = None
+        phase_elapsed = 0.0
         if not state.active_outcome_pending:
             record = read_progress(self.store.progress_path(attempt_id), attempt_id)
             started = parse_utc(record.started_at) if record else None
@@ -614,13 +652,21 @@ class Monitor:
                 activity, phase = "unknown", "Backup progress unavailable; awaiting result"
             elif record.state != "finished":
                 activity, phase = record.state, record.phase
-        current = (attempt_id, activity, phase)
-        if self._last_activity.get(state.instance_id) == current:
+                phase_started_at = record.phase_started_at
+                phase_elapsed = (now - phase_started).total_seconds()
+        current = (attempt_id, activity, phase, phase_started_at)
+        monotonic_now = self._clock()
+        previous = self._last_activity.get(state.instance_id)
+        if previous is None or previous.identity != current:
+            previous = _Activity(current, monotonic_now - phase_elapsed, monotonic_now)
+            self._last_activity[state.instance_id] = previous
+        elif monotonic_now - previous.notified_at < _ACTIVITY_UPDATE_SECONDS:
             return
-        self._last_activity[state.instance_id] = current
+        previous.notified_at = monotonic_now
+        elapsed = max(0, int(monotonic_now - previous.started_at))
         self.notifier.notify(
             f"VaultKeep Trigger: backup {activity}",
-            f"instance {state.instance_id}: {phase}",
+            f"instance {state.instance_id}: {phase} ({elapsed}s)",
             key=state.instance_id,
         )
 
@@ -857,6 +903,7 @@ class Monitor:
             f"instance {state.instance_id}: {body}",
             activity=True,
             finished=True,
+            ended_at=receipt.ended_at,
         )
 
     def _record_summary(

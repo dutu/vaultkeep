@@ -14,6 +14,7 @@ from types import FrameType
 from vaultkeep.cli.output import Console, configure_logging
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
+from vaultkeep.trigger.activity import duration, elapsed_seconds
 from vaultkeep.trigger.config import (
     TriggerConfig,
     load_config,
@@ -40,7 +41,7 @@ from vaultkeep.trigger.preflight import runtime_preflight
 from vaultkeep.trigger.process import PsutilProcessProvider
 from vaultkeep.trigger.service import manage_service, service_name
 from vaultkeep.trigger.state import StateStore
-from vaultkeep.trigger.status import duration, elapsed_seconds, print_instance
+from vaultkeep.trigger.status import print_instance
 from vaultkeep.trigger.systemd import RealSystemdController
 
 _LOG = logging.getLogger("vaultkeep.trigger")

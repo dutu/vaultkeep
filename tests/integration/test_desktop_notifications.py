@@ -30,7 +30,8 @@ class Notifications(dbus.service.Object):
                          in_signature='susssasa{sv}i', out_signature='u')
     def Notify(self, app, replace_id, icon, summary, body, actions, hints, expiration):
         with open(sys.argv[1], 'a') as output:
-            record = {'replace': int(replace_id), 'summary': str(summary), 'body': str(body)}
+            record = {'replace': int(replace_id), 'summary': str(summary), 'body': str(body),
+                      'expiration': int(expiration)}
             output.write(json.dumps(record) + '\n')
         return dbus.UInt32(replace_id or 81)
 service = Notifications(connection, '/org/freedesktop/Notifications')
@@ -167,6 +168,7 @@ def test_real_notification_delivery_survives_desktop_session_replacement(monkeyp
             records = [json.loads(line) for line in log.read_text().splitlines()]
             assert [record["replace"] for record in records] == [0, 81, 0, 81], records
             assert records[-1]["body"] == "New archive created"
+            assert all(record["expiration"] == 0 for record in records)
             assert not notifier._notification_ids
     finally:
         for process in reversed(processes):

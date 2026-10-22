@@ -1412,8 +1412,12 @@ session. To enable them:
    ```
 
 The backup notification updates when the observed phase changes, for example from
-“Creating and compressing archive” to “Verifying archive”, and shows the final result
-after the worker ends. Delivery uses the backup owner's desktop session; popup
+“Creating and compressing archive” to “Verifying archive”, and refreshes every ten
+seconds with the current phase's elapsed time, such as `Checking existing backups (20s)`.
+After the worker ends, the final result includes the local completion time and remains
+until you dismiss it. Changes to the `Current activity` / `Application` state also
+produce separate notifications after the first observation establishes a baseline.
+Delivery uses the backup owner's desktop session; popup
 visibility and expiration depend on desktop settings. The monitor automatically
 finds a usable notification bus for that account, including session-specific buses
 used by NoMachine desktops inside LXC. Manual environment imports are not required

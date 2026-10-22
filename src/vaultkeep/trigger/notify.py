@@ -93,7 +93,7 @@ class NotifySendNotifier:
             argv.append("--print-id")
             if key in self._notification_ids:
                 argv.append(f"--replace-id={self._notification_ids[key]}")
-            argv.extend([f"--expire-time={-1 if finished else 0}", "--"])
+            argv.extend(["--expire-time=0", "--"])
         argv.extend([title, body])
         remaining = deadline - monotonic()
         if remaining <= 0:

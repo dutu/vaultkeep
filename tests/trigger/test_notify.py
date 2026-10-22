@@ -61,7 +61,7 @@ def test_updates_replace_each_instances_notification_and_forget_finished_ids(mon
             "notify-send",
             "--print-id",
             "--replace-id=43",
-            "--expire-time=-1",
+            "--expire-time=0",
             "--",
             "Finished A",
             "created",

@@ -14,11 +14,20 @@ settings. Notifications remain disabled unless `trigger.notifications.enabled` i
   retry creates a new attempt but does **not** repeat the start alert.
 - Current backup activity, including preparation, creating/compressing the archive,
   verification, and finishing while awaiting the result. Updates follow observed
-  changes during normal monitor polling; heartbeats and repeated polls do not resend
-  the same phase. Short phases between polls may not be displayed.
+  changes during normal monitor polling. An unchanged phase is resent every ten
+  seconds with its elapsed time, for example `Checking existing backups (20s)`.
+  The timer resets when the phase changes. Updates occur on the first monitor poll
+  after the interval; short phases between polls may not be displayed.
+- Changes to the `Current activity` / `Application` state shown by `trigger status`:
+  `RUNNING`, `CONFIRMING STOP`, `HAS STOPPED`, `NOT YET DETECTED`, or `UNKNOWN`.
+  The first fresh observation after monitor startup establishes the baseline without
+  an alert. Later changes show the previous and new states; repeated observations
+  of the same state do not resend an alert.
 - A terminal result after the worker and any queued job have ended: created, unchanged,
   result_unknown, failure, or blocked. A receipt arriving earlier is recorded without
-  prematurely announcing completion.
+  prematurely announcing completion. The result includes the completion date and time
+  in the monitor's local timezone. For an unknown outcome without a receipt, it shows
+  the time the monitor established that outcome.
 - `review_required`, when an observation gap or restart overlapped execution.
 - `outcome_unknown`, when a worker is absent with no completion evidence.
 - An overdue notification when an attempt exceeds its advisory deadline.
@@ -29,14 +38,17 @@ settings. Notifications remain disabled unless `trigger.notifications.enabled` i
 
 With `notify-send` (including an absolute path whose filename is `notify-send`),
 the start, phase, and final-result messages share one notification per instance.
-Trigger uses `--print-id` and `--replace-id` to update it. While work is pending or
-running, it requests no automatic expiration; the final result restores the desktop's
-default timeout. The desktop controls actual visibility, expiration, and whether
+Trigger uses `--print-id` and `--replace-id` to update it. It requests no automatic
+expiration (`--expire-time=0`), including for the final result, which remains until
+you dismiss it. A later backup starts a new notification, preserving earlier final
+results. The desktop controls actual visibility, expiration, and whether
 updates produce another popup. Do Not Disturb settings can suppress popups.
-Other alerts, such as overdue and review-required warnings, remain separate.
+Application-state changes and other alerts, such as overdue and review-required
+warnings, remain separate and use the desktop's default timeout.
 
-Replacement IDs and the last displayed phase are kept only in monitor memory. A
-monitor restart can create a new activity notification for an ongoing backup. An
+Replacement IDs, elapsed timers, and the last displayed phase and application state
+are kept only in monitor memory. A monitor restart can create a new activity
+notification for an ongoing backup. An
 unavailable desktop, failed delivery, or user dismissal does not stop a backup.
 Changing the selected session bus clears replacement IDs so another desktop does
 not receive IDs allocated by the previous session.
@@ -49,15 +61,16 @@ means only that the workflow ended: completion is announced after a receipt is
 reconciled and the worker and any queued job have ended.
 
 Custom notification commands retain their existing interface: title and body as two
-arguments, with no extra options. They receive phase changes as individual messages;
-notification replacement is available only with `notify-send`.
+arguments, with no extra options. They receive phase changes, ten-second elapsed
+updates, application-state changes, and timestamped results as individual messages;
+notification replacement and expiration requests are available only with `notify-send`.
 
 ## Deduplication and escalation
 
 - Delivery-decision markers are persisted so receipt recovery does not resend known
-  lifecycle transitions. Phase deduplication is in memory and does not add durable
-  state. Delivery is best-effort, not exactly-once; a crash around delivery can lose an
-  alert.
+  lifecycle transitions. Phase and application-state deduplication are in memory and
+  do not add durable state. Delivery is best-effort, not exactly-once; a crash around
+  delivery can lose an alert.
 - Markers follow detailed attempt retention. Cleanup removes obsolete markers while
   preserving decisions for retained records and active/pending/rejection recovery,
   including wait alerts that must not repeat behind the same blocking attempt.

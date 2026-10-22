@@ -716,7 +716,7 @@ def test_submission_rejection_relevance(human_status_args, store, capsys, pendin
 @pytest.fixture
 def fresh_status(human_status_args, monkeypatch):
     _enable_trigger(human_status_args)
-    for module in ("cli", "status"):
+    for module in ("cli", "status", "activity"):
         monkeypatch.setattr(f"vaultkeep.trigger.{module}.utc_now", lambda: "2026-10-22T10:00:00Z")
     monkeypatch.setattr(
         "vaultkeep.trigger.cli._monitor_started_at", lambda _scope: "2026-10-22T09:00:00Z"
@@ -894,7 +894,7 @@ def test_unreliable_application_state(fresh_status, store, monkeypatch, capsys, 
     ],
 )
 def test_compact_duration(seconds, expected):
-    from vaultkeep.trigger.status import duration
+    from vaultkeep.trigger.activity import duration
 
     assert duration(seconds) == expected
 
