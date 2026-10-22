@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from vaultkeep.cli.output import Console
+from vaultkeep.progress import STALE_SECONDS, read_progress
 from vaultkeep.trigger.errors import StateError
 from vaultkeep.trigger.models import InstanceState, Observation, Receipt, parse_utc, utc_now
 from vaultkeep.trigger.monitor import unit_name_for
+from vaultkeep.trigger.process import PsutilProcessProvider
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController, UnitState
 from vaultkeep.trigger.version import DIAGNOSTICS_CAP_BYTES
@@ -82,6 +84,9 @@ def _application(
         return "UNKNOWN", " (identity ambiguous; check process matching)"
     if observation.observation is Observation.INSPECTION_UNAVAILABLE:
         return "UNKNOWN", " (inspection unavailable; check monitor journal)"
+    candidate_since = parse_utc(state.candidate_since)
+    if candidate_since is not None and started <= candidate_since <= observed:
+        return "CONFIRMING STOP", " (shutdown not yet confirmed)"
     if state.armed or state.candidate_since:
         return "UNKNOWN", " (shutdown not yet confirmed)"
 
@@ -145,6 +150,33 @@ def _worker_status(worker: UnitState | None) -> str:
     if not worker.is_active_or_pending():
         return "STOPPED"
     return "UNKNOWN"
+
+
+def _backup_progress(store: StateStore, attempt_id: str) -> tuple[str, str] | None:
+    record = read_progress(store.progress_path(attempt_id), attempt_id)
+    if record is None:
+        return None
+    started = parse_utc(record.started_at)
+    phase_started = parse_utc(record.phase_started_at)
+    updated = parse_utc(record.updated_at)
+    now = parse_utc(utc_now())
+    if (
+        started is None
+        or phase_started is None
+        or updated is None
+        or now is None
+        or not started <= phase_started <= updated <= now
+        or (now - updated).total_seconds() > STALE_SECONDS
+    ):
+        return "UNKNOWN", " (backup progress stale or invalid; check worker journal)"
+    if record.state == "finished":
+        return "FINISHING", " (awaiting backup result)"
+    if PsutilProcessProvider.alive(record.pid, record.create_time) is not True:
+        return "UNKNOWN", " (backup process unavailable; awaiting result)"
+    phase_age = duration((now - phase_started).total_seconds())
+    total_age = duration((now - started).total_seconds())
+    status = "RUNNING" if record.state == "running" else "PREPARING"
+    return status, f": {record.phase} ({phase_age} / {total_age} elapsed)"
 
 
 def _validate_attempt_id(attempt_id: str) -> None:
@@ -373,19 +405,29 @@ def print_instance(
     elapsed = ""
     if active_attempt_id is not None and activity == "active":
         unit = unit_name_for(active_attempt_id, scope)
-        worker = RealSystemdController().unit_state(unit)
-        backup = _worker_status(worker)
         receipt = _receipt(store, active_attempt_id, instance_id)
+        live_progress = _backup_progress(store, active_attempt_id) if receipt is None else None
         if receipt:
             backup = "COMPLETED"
             elapsed = " (worker awaiting reconciliation)"
-        elif backup in ("STARTING", "RUNNING", "QUEUED", "STOPPING"):
+        elif live_progress is not None:
+            backup, elapsed = live_progress
+        # Live progress identifies the backup process directly. Slow/unavailable
+        # systemd probes must not hide a fresh phase report in the normal view.
+        if verbose or (receipt is None and live_progress is None):
+            worker = RealSystemdController().unit_state(unit)
+        if receipt is None and live_progress is None:
+            backup = _worker_status(worker)
+            if backup in ("STARTING", "RUNNING"):
+                backup = "UNKNOWN"
+                elapsed = " (backup progress unavailable)"
+        if verbose or (receipt is None and live_progress is None):
             launch = store.read_launch(active_attempt_id)
             if launch and launch.attempt_id != active_attempt_id:
                 raise StateError(f"attempt {active_attempt_id} has contradictory launch ownership")
             age = elapsed_seconds(launch.dispatched_at) if launch else None
-            if age is not None:
-                elapsed = f" ({duration(age)} since dispatch)"
+            if receipt is None and live_progress is None and age is not None:
+                elapsed += f" ({duration(age)} since dispatch)"
 
     application, recency = _application(
         state,

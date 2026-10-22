@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Sequence
 from contextlib import suppress
+from pathlib import Path
 from time import monotonic
 
 from vaultkeep.cli.output import Console, command_logging
@@ -20,6 +22,7 @@ from vaultkeep.errors import (
     TimerError,
     VaultkeepError,
 )
+from vaultkeep.progress import PROGRESS_PATH_ENV
 from vaultkeep.scheduling import TimerManager
 from vaultkeep.version import installed_version
 from vaultkeep.workflow import (
@@ -81,7 +84,13 @@ def _main(argv: Sequence[str] | None) -> int:
             )
         elif namespace.command == "run":
             started = monotonic()
-            with terminal_progress(no_color=namespace.no_color) as progress:
+            # This is an internal worker-to-child handoff. Hooks and any nested
+            # Vaultkeep commands must not inherit this attempt's reporting path.
+            progress_path = os.environ.pop(PROGRESS_PATH_ENV, None)
+            with terminal_progress(
+                no_color=namespace.no_color,
+                progress_path=Path(progress_path) if progress_path else None,
+            ) as progress:
                 result = run_backup(
                     namespace.config,
                     runtime_params=runtime_params,
@@ -151,7 +160,7 @@ def _main(argv: Sequence[str] | None) -> int:
     print(f"{result.command}: {result.result}", flush=True)
     if result.files:
         _print_file_results(result, output)
-    if namespace.command == "run" and result.result == "created" and progress is not None:
+    if namespace.command == "run" and result.result == "created" and sys.stderr.isatty():
         _print_run_summary(result, elapsed, output)
     return 7 if result.result == "failed" else 0
 

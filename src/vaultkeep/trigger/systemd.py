@@ -6,6 +6,7 @@ an argv array and no shell. Submission success is not proof that a worker starte
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -25,6 +26,7 @@ REJECTION_CODES = frozenset({EXIT_NOPERMISSION, EXIT_NOTINSTALLED, EXIT_NOTCONFI
 
 _SYSTEMCTL = "systemctl"
 _DEFAULT_TIMEOUT = 15.0
+_LOG = logging.getLogger("vaultkeep.trigger.systemd")
 
 
 class SubmissionClass(str, Enum):
@@ -97,7 +99,10 @@ def _run(argv: list[str], *, timeout: float = _DEFAULT_TIMEOUT) -> subprocess.Co
 def _probe(argv: list[str]) -> subprocess.CompletedProcess | None:
     try:
         return _run(argv)
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired as error:
+        _LOG.warning("systemd probe timed out after %ss: %s", error.timeout, shlex.join(argv))
+        return None
+    except OSError:
         return None
 
 

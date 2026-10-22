@@ -94,6 +94,17 @@ def test_real_spawn_failure_is_proven_rejection(monkeypatch) -> None:
     assert result.classification is SubmissionClass.REJECTED and not result.spawned
 
 
+def test_probe_timeout_logs_command_without_establishing_worker_absence(monkeypatch, caplog):
+    def timeout(argv, **_kwargs):
+        raise subprocess.TimeoutExpired(argv, 15)
+
+    monkeypatch.setattr("vaultkeep.trigger.systemd.subprocess.run", timeout)
+    assert RealSystemdController().unit_state("fake.service") is None
+    assert "systemd probe timed out after 15s" in caplog.text
+    assert "systemctl --user show" in caplog.text
+    assert "fake.service" in caplog.text
+
+
 @pytest.mark.parametrize("job,pending", [("", False), ("0", False), ("123", True)])
 def test_real_probe_includes_queued_job(monkeypatch, job: str, pending: bool) -> None:
     def show(argv, **_kwargs):

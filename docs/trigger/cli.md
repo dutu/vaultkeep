@@ -119,9 +119,10 @@ configuration, not systemd enablement.
 | Application | Meaning |
 | --- | --- |
 | `RUNNING` | A fresh observation in the current monitoring session detected the configured application. The observation age is included. |
+| `CONFIRMING STOP` | Fresh stopped observations have started a shutdown confirmation interval in this session. Backup dispatch waits for confirmation. |
 | `HAS STOPPED` | Fresh stopped observations and a retained shutdown request confirmed in this session establish a running-to-stopped transition. The age is measured from shutdown confirmation. |
 | `NOT YET DETECTED` | Current-session observations show the application stopped, with no retained evidence of prior detection or a shutdown request. Starting monitoring with the application already stopped does not establish a shutdown. |
-| `UNKNOWN` | Detection cannot be established reliably: for example, observations are stale, shutdown confirmation is pending, identity is ambiguous, inspection is unavailable, or the monitor is stopped. |
+| `UNKNOWN` | Detection cannot be established reliably: for example, observations are stale, current-session confirmation evidence is missing, identity is ambiguous, inspection is unavailable, or the monitor is stopped. |
 
 Session checks use the existing monitor lifetime lock's write timestamp. Arming and
 shutdown history survive monitor restarts; they alone cannot establish current-session
@@ -130,26 +131,50 @@ current-session detection, the report uses `UNKNOWN`. Missing session timestamps
 unobserved configuration changes, and disabled monitoring also prevent a current
 application-state claim. No additional detection history is stored for status.
 
-Current backup activity uses the same persisted evidence as [JSON status](#json-status),
-including unassociated attempts awaiting recovery. Live worker probes refine it:
+Current backup activity starts with the same attempt ownership as
+[JSON status](#json-status), including unassociated attempts awaiting recovery.
+The human report adds live workflow phases and completion receipts:
 
 | Backup activity | Meaning |
 | --- | --- |
 | `IDLE` | No recorded pending or active attempt. |
 | `PENDING` | A request is waiting for dispatch. |
-| `STARTING` | systemd reports an activating worker. The oneshot worker can remain in this state throughout backup execution. |
-| `RUNNING` | systemd reports `active/running`. This does not establish backup completion. |
+| `PREPARING: <phase>` | The worker is checking the application and executable before invoking the backup command. |
+| `RUNNING: <phase>` | The backup command reports its current workflow phase and its process identity is still live. This does not establish backup completion. |
+| `FINISHING` | The backup workflow has ended; its result still awaits a worker receipt. |
 | `QUEUED` | A systemd job is pending without confirmed execution. |
 | `STOPPING` | The worker is deactivating. |
 | `COMPLETED` | A receipt records child completion; the worker still awaits reconciliation. The recorded result appears in current activity. |
 | `STOPPED` / `FAILED` | The worker has ended without a retained completion receipt; its attempt still awaits reconciliation. Neither establishes the backup outcome. |
 | `BLOCKED` | Recovery state prevents dispatch. An already active worker keeps its activity state, with the dispatch block explained separately. |
-| `UNKNOWN` | State or the worker probe is inconclusive or unavailable. |
+| `UNKNOWN` | Live backup progress is missing, stale, invalid, or its process identity cannot be confirmed; alternatively, state or the worker probe is unavailable. An active service alone does not establish the backup phase. |
 
-Active worker states include elapsed time when an existing launch timestamp is available:
-`STARTING (10s since dispatch)` or `RUNNING (2m 35s since dispatch)`. Dispatch time does
-not establish when a worker entered its current state. Missing, invalid, and future
-timestamps omit the duration. Status calculates these ages once when invoked.
+For example:
+
+```text
+Backup  RUNNING: Creating and compressing archive (45s / 1m 31s elapsed)
+```
+
+The first duration measures time in the current phase; the second measures total backup
+command time. `PREPARING` uses the same format for worker preparation time; the total
+starts again when the backup command begins. Phases come from the workflow's existing
+callbacks, including hashing, archive creation/compression, verification, finalization,
+retention, and hooks. These elapsed times are not a completion percentage or an estimate
+of remaining time.
+
+Live progress refreshes on phase changes and every 10 seconds during backup execution.
+Reports older than 30 seconds, future/inconsistent timestamps, and a missing or replaced
+reporting process cannot establish `RUNNING`. Preparation updates occur at each worker
+check. A fresh phase is available independently of monitor health and without a systemd
+worker probe; debug output still probes and includes the raw worker state. A completion
+receipt takes precedence over progress. Progress never authorizes dispatch, replay, or
+a successful result.
+
+Attempts started by an older worker may have no progress record. With no usable progress,
+systemd probes still identify `QUEUED`, `STOPPING`, `STOPPED`, or `FAILED`; activating or
+running workers show `UNKNOWN (backup progress unavailable)`. An existing valid launch
+timestamp adds `since dispatch` time to fallback states, not phase or backup execution
+time. JSON status retains its existing coarse activity fields and schema.
 
 `Previous attempt` excludes the current unresolved attempt, even if that attempt already
 has a receipt. It distinguishes `SUCCESS` (created), `UNCHANGED` (no new archive),

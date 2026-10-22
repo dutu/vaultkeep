@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tests.trigger.conftest import FakeProvider, FakeRunner, child_result
+from vaultkeep.progress import PROGRESS_PATH_ENV, read_progress
 from vaultkeep.trigger.errors import IntegrationError
 from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.matcher import ProcessInfo
@@ -70,6 +71,11 @@ def test_created_receipt(store: StateStore) -> None:
     assert receipt.outcome is AttemptOutcome.CREATED
     assert receipt.vaultkeep_version == "0.1.0"
     assert runner.calls[1][-1] == "run"
+    assert PROGRESS_PATH_ENV not in runner.environments[0]
+    assert runner.environments[1][PROGRESS_PATH_ENV] == str(store.progress_path(request.attempt_id))
+    assert PROGRESS_PATH_ENV not in request.environment
+    progress = read_progress(store.progress_path(request.attempt_id), request.attempt_id)
+    assert progress is not None and progress.state == "preparing"
 
 
 def test_unchanged_receipt(store: StateStore) -> None:

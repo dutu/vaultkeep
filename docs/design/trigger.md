@@ -148,6 +148,7 @@ Resolve account home from the effective UID's operating system account record. A
     request.json
     launch.json
     receipt.json
+    progress.json
     log.txt
 ```
 
@@ -156,6 +157,17 @@ Resolve account home from the effective UID's operating system account record. A
 - Request records carry `schema_version`, request/attempt/instance IDs, confirmation time, boot/config fingerprint, frozen matcher/data directory, configured absolute job path and parameter mapping (VaultKeep canonicalizes its own lock identity), absolute VaultKeep executable, selected environment, preflight version, and effective deadline.
 - The launch marker records the attempt/unit name and dispatch-intent timestamp. It means the start may have been submitted, not that VaultKeep began or completed. The monitor durably adds submission-rejection classification and diagnostics to this record before requeueing a request classified as not accepted; deployed code semantics still require verification.
 - Receipts carry IDs/schema version, start/end UTC timestamps and duration, attempt outcome, VaultKeep exit code or signal, actual execution version, classified outcome, raw trailing result/marker fields (null if absent), diagnostic reference/truncation flag, and blocked/integration-error details when applicable.
+- `progress.json` is optional live telemetry. The worker reports preparation phases,
+  then passes its fixed per-attempt path to the backup command through the internal
+  `VAULTKEEP_PROGRESS_PATH` environment variable. The command consumes that variable
+  and publishes existing workflow phases, with a heartbeat every 10 seconds. Records
+  include schema/attempt identity, phase, preparing/running/finished state, UTC start,
+  phase-start and update timestamps, and the reporting PID/creation time. Snapshots
+  are atomically replaced with mode 0600, without durable fsyncs. Missing, incompatible,
+  damaged, stale (over 30 seconds), or unverifiable telemetry affects reporting only;
+  it never blocks dispatch, changes recovery ownership, or establishes completion.
+  Receipts take precedence. The existing attempt cleanup removes progress with the
+  other attempt artifacts. No new instance/request/receipt schema is required.
 - Persist UTC timestamps; use monotonic timing only within the current process. Never reuse a saved monotonic timestamp after restart. Unknown schema versions block dispatch and preserve evidence; migrations must be explicit and tested.
 - Corrupt or contradictory state preserves diagnosis material and blocks uncertain replay for its owning instance. Persist a separate versioned `blocked/<instance-id>.json` diagnostic without rewriting the original state, and continue monitoring healthy instances. The block survives restart until the operator reviews and repairs the evidence and removes the diagnostic. Failure to persist a block prevents further dispatch. The current loader validates schema/types and association checks. A request-file size cap was part of the design requirements but is not currently implemented; it must not be advertised as an enforced bound.
 - Retain the 50 most recent cleanup-eligible completed attempts per instance, excluding active, pending, unreconciled, or otherwise recovery-referenced records. Preserve necessary safety/uncertainty summaries in instance state beyond diagnostic retention.

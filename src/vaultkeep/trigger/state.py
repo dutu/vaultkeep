@@ -153,6 +153,9 @@ class StateStore:
     def log_path(self, attempt_id: str) -> Path:
         return self.attempt_dir(attempt_id) / "log.txt"
 
+    def progress_path(self, attempt_id: str) -> Path:
+        return self.attempt_dir(attempt_id) / "progress.json"
+
     def ensure(self) -> None:
         _ensure_dir(self.root)
         _ensure_dir(self.instances_dir)

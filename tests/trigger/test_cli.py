@@ -217,9 +217,9 @@ def test_healthy_idle_report(human_status_args, store, capsys):
 @pytest.mark.parametrize(
     ("worker", "expected"),
     [
-        (UnitState("loaded", "activating", "start", True), "STARTING"),
-        (UnitState("loaded", "activating", "start-pre", True), "STARTING"),
-        (UnitState("loaded", "active", "running"), "RUNNING"),
+        (UnitState("loaded", "activating", "start", True), "UNKNOWN"),
+        (UnitState("loaded", "activating", "start-pre", True), "UNKNOWN"),
+        (UnitState("loaded", "active", "running"), "UNKNOWN"),
         (UnitState("loaded", "inactive", "dead", True), "QUEUED"),
         (UnitState("loaded", "deactivating", "stop", True), "STOPPING"),
         (UnitState("loaded", "inactive", "dead"), "STOPPED"),
@@ -289,6 +289,12 @@ def test_current_attempt_and_previous_failure(
     human_status_args, last_attempt, store, monkeypatch, capsys
 ):
     current = make_request(make_instance(instance_id="app"))
+    store.write_request(current)
+    from vaultkeep.progress import ProgressReporter
+
+    ProgressReporter(store.progress_path(current.attempt_id), state="running").report(
+        "Creating and compressing archive"
+    )
     last_attempt.active_attempt_id = current.attempt_id
     store.write_instance(last_attempt)
     monkeypatch.setattr(
@@ -296,7 +302,7 @@ def test_current_attempt_and_previous_failure(
         lambda _self, _unit: UnitState("loaded", "activating", "start"),
     )
     output, _ = _output(human_status_args, capsys)
-    assert "Application UNKNOWN Backup STARTING" in output
+    assert "Application UNKNOWN Backup RUNNING: Creating and compressing archive" in output
     assert "Previous attempt Result FAILED (exit code 5)" in output
     assert current.attempt_id not in output
     assert last_attempt.attempt_summaries[0]["attempt_id"] not in output
@@ -729,7 +735,7 @@ def fresh_status(human_status_args, monkeypatch):
     [
         ("cold", "NOT YET DETECTED"),
         ("running", "RUNNING (observed 1s ago)"),
-        ("confirming", "UNKNOWN (shutdown not yet confirmed)"),
+        ("confirming", "CONFIRMING STOP (shutdown not yet confirmed)"),
         ("confirmed", "HAS STOPPED (15s ago)"),
     ],
 )
@@ -785,6 +791,32 @@ def test_confirmed_shutdown_from_retained_request(fresh_status, store, capsys, a
     store.write_instance(state)
     output, _ = _output(args, capsys)
     assert "Application HAS STOPPED (15s ago)" in output
+
+
+@pytest.mark.parametrize(
+    ("candidate_since", "expected"),
+    [
+        ("2026-10-22T09:59:55Z", "CONFIRMING STOP (shutdown not yet confirmed)"),
+        ("2026-10-22T08:59:59Z", "UNKNOWN (shutdown not yet confirmed)"),
+        ("2026-10-22T10:00:00Z", "UNKNOWN (shutdown not yet confirmed)"),
+        (None, "UNKNOWN"),
+    ],
+)
+def test_stop_confirmation_requires_current_session_candidate(
+    fresh_status, store, capsys, candidate_since, expected
+):
+    from vaultkeep.trigger.models import Observation, ObservationRecord
+
+    args, instance, state = fresh_status
+    request = replace(make_request(instance), attempt_id="")
+    state.pending_request = request
+    state.pending_reconfirmation_required = True
+    state.candidate_since = candidate_since
+    state.last_observation = ObservationRecord(Observation.STOPPED, "2026-10-22T09:59:59Z")
+    store.write_instance(state)
+    output, _ = _output(args, capsys)
+    assert f"Application {expected}" in output
+    assert "Backup PENDING" in output
 
 
 @pytest.mark.parametrize(
@@ -886,7 +918,7 @@ def test_worker_elapsed_since_dispatch(fresh_status, store, monkeypatch, capsys,
         ),
     )
     output, captured = _output(args, capsys)
-    expected = "STARTING" if worker == "activating" else "RUNNING"
+    expected = "UNKNOWN (backup progress unavailable)"
     backup_line = next(
         line for line in captured.out.splitlines() if line.strip().startswith("Backup")
     )
@@ -895,6 +927,96 @@ def test_worker_elapsed_since_dispatch(fresh_status, store, monkeypatch, capsys,
     else:
         assert " ".join(backup_line.split()) == f"Backup {expected}"
     assert "Previous attempt Result NONE" in output
+
+
+@pytest.fixture
+def live_backup(fresh_status, store):
+    from vaultkeep.progress import ProgressReporter
+
+    args, instance, state = fresh_status
+    request = make_request(instance)
+    state.active_attempt_id = request.attempt_id
+    store.write_request(request)
+    store.write_instance(state)
+    path = store.progress_path(request.attempt_id)
+    ProgressReporter(path, state="running").report("Creating and compressing archive")
+    data = json.loads(path.read_text())
+    data.update(
+        started_at="2026-10-22T09:58:29Z",
+        phase_started_at="2026-10-22T09:59:15Z",
+        updated_at="2026-10-22T09:59:59Z",
+    )
+    path.write_text(json.dumps(data))
+    return args, request, path
+
+
+@pytest.mark.parametrize("monitor", ["running", "not running", "unknown"])
+def test_live_backup_reports_phase_and_both_durations_without_systemd(
+    live_backup, monkeypatch, capsys, monitor
+):
+    args, _request, _path = live_backup
+    monkeypatch.setattr("vaultkeep.trigger.cli._monitor_runtime_status", lambda _scope: monitor)
+    if monitor == "not running":
+        # A monitor-service probe is still allowed when its lock is free.
+        monkeypatch.setattr(
+            "vaultkeep.trigger.status.RealSystemdController.unit_state",
+            lambda _self, unit: (
+                None if "vaultkeep-trigger-exec@" not in unit else pytest.fail("worker probe")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            "vaultkeep.trigger.status.RealSystemdController.unit_state",
+            lambda *_args: pytest.fail("worker progress must not wait for systemd"),
+        )
+    output, _ = _output(args, capsys)
+    assert "Backup RUNNING: Creating and compressing archive (45s / 1m 31s elapsed)" in output
+    assert "since dispatch" not in output
+    assert "Previous attempt Result NONE" in output
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ({"state": "preparing"}, "PREPARING: Creating and compressing archive"),
+        ({"state": "finished"}, "FINISHING (awaiting backup result)"),
+        ({"updated_at": "2026-10-22T09:59:29Z"}, "UNKNOWN (backup progress stale or invalid"),
+        ({"updated_at": "2026-10-22T10:00:01Z"}, "UNKNOWN (backup progress stale or invalid"),
+        ({"started_at": "invalid"}, "UNKNOWN (backup progress stale or invalid"),
+        ({"phase_started_at": "2026-10-22T09:58:28Z"}, "UNKNOWN (backup progress stale or invalid"),
+        ({"phase_started_at": "2026-10-22T10:00:00Z"}, "UNKNOWN (backup progress stale or invalid"),
+        ({"create_time": 1.0}, "UNKNOWN (backup process unavailable; awaiting result)"),
+        ({"attempt_id": "another-attempt"}, "UNKNOWN"),
+    ],
+)
+def test_live_backup_requires_valid_fresh_process_evidence(live_backup, capsys, change, expected):
+    args, _request, path = live_backup
+    data = json.loads(path.read_text())
+    data.update(change)
+    path.write_text(json.dumps(data))
+    output, _ = _output(args, capsys)
+    assert f"Backup {expected}" in output
+    if expected.startswith("UNKNOWN"):
+        assert "Backup RUNNING" not in output
+
+
+def test_receipt_takes_precedence_over_live_progress(live_backup, store, capsys):
+    args, request, _path = live_backup
+    store.write_receipt(
+        Receipt(
+            request.attempt_id,
+            request.request_id,
+            request.instance_id,
+            AttemptOutcome.BACKUP_FAILED,
+            "2026-10-22T09:58:29Z",
+            "2026-10-22T09:59:59Z",
+            90,
+            exit_code=5,
+        )
+    )
+    output, _ = _output(args, capsys)
+    assert "Backup COMPLETED (worker awaiting reconciliation) Result FAILED" in output
+    assert "Creating and compressing archive" not in output
 
 
 @pytest.mark.parametrize("outcome", ["created", "unchanged", "backup_failed"])

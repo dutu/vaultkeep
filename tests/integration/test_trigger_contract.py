@@ -70,10 +70,16 @@ import fcntl
 import json
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 from dataclasses import replace
 from importlib.metadata import version
+from io import StringIO
 from pathlib import Path
 
+from vaultkeep.cli.output import Console
+from vaultkeep.progress import read_progress
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.childproc import RealChildRunner
 from vaultkeep.trigger.config import JobSpec, load_config
@@ -82,6 +88,7 @@ from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.models import AttemptOutcome, Request, new_uuid, utc_now
 from vaultkeep.trigger.preflight import validate_jobs, runtime_preflight
 from vaultkeep.trigger.state import StateStore
+from vaultkeep.trigger.status import print_instance
 
 base, job, binary = map(Path, sys.argv[1:])
 runtime = base / 'runtime'
@@ -133,9 +140,58 @@ def attempt(expected):
     receipt = store.read_receipt(current.attempt_id)
     assert result.outcome == expected, (result, receipt)
     assert receipt.vaultkeep_version == core_version
+    progress = read_progress(store.progress_path(current.attempt_id), current.attempt_id)
+    assert progress is not None and progress.state == 'finished'
     return current, receipt
 
-current, receipt = attempt(AttemptOutcome.CREATED)
+# Pause after a real workflow phase is published. The wrapper only makes the
+# installed engine's archive phase long enough to inspect across processes.
+ready, release = base / 'phase-ready', base / 'phase-release'
+wrapper = base / 'slow-vaultkeep'
+wrapper.write_text(f'''#!{sys.executable}
+import time
+from pathlib import Path
+from vaultkeep.progress import ProgressReporter
+from vaultkeep.cli import main
+original = ProgressReporter.report
+ready, release = Path({str(ready)!r}), Path({str(release)!r})
+def report(self, message):
+    original(self, message)
+    if message == 'Creating and compressing archive' and not release.exists():
+        ready.touch()
+        deadline = time.monotonic() + 15
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert release.exists(), 'test did not release archive phase'
+ProgressReporter.report = report
+raise SystemExit(main())
+''')
+wrapper.chmod(0o700)
+request = replace(request, vaultkeep=str(wrapper))
+with ThreadPoolExecutor(max_workers=1) as pool:
+    future = pool.submit(attempt, AttemptOutcome.CREATED)
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and time.monotonic() < deadline and not future.done():
+            time.sleep(0.01)
+        if future.done():
+            future.result()
+        assert ready.exists(), 'backup did not reach its archive phase'
+        attempt_id, = store.list_attempt_ids()
+        progress = read_progress(store.progress_path(attempt_id), attempt_id)
+        assert progress is not None and progress.state == 'running'
+        assert progress.phase == 'Creating and compressing archive'
+        report = StringIO()
+        with redirect_stdout(report):
+            print_instance(Console(no_color=True), None, None,
+                instance_id='test-instance', activity='active', active_attempt_id=attempt_id,
+                scope=None, store=store, verbose=False, monitor='STOPPED', enabled=True,
+                poll_seconds=2)
+        assert 'RUNNING: Creating and compressing archive (' in report.getvalue(), report.getvalue()
+        assert ' / ' in report.getvalue() and ' elapsed)' in report.getvalue()
+    finally:
+        release.touch()
+    current, receipt = future.result(timeout=30)
 assert receipt.marker_line == 'run: created'
 # Re-executing the exact attempt never invokes another backup.
 replayed = exec_worker(current.attempt_id, store=store, provider=NoProcesses())

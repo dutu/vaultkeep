@@ -6,6 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
+from vaultkeep.progress import PROGRESS_PATH_ENV, ProgressReporter
 from vaultkeep.trigger.childproc import ChildRunner, RealChildRunner
 from vaultkeep.trigger.config import matcher_from_canonical
 from vaultkeep.trigger.detection import detect_spec
@@ -92,6 +93,8 @@ def exec_worker(
         )
 
     started_at = utc_now()
+    progress = ProgressReporter(store.progress_path(attempt_id), state="preparing")
+    progress.report("Checking application has stopped")
 
     # Authoritative final process/identity recheck from the frozen request snapshot.
     detection = detect_spec(
@@ -120,6 +123,7 @@ def exec_worker(
         )
 
     # Capture the actual VaultKeep version immediately before invocation.
+    progress.report("Checking backup executable")
     version_result = runner.run(
         [request.vaultkeep, "--version"],
         env=request.environment,
@@ -133,7 +137,10 @@ def exec_worker(
             "VaultKeep execution version differs from preflight/contract"
         )
 
-    child = runner.run(_vaultkeep_argv(request, "run"), env=request.environment)
+    progress.report("Starting backup command")
+    environment = dict(request.environment)
+    environment[PROGRESS_PATH_ENV] = str(store.progress_path(attempt_id))
+    child = runner.run(_vaultkeep_argv(request, "run"), env=environment)
 
     outcome = classify_exit(child.exit_code, child.stdout_tail)
     diagnostics_ref: str | None = None

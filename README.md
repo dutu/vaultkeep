@@ -1392,16 +1392,26 @@ systemctl --user list-units --all 'vaultkeep-trigger@*.service' 'vaultkeep-trigg
 
 Read `Monitor` with its update age, then `Current activity` and `Previous attempt`.
 A held monitor lock with stale or unavailable updates is `UNKNOWN`; check the monitor
-journal. `Application` shows `RUNNING` with observation age, `HAS STOPPED` after a
+journal. `Application` shows `RUNNING` with observation age, `CONFIRMING STOP` during
+the shutdown confirmation interval, `HAS STOPPED` after a
 confirmed shutdown, or `NOT YET DETECTED` when current-session observations establish
 that the application has not yet been detected. Insufficient or stale evidence is
 `UNKNOWN`. An application already stopped at monitor startup is not a confirmed shutdown.
 
 For backups, `IDLE` means no recorded work; `PENDING` means a request is waiting.
-`STARTING` means systemd reports an activating worker. The oneshot worker can remain
-`STARTING` throughout backup execution; `RUNNING` requires `active/running`. Where
-available, elapsed time is labelled `since dispatch`, because dispatch does not establish
-when the worker entered its current state. `COMPLETED` means a receipt records child
+Active backups report their actual workflow phase and elapsed times:
+
+```text
+Backup  RUNNING: Creating and compressing archive (45s / 1m 31s elapsed)
+```
+
+The first duration is time in the current phase; the second is total backup command
+time. Phases include source hashing, compression, verification, finalization, and hooks.
+`PREPARING` covers worker checks before invoking the backup command. `FINISHING` means
+the workflow has ended and its result is being recorded. Missing or stale progress is
+`UNKNOWN`; check the worker journal. Backups started before upgrading may lack live
+progress. See [status meanings](docs/trigger/cli.md#status) for freshness checks and
+fallback states. `COMPLETED` means a receipt records child
 completion while its worker awaits reconciliation. `STOPPED` or `FAILED` without a
 receipt does not establish the backup outcome.
 

@@ -134,13 +134,36 @@ cannot turn an illustrative matcher into a verified preset. Each job uses its ow
 See the application guides for [Bisq](apps/bisq.md),
 [Electrum](apps/electrum.md), and [Wasabi](apps/wasabi.md).
 
+## Application status changes during shutdown
+
+`RUNNING` → `CONFIRMING STOP` → `HAS STOPPED` is the normal shutdown sequence.
+After first observing the application absent, the monitor waits for continuous reliable
+absence for `trigger.confirm_seconds` (default: 5 seconds), then confirms at a subsequent
+poll. Backup dispatch waits for confirmation. A restart or inconclusive observation
+interrupts confirmation.
+
+If `Monitor` becomes `UNKNOWN` with `updates stale or unavailable`, no fresh update
+has been recorded within twice `trigger.poll_seconds` (default: 4 seconds), or its
+timestamp is missing or invalid. `Application` also becomes `UNKNOWN` because its
+observation cannot be trusted as current. This differs from shutdown confirmation.
+Synchronous systemd probes can delay the monitor; an individual probe can wait up to
+15 seconds. Timed-out probes log `systemd probe timed out` with the command that was
+being queried. A later `RUNNING` means updates resumed, but does not establish what caused
+the gap. Use the [first checks](#first-checks) to inspect the monitor journal around
+that time. A previous attempt's failure reason describes that attempt and does not by
+itself explain a monitoring gap.
+
 ## Is a backup running?
 
 Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`. `Monitor:
 RUNNING` describes the shutdown monitor. `Current activity` describes the backup
-separately. `STARTING` means an activating worker; a oneshot service can stay in this
-state throughout backup execution. Elapsed durations are labelled `since dispatch`.
-`RUNNING` requires `active/running`; `COMPLETED` means a receipt records child completion
+separately. `RUNNING: Creating and compressing archive (45s / 1m 31s elapsed)` reports
+the actual backup phase, time in that phase, and total backup command time. `PREPARING`
+reports the worker's application/executable checks; `FINISHING` awaits a recorded result.
+Long phases refresh their progress every 10 seconds. Missing or stale progress and an
+unavailable reporting process produce `UNKNOWN`; inspect the worker journal. Attempts
+started before upgrading may lack progress. systemd's oneshot service state alone cannot
+distinguish backup phases. `COMPLETED` means a receipt records child completion
 while the worker awaits reconciliation. `STOPPED` or `FAILED` with an unresolved
 attempt is not a backup success claim, and `UNKNOWN`
 means execution could not be confirmed. These are snapshots, not archive progress.
@@ -157,8 +180,9 @@ journalctl --user -u '<worker-service>' -n 100 --no-pager
 
 The monitor journal records detection and request events. Backup child output is
 retained separately in the attempt's private `log.txt` under the reported Trigger
-state root; the worker journal may contain only its final summary. These reports do
-not provide a live archive progress percentage. Preserve recovery evidence when
+state root; the worker journal may contain only its final summary. These reports
+show workflow phases and elapsed time, without a live archive progress percentage.
+Preserve recovery evidence when
 investigating an unresolved attempt.
 
 ## Why did a backup fail?
