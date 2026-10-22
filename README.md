@@ -24,6 +24,7 @@ and [user mode guide](docs/user-mode.md).
   - [Runtime template parameters](#runtime-template-parameters)
   - [Destination mount checks](#destination-mount-checks)
   - [CLI reference](#cli-reference)
+  - [Terminal output](#terminal-output)
   - [Check the installed version](#check-the-installed-version)
   - [Validate a job configuration](#validate-a-job-configuration)
   - [Start backups in the chosen mode](#start-backups-in-the-chosen-mode)
@@ -203,6 +204,10 @@ Then run the installer from that checkout:
 sudo ./install.sh install --dry-run
 sudo ./install.sh install
 ```
+
+Installer messages use level prefixes and terminal colors. Add `--no-color` to
+install, update, or uninstall commands to disable colors; see
+[terminal output](#terminal-output) for details.
 
 The first command previews dependencies and deployment changes. The second applies
 installation. Vaultkeep is one package with built-in scheduling and optional
@@ -579,7 +584,8 @@ mount changes or network failures during an operation.
 ### CLI reference
 
 Put global options before the command name: `--user`, `--config`, and any repeated
-`--param KEY=VALUE` selections. `--config` is required for operations on one job.
+`--param KEY=VALUE` selections, plus `--no-color` when needed. `--config` is required
+for operations on one job.
 Action-specific options, such as `status --json`, follow the action.
 
 ```text
@@ -616,6 +622,34 @@ Every command and action supports `-h` or `--help` in its own position, for exam
 `vaultkeep trigger status --help`. Version inspection uses `vaultkeep --version`.
 
 Use `--user` for per-user job configuration, per-user state, and systemd user timers. Omit it for root mode. Root-mode operations that read protected sources, write root-owned state, manage system timers, or use root-owned secrets must be run with `sudo`.
+
+#### Terminal output
+
+Installer messages, validation reports, install/update confirmations, and backup
+diagnostics prefix each line with a level:
+
+```text
+INFO: Configuration: valid
+WARNING: Runtime checks: skipped (--schema-only)
+ERROR: Monitor service: not installed
+```
+
+Level prefixes are cyan for `INFO`, yellow for `WARNING`, and red for `ERROR` on
+capable terminals. Redirected or captured output and `TERM=dumb` use plain text.
+Disable colors explicitly with `--no-color`, or set a nonempty `NO_COLOR`
+environment variable. Level prefixes remain visible when colors are disabled.
+
+```bash
+sudo ./install.sh install --no-color
+sudo ./install.sh update --no-color
+vaultkeep --no-color --user --config /path/to/job.yaml validate
+vaultkeep --no-color --user --config /path/to/job.yaml trigger install
+```
+
+Validation reports remain on stdout, with detailed errors on stderr; exit codes
+are unchanged. Version output, Trigger status JSON, and backup result markers
+such as `run: created` retain their existing format. Output from external tools
+such as apt and pip keeps those tools' formatting.
 
 ### Check the installed version
 

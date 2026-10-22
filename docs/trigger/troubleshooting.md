@@ -9,7 +9,9 @@ before `validate`, or before Trigger's `monitor` or `status`. The job YAML selec
 
 Installer failures are written to stderr with an explicit `ERROR:` prefix, shown
 in red on terminals. Redirected logs stay plain text. Set `NO_COLOR=1` to disable
-color; terminals with `TERM=dumb` also use plain text.
+color, or add `--no-color` after the install/update/uninstall mode; terminals with
+`TERM=dumb` also use plain text. Normal installer messages use `INFO:` and warnings
+use `WARNING:`. See [terminal output](../../README.md#terminal-output).
 
 Before the worker template has been installed, the user manager can report the
 worker instance as `not-found`, `inactive`, and `dead` without an `ExecStart`

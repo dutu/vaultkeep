@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from vaultkeep.cli.output import Console
 from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
 from vaultkeep.errors import (
     ConfigurationError,
@@ -37,11 +38,12 @@ from vaultkeep.workflow import WorkflowPaths, user_workflow_paths, validate_job
 
 @dataclass
 class _Report:
+    output: Console
     exit_code: int = 0
     incomplete: bool = False
 
     def problem(self, label: str, detail: str, *, code: int = 3) -> None:
-        print(f"{label}: {detail}")
+        self.output.print(f"{label}: {detail}", level="ERROR")
         self.exit_code = self.exit_code or code
 
     def check(self, label: str, action: Callable[[], object], success: str | None = None) -> bool:
@@ -55,11 +57,11 @@ class _Report:
                 code = 5
             elif isinstance(error, (StateError, TriggerStateError)):
                 code = 15
-            print(str(error), file=sys.stderr)
+            self.output.print(error, level="ERROR", file=sys.stderr)
             self.problem(label, "failed", code=code)
             return False
         if success is not None:
-            print(f"{label}: {success}")
+            self.output.print(f"{label}: {success}")
         return True
 
 
@@ -93,7 +95,7 @@ def _unit_properties(unit: str, *, user_mode: bool) -> dict[str, str]:
 def _service_health(
     report: _Report, label: str, unit: str, *, user_mode: bool, installed: bool = True
 ) -> dict[str, str] | None:
-    print(f"{label} unit: {unit}")
+    report.output.print(f"{label} unit: {unit}")
     if not installed:
         report.incomplete = True
         report.problem(label, "not installed")
@@ -119,7 +121,7 @@ def _service_health(
     elif enabled not in ("enabled", "enabled-runtime") or active != "active":
         report.problem(label, detail)
     else:
-        print(f"{label}: {detail}")
+        report.output.print(f"{label}: {detail}")
     return values
 
 
@@ -139,7 +141,7 @@ def _trigger_state_health(report: _Report, config: TriggerConfig) -> None:
     if age is None or age < 0 or age > 2 * config.poll_seconds:
         report.problem("Monitor updates", "stale or unavailable")
     else:
-        print(f"Monitor updates: current ({age:.0f}s ago)")
+        report.output.print(f"Monitor updates: current ({age:.0f}s ago)")
     instance = config.instance_by_id(config.job_id)
     if instance is not None and state.config_fingerprint != instance.fingerprint():
         report.problem("Monitor configuration", "differs from this job; update the monitor")
@@ -154,7 +156,7 @@ def _trigger_state_health(report: _Report, config: TriggerConfig) -> None:
             f"{state.last_observation.observation.value} — {state.last_observation.reason}",
         )
     else:
-        print(f"Process observation: {state.last_observation.observation.value}")
+        report.output.print(f"Process observation: {state.last_observation.observation.value}")
     if state.review_required:
         report.problem("Trigger state", f"review required — {state.review_reason}")
     if state.attempt_summaries:
@@ -163,7 +165,7 @@ def _trigger_state_health(report: _Report, config: TriggerConfig) -> None:
         if outcome not in (AttemptOutcome.CREATED.value, AttemptOutcome.UNCHANGED.value):
             report.problem("Last Trigger backup", str(outcome))
         else:
-            print(f"Last Trigger backup: {outcome}")
+            report.output.print(f"Last Trigger backup: {outcome}")
 
 
 def _trigger_health(report: _Report, config_path: Path, params: dict[str, str]) -> None:
@@ -197,7 +199,7 @@ def _schedule_health(
     values = _service_health(report, "Timer", unit, user_mode=user_mode, installed=installed)
     next_run = values.get("NextElapseUSecRealtime") if values is not None else None
     if next_run and next_run not in ("n/a", "0"):
-        print(f"Next scheduled run: {next_run}")
+        report.output.print(f"Next scheduled run: {next_run}")
     elif installed:
         report.problem("Next scheduled run", "unavailable")
     service = unit.removesuffix(".timer") + ".service"
@@ -211,7 +213,7 @@ def _schedule_health(
     elif backup["ActiveState"] == "failed" or backup.get("Result") not in (None, "", "success"):
         report.problem("Last scheduled backup", backup.get("Result") or backup["ActiveState"])
     else:
-        print(f"Backup service: {backup['ActiveState']} ({backup['SubState']})")
+        report.output.print(f"Backup service: {backup['ActiveState']} ({backup['SubState']})")
 
 
 def _backup_history(
@@ -249,9 +251,9 @@ def _backup_history(
             if result == "failed":
                 report.problem(label, "failed")
             else:
-                print(f"{label}: {result} ({loaded.state.last_run.at_utc})")
+                report.output.print(f"{label}: {result} ({loaded.state.last_run.at_utc})")
     if not recorded:
-        print("Backup history: no completed run recorded")
+        report.output.print("Backup history: no completed run recorded")
 
 
 def validate_command(
@@ -260,9 +262,10 @@ def validate_command(
     schema_only: bool,
     runtime_params: Mapping[str, str],
     user_mode: bool,
+    no_color: bool = False,
 ) -> int:
     """Validate every applicable part without installing or starting automation."""
-    report = _Report()
+    report = _Report(Console(no_color=no_color))
     try:
         config = load_config(config_path)
         params = dict(config.trigger.params) if config.trigger.enabled else {}
@@ -271,22 +274,22 @@ def validate_command(
             config = resolve_runtime_config(config, params)
             validate_semantics(config, config_path=config_path, runtime_params=params)
     except ConfigurationError as error:
-        print(str(error), file=sys.stderr)
+        report.output.print(error, level="ERROR", file=sys.stderr)
         report.problem("Configuration", "invalid")
-        print("Result: failed")
+        report.output.print("Result: failed", level="ERROR")
         return report.exit_code
-    print("Configuration: valid")
-    print(f"Job: {config.job.id}")
-    print(f"Mode: {'user' if user_mode else 'system'}")
+    report.output.print("Configuration: valid")
+    report.output.print(f"Job: {config.job.id}")
+    report.output.print(f"Mode: {'user' if user_mode else 'system'}")
     if config.trigger.enabled:
-        print("Trigger: enabled")
+        report.output.print("Trigger: enabled")
     elif config.schedule.enabled:
-        print("Schedule: enabled")
+        report.output.print("Schedule: enabled")
     else:
-        print("Schedule: disabled\nTrigger: disabled")
+        report.output.print("Schedule: disabled\nTrigger: disabled")
     if schema_only:
-        print("Runtime checks: skipped (--schema-only)")
-        print("Result: configuration structure valid")
+        report.output.print("Runtime checks: skipped (--schema-only)", level="WARNING")
+        report.output.print("Result: configuration structure valid")
         return 0
     report.check(
         "Backup sources and destination",
@@ -313,5 +316,5 @@ def validate_command(
     result = (
         "setup incomplete" if report.incomplete else "failed" if report.exit_code else "healthy"
     )
-    print(f"Result: {result}")
+    report.output.print(f"Result: {result}", level="ERROR" if report.exit_code else "INFO")
     return report.exit_code

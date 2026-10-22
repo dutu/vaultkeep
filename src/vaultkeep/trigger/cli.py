@@ -11,6 +11,7 @@ import signal
 import sys
 from types import FrameType
 
+from vaultkeep.cli.output import Console
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
 from vaultkeep.trigger.config import (
@@ -213,7 +214,9 @@ def _cmd_status_json(args: argparse.Namespace, config: TriggerConfig, store: Sta
         elif state is not None and blocked is None:
             activity = "pending" if pending_request_id is not None else "idle"
     except (StateError, OSError) as error:
-        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        Console(no_color=args.no_color).print(
+            f"{type(error).__name__}: {error}", level="ERROR", file=sys.stderr
+        )
         exit_code = EXIT_CONFIG
     print(
         json.dumps(
@@ -254,12 +257,16 @@ def cmd_status(args: argparse.Namespace) -> int:
             blocked_reason = store.read_blocked(instance_id)
         except StateError as error:
             blocked_reason = str(error)
-            print(f"StateError: {error}", file=sys.stderr)
+            Console(no_color=args.no_color).print(
+                f"StateError: {error}", level="ERROR", file=sys.stderr
+            )
             exit_code = EXIT_CONFIG
         try:
             state = store.read_instance(instance_id)
         except StateError as error:
-            print(f"StateError: {error}", file=sys.stderr)
+            Console(no_color=args.no_color).print(
+                f"StateError: {error}", level="ERROR", file=sys.stderr
+            )
             print(f"instance {instance_id}\n  state unavailable")
             if blocked_reason is not None:
                 print(f"  dispatch blocked: {blocked_reason}")
@@ -298,8 +305,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if not args.user_mode:
         parser.error("Trigger supports user mode only; specify --user before trigger")
     if os.geteuid() == 0:
-        print(
+        Console(no_color=args.no_color).print(
             "Trigger cannot run as root; run it without sudo as the application owner.",
+            level="ERROR",
             file=sys.stderr,
         )
         return EXIT_CONFIG
@@ -317,11 +325,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             validate_vaultkeep_executable(config)
             runtime_preflight(config, RealSystemdController(), state_root(config.scope))
         manage_service(config, command)
-        print(f"{command}: {service_name(config)}")
+        Console(no_color=args.no_color).print(f"{command}: {service_name(config)}")
         return EXIT_OK
     except TriggerError as error:
-        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        Console(no_color=args.no_color).print(
+            f"{type(error).__name__}: {error}", level="ERROR", file=sys.stderr
+        )
         return error.exit_code
     except OSError as error:
-        print(f"Trigger filesystem error: {error}", file=sys.stderr)
+        Console(no_color=args.no_color).print(
+            f"Trigger filesystem error: {error}", level="ERROR", file=sys.stderr
+        )
         return EXIT_CONFIG

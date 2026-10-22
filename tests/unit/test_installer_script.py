@@ -202,11 +202,16 @@ def test_helper_cli_errors_have_explicit_prefix_in_plain_logs(host: dict[str, st
 
 
 @pytest.mark.parametrize(
-    "term,no_color,colored",
-    [("xterm", "", True), ("dumb", "", False), ("xterm", "1", False)],
+    "term,no_color,flag,colored",
+    [
+        ("xterm", "", False, True),
+        ("dumb", "", False, False),
+        ("xterm", "1", False, False),
+        ("xterm", "", True, False),
+    ],
 )
 def test_installer_error_prefix_on_a_terminal(
-    host: dict[str, str], term: str, no_color: str, colored: bool
+    host: dict[str, str], term: str, no_color: str, flag: bool, colored: bool
 ) -> None:
     import pty
 
@@ -214,7 +219,7 @@ def test_installer_error_prefix_on_a_terminal(
     master, slave = pty.openpty()
     try:
         result = subprocess.run(
-            ["bash", str(INSTALLER), "invalid"],
+            ["bash", str(INSTALLER), "invalid", *(["--no-color"] if flag else [])],
             env=host,
             stdout=subprocess.PIPE,
             stderr=slave,
@@ -223,20 +228,7 @@ def test_installer_error_prefix_on_a_terminal(
         )
     finally:
         os.close(slave)
-    output = b""
-    try:
-        while True:
-            try:
-                chunk = os.read(master, 4096)
-            except OSError as error:
-                if error.errno != errno.EIO:
-                    raise
-                break
-            if not chunk:
-                break
-            output += chunk
-    finally:
-        os.close(master)
+    output = read_terminal(master)
     assert result.returncode == 2
     prefix = "\033[1;31mERROR:\033[0m" if colored else "ERROR:"
     assert output.decode().startswith(f"{prefix} install.sh: unknown mode: invalid")
@@ -345,6 +337,8 @@ def test_dry_run_is_read_only(host: dict[str, str]) -> None:
     result = run_installer(host, "install", "--dry-run")
     assert "Trigger is included; monitoring remains opt-in" in result.stdout
     assert "PLAN stage release" in result.stdout
+    assert all(line.startswith("INFO: ") for line in result.stdout.splitlines())
+    assert "\033[" not in result.stdout
     assert "activity checks are not a live quiescence guarantee" in result.stdout
     assert snapshot(host) == before
     assert not Path(host["HOST_LOG"]).exists()
@@ -851,3 +845,56 @@ def test_failed_legacy_combined_upgrade_restores_old_links_and_units(host: dict[
     assert {key: value for key, value in after.items() if not key.endswith(ignored)} == {
         key: value for key, value in before.items() if not key.endswith(ignored)
     }
+
+
+def read_terminal(master: int) -> bytes:
+    output = b""
+    try:
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+                break
+            if not chunk:
+                break
+            output += chunk
+    finally:
+        os.close(master)
+    return output
+
+
+@pytest.mark.parametrize("no_color", [False, True])
+def test_installer_levels_and_no_color_reach_helper(host, no_color):
+    import pty
+
+    host.update(TERM="xterm", NO_COLOR="", TEST_HELPER=str(ROOT / "scripts/install_support.py"))
+    definitions = INSTALLER.read_text().partition("\nSOURCE_DIR=$(script_dir)")[0]
+    script = (
+        definitions
+        + '\nparse_args "$@"\nlog "first\nsecond"\nwarning "attention"\n'
+        + 'python3 "$TEST_HELPER" unsupported\n'
+    )
+    master, slave = pty.openpty()
+    try:
+        result = subprocess.run(
+            ["bash", "-c", script, "install.sh", "install", *(["--no-color"] if no_color else [])],
+            env=host,
+            stdout=slave,
+            stderr=slave,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        os.close(slave)
+    output = read_terminal(master).decode().replace("\r\n", "\n")
+    assert result.returncode == 1
+    info = "INFO:" if no_color else "\033[36mINFO:\033[0m"
+    warning = "WARNING:" if no_color else "\033[1;33mWARNING:\033[0m"
+    error = "ERROR:" if no_color else "\033[1;31mERROR:\033[0m"
+    assert output == (
+        f"{info} first\n{info} second\n{warning} attention\n"
+        f"{error} installer: unknown installer check: unsupported\n"
+    )
+    assert not Path(host["VAULTKEEP_INSTALL_PREFIX"]).exists()

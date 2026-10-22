@@ -8,13 +8,16 @@ from contextlib import contextmanager
 from threading import Event, Lock, Thread
 from time import monotonic
 
+from vaultkeep.cli.output import Console
+
 _HEARTBEAT_SECONDS = 10
 
 
 @contextmanager
-def terminal_progress() -> Iterator[Callable[[str], None] | None]:
+def terminal_progress(*, no_color: bool = False) -> Iterator[Callable[[str], None] | None]:
     """Show stages and periodic elapsed-time updates while stderr is a terminal."""
     stream = sys.stderr
+    output = Console(no_color=no_color)
     if not stream.isatty():
         yield None
         return
@@ -28,7 +31,7 @@ def terminal_progress() -> Iterator[Callable[[str], None] | None]:
         elapsed = int(monotonic() - started)
         minutes, seconds = divmod(elapsed, 60)
         try:
-            print(f"[{minutes:02d}:{seconds:02d}] {message}", file=stream, flush=True)
+            output.print(f"[{minutes:02d}:{seconds:02d}] {message}", file=stream)
         except OSError:
             # Losing the progress stream must not interrupt the command.
             stopped.set()

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from contextlib import suppress
 from time import monotonic
 
+from vaultkeep.cli.output import Console
 from vaultkeep.cli.parser import create_parser
 from vaultkeep.cli.progress import terminal_progress
 from vaultkeep.config import parse_runtime_parameters
@@ -36,6 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(argv) if argv is not None else sys.argv[1:]
     parser = create_parser()
     namespace = parser.parse_args(arguments)
+    output = Console(no_color=namespace.no_color)
 
     if namespace.show_version:
         print(installed_version())
@@ -55,7 +57,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         runtime_params = parse_runtime_parameters(namespace.param)
     except ConfigurationError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 3
     try:
         if namespace.command == "validate":
@@ -67,13 +69,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     schema_only=namespace.schema_only,
                     runtime_params=runtime_params,
                     user_mode=namespace.user_mode,
+                    no_color=namespace.no_color,
                 )
             result = validate_job(
                 namespace.config, schema_only=namespace.schema_only, runtime_params=runtime_params
             )
         elif namespace.command == "run":
             started = monotonic()
-            with terminal_progress() as progress:
+            with terminal_progress(no_color=namespace.no_color) as progress:
                 result = run_backup(
                     namespace.config,
                     runtime_params=runtime_params,
@@ -84,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif namespace.command == "list":
             result, _ = list_backups(namespace.config, runtime_params=runtime_params)
         elif namespace.command == "verify":
-            with terminal_progress() as progress:
+            with terminal_progress(no_color=namespace.no_color) as progress:
                 result = verify_backups(
                     namespace.config, runtime_params=runtime_params, progress=progress
                 )
@@ -108,56 +111,62 @@ def main(argv: Sequence[str] | None = None) -> int:
                     manager.disable(namespace.config, runtime_params=runtime_params)
                 else:
                     manager.remove(namespace.config, runtime_params=runtime_params)
+                if namespace.action in ("install", "update"):
+                    output.print(f"schedule {namespace.action}: completed")
                 return 0
             if namespace.action == "list":
                 print("\n".join(manager.list()))
             elif namespace.action == "validate":
                 for item in manager.validate_all():
-                    print(item)
+                    output.print(item)
             else:
                 print("\n".join(manager.sync(dry_run=namespace.dry_run)))
             return 0
     except ConfigurationError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 3
     except StateError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 15
     except DestinationError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 5
     except HookError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 11
     except LockError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 10
     except TimerError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 14
     except VaultkeepError as error:
-        print(error, file=sys.stderr)
+        output.print(error, level="ERROR", file=sys.stderr)
         return 7
     print(f"{result.command}: {result.result}", flush=True)
     if result.files:
-        _print_file_results(result)
+        _print_file_results(result, output)
     if namespace.command == "run" and result.result == "created" and progress is not None:
-        _print_run_summary(result, elapsed)
+        _print_run_summary(result, elapsed, output)
     return 7 if result.result == "failed" else 0
 
 
-def _print_file_results(result: CommandResult) -> None:
+def _print_file_results(result: CommandResult, output: Console) -> None:
     """Keep per-file diagnostics on stderr and stdout's Trigger marker unchanged."""
     with suppress(OSError):
         for outcome in result.files:
-            print(f"{outcome.source.name!r}: {outcome.result}", file=sys.stderr)
+            output.print(
+                f"{outcome.source.name!r}: {outcome.result}",
+                level="ERROR" if outcome.result == "failed" else "INFO",
+                file=sys.stderr,
+            )
             if outcome.archive_path is not None and outcome.result == "created":
-                print(f"  Archive: {outcome.archive_path}", file=sys.stderr)
+                output.print(f"  Archive: {outcome.archive_path}", file=sys.stderr)
             if outcome.error is not None:
-                print(f"  {outcome.error}", file=sys.stderr)
+                output.print(f"  {outcome.error}", level="ERROR", file=sys.stderr)
 
 
-def _print_run_summary(result: CommandResult, elapsed: float) -> None:
+def _print_run_summary(result: CommandResult, elapsed: float, output: Console) -> None:
     """Present completed backup facts on the terminal without rereading the archive."""
     lines = []
     if result.archive_path is not None:
@@ -168,7 +177,7 @@ def _print_run_summary(result: CommandResult, elapsed: float) -> None:
     lines.append(f"Backups removed by retention: {result.removed}")
     # Losing the summary stream must not turn a completed backup into a failure.
     with suppress(OSError):
-        print("\n".join(lines), file=sys.stderr, flush=True)
+        output.print("\n".join(lines), file=sys.stderr)
 
 
 def _format_size(size: int) -> str:

@@ -5,6 +5,7 @@ readonly SCRIPT_NAME=${0##*/}
 readonly MODE=${1:-}
 
 DRY_RUN=0
+NO_COLORS=0
 PURGE=0
 COMPONENTS=core,trigger
 PREVIOUS_COMPONENTS=none
@@ -49,22 +50,38 @@ REPLACED_RELEASE_BACKUP=""
 usage() {
     cat <<'EOF'
 Usage:
-  sudo ./install.sh install [--dry-run]
-  sudo ./install.sh update [--dry-run]
-  sudo /opt/vaultkeep/current/src/install.sh uninstall [--dry-run] [--purge]
+  sudo ./install.sh install [--dry-run] [--no-color]
+  sudo ./install.sh update [--dry-run] [--no-color]
+  sudo /opt/vaultkeep/current/src/install.sh uninstall [--dry-run] [--purge] [--no-color]
 EOF
 }
 
 log() {
-    printf '%s\n' "$*"
+    message INFO "$*"
+}
+
+message() {
+    local level=$1 text=$2 color prefix line
+    prefix="$level:"
+    if [[ "$NO_COLORS" == 0 && -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
+        case "$level" in
+            INFO) color=36 ;;
+            WARNING) color='1;33' ;;
+            ERROR) color='1;31' ;;
+        esac
+        prefix=$'\033['"${color}m${prefix}"$'\033[0m'
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        printf '%s %s\n' "$prefix" "$line"
+    done <<<"$text"
+}
+
+warning() {
+    message WARNING "$*" >&2
 }
 
 error() {
-    local prefix='ERROR:'
-    if [[ -t 2 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
-        prefix=$'\033[1;31mERROR:\033[0m'
-    fi
-    printf '%s %s: %s\n' "$prefix" "$SCRIPT_NAME" "$*" >&2
+    message ERROR "$SCRIPT_NAME: $*" >&2
 }
 
 die() {
@@ -73,6 +90,13 @@ die() {
 }
 
 parse_args() {
+    # Apply this before reporting argument errors, wherever it appears after the mode.
+    for argument in "$@"; do
+        if [[ "$argument" == --no-color ]]; then
+            NO_COLORS=1
+            export NO_COLOR=1
+        fi
+    done
     case "$MODE" in
         install|update|uninstall) ;;
         ""|-h|--help)
@@ -90,6 +114,7 @@ parse_args() {
         case "$1" in
             --dry-run) DRY_RUN=1 ;;
             --purge) PURGE=1 ;;
+            --no-color) ;;
             *)
                 error "unknown option: $1"
                 usage >&2
@@ -109,9 +134,9 @@ require_command() {
 
 run() {
     if [[ "$DRY_RUN" == 1 ]]; then
-        printf 'PLAN run:'
-        printf ' %q' "$@"
-        printf '\n'
+        local command
+        printf -v command ' %q' "$@"
+        log "PLAN run:$command"
     else
         "$@"
     fi
@@ -632,7 +657,7 @@ install_or_update() {
         elif verify_release "$active_release" "$version"; then
             rebuild=0
         else
-            log "installed environment is inconsistent; staging a complete repair"
+            warning "installed environment is inconsistent; staging a complete repair"
         fi
     fi
     if [[ -n "$active_release" && "$active_release" != "$VK_RELEASES/$RELEASE_ID" ]]; then

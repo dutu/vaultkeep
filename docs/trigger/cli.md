@@ -25,6 +25,11 @@ Trigger always uses the systemd user manager and user-mode backups. Parameters
 override the job's `trigger.params` defaults. Use the application-wide
 `vaultkeep --version` to inspect the installed version.
 
+Install/update confirmations and error diagnostics include level prefixes. Add
+the global `--no-color` option before the command to disable terminal colors, for
+example `vaultkeep --no-color --user --config JOB.yaml trigger install`. See
+[terminal output](../../README.md#terminal-output) for color and redirection rules.
+
 ## Monitoring and checks
 
 `monitor` runs the selected job's foreground monitor. It requires an enabled trigger,
