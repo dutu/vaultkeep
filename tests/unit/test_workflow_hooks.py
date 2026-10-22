@@ -76,6 +76,7 @@ def _patch_creation_workflow(
     states: list[LocalState] = []
     allocated = SimpleNamespace(
         final_directory=tmp_path / "final",
+        staging_directory=tmp_path / "stage",
         archive_path=tmp_path / "stage" / "archive.tar.zst",
         checksum_path=tmp_path / "stage" / "archive.tar.zst.sha256",
     )

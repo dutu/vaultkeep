@@ -893,6 +893,13 @@ Possible successful results:
 
 An unchanged run does not create an archive or apply retention.
 
+If a run fails before the final directory rename, Vaultkeep removes that attempt's
+`.partial-vaultkeep-*` directory. If cleanup also fails, a warning identifies the
+remaining path and the original backup error is still reported. Committed backups
+are preserved if a later operation fails. An abrupt termination, such as a power
+loss or forced kill, can leave partial directories for manual cleanup once no
+backup is using them; later runs do not remove older partial directories.
+
 ### List job backups
 
 ```text
@@ -941,7 +948,7 @@ yearly → monthly → weekly → daily → hourly
 
 Each finer tier is limited by the horizon established by the next enabled coarser tier. A tier value of `0` disables that tier, and at least one tier remains enabled.
 
-Retention runs automatically only after a new backup is finalized. Time passing or an unchanged run does not delete backups. Vaultkeep never automatically deletes unrelated, temporary, or malformed destination entries.
+Retention runs automatically only after a new backup is finalized. Time passing or an unchanged run does not delete backups. Retention never deletes unrelated, temporary, or malformed destination entries.
 
 ### Configure a job timer
 

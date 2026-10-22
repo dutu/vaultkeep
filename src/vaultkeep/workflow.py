@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -353,6 +355,7 @@ def _run_single_backup(
     )
     failure_context = replace(base_hook_context, destination=config.destination.root)
     terminal_hook_failed = False
+    staging_path: Path | None = None
 
     try:
         _run_configured_hook(
@@ -454,6 +457,7 @@ def _run_single_backup(
             runtime_params=parameters,
         )
         create_staging_directory(allocated)
+        staging_path = allocated.staging_directory
         hook_context = replace(
             failure_context,
             backup_id=backup_id,
@@ -523,6 +527,7 @@ def _run_single_backup(
             created_at=now,
             config_fingerprint=config_fingerprint,
         )
+        staging_path = None
         report("Checking finalized backup")
         committed = discover_backups(config, runtime_params=parameters)
         record = next(
@@ -577,6 +582,15 @@ def _run_single_backup(
         )
     except BaseException as error:
         report("Handling backup failure")
+        if staging_path is not None:
+            try:
+                shutil.rmtree(staging_path)
+            except FileNotFoundError:
+                pass  # The directory may already have been renamed at the commit point.
+            except OSError as cleanup_error:
+                logging.getLogger(__name__).warning(
+                    "Cannot remove partial backup directory %s: %s", staging_path, cleanup_error
+                )
         failure_context = replace(
             failure_context,
             result="failed",
