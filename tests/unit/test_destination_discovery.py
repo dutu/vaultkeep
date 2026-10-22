@@ -8,13 +8,16 @@ from typing import Any
 
 import pytest
 
+from vaultkeep.archive import checksums as checksums_module
 from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum_sidecar
 from vaultkeep.config.models import JobConfig
 from vaultkeep.destination.discovery import discover_backups
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
 from vaultkeep.destination.pruning import build_prune_plan, execute_prune_plan
 from vaultkeep.destination.templates import allocate_job_backup_paths, create_staging_directory
-from vaultkeep.errors import DestinationTemplateError, PruneError
+from vaultkeep.errors import DestinationError, DestinationTemplateError, PruneError
+from vaultkeep.file_backups import file_config
+from vaultkeep.workflow import list_backups, prune_backups, verify_backups
 
 
 def _config(tmp_path: Path, valid_config: dict[str, Any]) -> JobConfig:
@@ -72,6 +75,106 @@ def test_discovery_returns_valid_records_and_ignores_unrelated(
     assert len(discovered.backups) == 1
     assert discovered.malformed == ()
     assert discovered.state_records[0].job_id == "app"
+
+
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
+def test_list_never_reads_archive_contents_but_verify_and_prune_still_check_them(
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    backup_mode: str,
+) -> None:
+    valid_config["backup_mode"] = backup_mode
+    valid_config["destination"]["mount_point"] = None
+    config = _config(tmp_path, valid_config)
+    destination = (
+        file_config(config, tmp_path / "missing-source" / "wallet")
+        if backup_mode == "per_file"
+        else config
+    )
+    Path(destination.destination.root).mkdir(exist_ok=True)
+    directory = _create_backup(destination, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    archive = next(directory.glob("*.tar.zst"))
+    archive.write_bytes(b"corrupted archive")
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(config.model_dump_json())
+    stages: list[str] = []
+
+    original_open = Path.open
+
+    def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path == archive:
+            pytest.fail("Listing must never open an archive")
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", guarded_open)
+        result, backups = list_backups(config_path, progress=stages.append)
+
+    assert result.backups == 1
+    assert backups[0].archive_path == archive
+    assert stages == [
+        "Loading and validating configuration",
+        "Checking destination",
+        "Listing backup metadata",
+    ]
+    with pytest.raises(DestinationError, match="malformed"):
+        verify_backups(config_path)
+    with pytest.raises(PruneError, match="malformed"):
+        prune_backups(config_path, dry_run=False)
+    assert archive.read_bytes() == b"corrupted archive"
+
+
+@pytest.mark.parametrize("verify_archives", [False, True])
+@pytest.mark.parametrize(
+    "damage",
+    ["checksum-format", "checksum-digest", "archive-missing", "archive-link", "extra-file"],
+)
+def test_discovery_preserves_metadata_checks_without_archive_verification(
+    tmp_path: Path, valid_config: dict[str, Any], verify_archives: bool, damage: str
+) -> None:
+    config = _config(tmp_path, valid_config)
+    directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    archive = next(directory.glob("*.tar.zst"))
+    sidecar = next(directory.glob("*.sha256"))
+    if damage == "checksum-format":
+        sidecar.write_text("invalid checksum\n")
+    elif damage == "checksum-digest":
+        sidecar.write_text(f"{'0' * 64}  {archive.name}\n")
+    elif damage == "archive-missing":
+        archive.unlink()
+    elif damage == "archive-link":
+        target = tmp_path / "unrelated-archive"
+        archive.rename(target)
+        archive.symlink_to(target)
+    else:
+        (directory / "extra.txt").touch()
+
+    discovered = discover_backups(config, verify_archives=verify_archives)
+
+    assert discovered.backups == ()
+    assert len(discovered.malformed) == 1
+
+
+def test_default_discovery_still_recomputes_archive_checksums(
+    tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, valid_config)
+    directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    archive = next(directory.glob("*.tar.zst"))
+    calculated: list[Path] = []
+
+    def calculate(path: Path) -> str:
+        calculated.append(path)
+        return "0" * 64
+
+    monkeypatch.setattr(checksums_module, "calculate_archive_sha256", calculate)
+
+    discovered = discover_backups(config)
+
+    assert calculated == [archive]
+    assert discovered.backups == ()
+    assert "does not match archive content" in discovered.malformed[0].reason
 
 
 def test_discovery_ignores_staging_even_when_it_matches_the_final_template(

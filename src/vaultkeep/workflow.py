@@ -137,17 +137,26 @@ def validate_job(
 
 
 def list_backups(
-    config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    config_path: Path,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[CommandResult, tuple[object, ...]]:
-    """Discover and report valid backups without requiring configured sources."""
+    """List backup metadata without reading archive contents or requiring sources."""
+    report = progress if progress is not None else lambda message: None
     parameters = dict(runtime_params or {})
+    report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
+    report("Checking destination")
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
+    report("Listing backup metadata")
     destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
     backups = tuple(
         backup
         for destination in destinations
-        for backup in discover_backups(destination, runtime_params=parameters).backups
+        for backup in discover_backups(
+            destination, runtime_params=parameters, verify_archives=False
+        ).backups
     )
     return CommandResult("list", "listed", backups=len(backups)), backups
 

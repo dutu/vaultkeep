@@ -54,8 +54,8 @@ def write_checksum_sidecar(archive_path: Path, checksum_path: Path, digest: str)
         ) from error
 
 
-def verify_checksum_sidecar(archive_path: Path, checksum_path: Path) -> str:
-    """Strictly validate the checksum sidecar and archive content."""
+def read_checksum_sidecar(archive_path: Path, checksum_path: Path) -> str:
+    """Validate the sidecar format and return its digest without reading the archive."""
     try:
         payload = checksum_path.read_bytes()
     except OSError as error:
@@ -71,6 +71,12 @@ def verify_checksum_sidecar(archive_path: Path, checksum_path: Path) -> str:
         raise ArchiveVerificationError("Archive checksum is not ASCII") from error
     if any(character not in "0123456789abcdef" for character in declared):
         raise ArchiveVerificationError("Archive checksum is not lowercase hexadecimal")
+    return declared
+
+
+def verify_checksum_sidecar(archive_path: Path, checksum_path: Path) -> str:
+    """Strictly validate the checksum sidecar and archive content."""
+    declared = read_checksum_sidecar(archive_path, checksum_path)
     try:
         actual = calculate_archive_sha256(archive_path)
     except ArchiveCreationError as error:

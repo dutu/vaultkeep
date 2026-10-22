@@ -912,7 +912,14 @@ backup is using them; later runs do not remove older partial directories.
 vaultkeep [--user] --config <job.yaml> list
 ```
 
-`list` reports valid and malformed matching entries without reading complete archive contents or changing state.
+`list` checks backup directory layouts, manifests, and checksum sidecars without
+reading archive contents or changing state. Use `verify` to detect archive content
+corruption.
+
+When stderr is a terminal, `list` displays its current stage with elapsed time.
+Long stages repeat every 10 seconds with a `still running` message. Progress is
+omitted when stderr is redirected or captured. The final result remains on stdout
+as `list: listed`.
 
 ### Verify job backups
 

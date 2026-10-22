@@ -99,7 +99,10 @@ def _main(argv: Sequence[str] | None) -> int:
                 )
             elapsed = monotonic() - started
         elif namespace.command == "list":
-            result, _ = list_backups(namespace.config, runtime_params=runtime_params)
+            with terminal_progress(no_color=namespace.no_color) as progress:
+                result, _ = list_backups(
+                    namespace.config, runtime_params=runtime_params, progress=progress
+                )
         elif namespace.command == "verify":
             with terminal_progress(no_color=namespace.no_color) as progress:
                 result = verify_backups(

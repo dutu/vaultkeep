@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vaultkeep.archive.checksums import verify_checksum_sidecar
+from vaultkeep.archive.checksums import read_checksum_sidecar, verify_checksum_sidecar
 from vaultkeep.config.models import JobConfig
 from vaultkeep.destination.manifest import BackupManifest, load_manifest
 from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
@@ -31,7 +31,7 @@ class MalformedDestinationEntry:
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredBackup:
-    """A complete backup whose identity and integrity have been validated."""
+    """A backup with validated metadata and optionally verified archive content."""
 
     directory: Path
     archive_path: Path
@@ -68,9 +68,12 @@ class DiscoveryResult:
 
 
 def discover_backups(
-    config: JobConfig, *, runtime_params: Mapping[str, str] | None = None
+    config: JobConfig,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+    verify_archives: bool = True,
 ) -> DiscoveryResult:
-    """Return valid configured-job backups and matching malformed entries."""
+    """Validate matching backups, reading archive contents unless explicitly disabled."""
     root = Path(config.destination.root)
     base_matcher = _base_name_matcher(
         config.destination.name_template,
@@ -93,14 +96,18 @@ def discover_backups(
         if match is None:
             continue
         try:
-            backups.append(_validate_backup_directory(child, base_matcher, config))
+            backups.append(
+                _validate_backup_directory(
+                    child, base_matcher, config, verify_archives=verify_archives
+                )
+            )
         except (DestinationDiscoveryError, ManifestError) as error:
             malformed.append(MalformedDestinationEntry(child, str(error)))
     return DiscoveryResult(tuple(backups), tuple(malformed))
 
 
 def _validate_backup_directory(
-    path: Path, base_matcher: re.Pattern[str], config: JobConfig
+    path: Path, base_matcher: re.Pattern[str], config: JobConfig, *, verify_archives: bool
 ) -> DiscoveredBackup:
     try:
         directory_status = path.lstat()
@@ -153,7 +160,11 @@ def _validate_backup_directory(
     _require_regular_file(manifest_path)
     _require_exact_artifacts(path, {archive_path.name, checksum_path.name, manifest_path.name})
     try:
-        digest = verify_checksum_sidecar(archive_path, checksum_path)
+        digest = (
+            verify_checksum_sidecar(archive_path, checksum_path)
+            if verify_archives
+            else read_checksum_sidecar(archive_path, checksum_path)
+        )
     except Exception as error:  # Archive errors are malformed destination facts here.
         raise DestinationDiscoveryError(f"Invalid archive checksum in {path}: {error}") from error
     if manifest.archive_digest != f"sha256:{digest}":
