@@ -134,6 +134,56 @@ cannot turn an illustrative matcher into a verified preset. Each job uses its ow
 See the application guides for [Bisq](apps/bisq.md),
 [Electrum](apps/electrum.md), and [Wasabi](apps/wasabi.md).
 
+## Is a backup running?
+
+Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`. `Monitor:
+RUNNING` describes the shutdown monitor. Read `Backup activity` and, for an active
+attempt, `Worker` to check the backup separately. A oneshot worker normally shows
+`RUNNING (activating/start)` during execution. `ACTIVE` alone includes queued or
+unresolved attempts. `STOPPED (...; awaiting reconciliation)` is not a success
+claim, and `UNKNOWN` means execution could not be confirmed.
+
+Use the exact `Worker service` from that report to inspect the attempt:
+
+```sh
+systemctl --user status --no-pager '<worker-service>'
+journalctl --user -u '<worker-service>' -n 100 --no-pager
+```
+
+The monitor journal records detection and request events. Backup child output is
+retained separately in the attempt's private `log.txt` under the reported Trigger
+state root; the worker journal may contain only its final summary. These reports do
+not provide a live archive progress percentage. Preserve recovery evidence when
+investigating an unresolved attempt.
+
+## Why did a backup fail?
+
+1. Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`.
+   Read `Last attempt outcome`, `Backup exit code` or `Backup signal`, any
+   `Attempt reason`, and `Diagnostic tail`. The exit code is the backup child's
+   original code; the systemd worker may have a different exit code.
+
+2. For more context, copy `Diagnostics path` from that report:
+
+   ```sh
+   tail -n 40 '<diagnostics-path>'
+   ```
+
+   The status excerpt includes at most ten nonblank lines, each capped at 500
+   characters. The log retains up to 256 KiB of combined child output. It can
+   contain job output; review and redact it before sharing.
+
+3. If diagnostics were not recorded or are no longer retained, use `Last attempt`
+   and the job identity to inspect the worker journal:
+
+   ```sh
+   journalctl --user -u 'vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service' --no-pager
+   ```
+
+   Missing or unreadable diagnostics do not change the saved outcome or establish
+   a cause. Inspect any reported permissions error. Summary records can outlive
+   detailed logs under normal retention; do not delete recovery state to retry.
+
 ## A backup is "blocked"
 
 A pending request is waiting behind an active or unresolved attempt for the same

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import signal
+from pathlib import Path
 from types import FrameType
 
 from vaultkeep.cli.output import Console, configure_logging
@@ -28,7 +29,7 @@ from vaultkeep.trigger.errors import (
 )
 from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.models import InstanceState, parse_utc, utc_now
-from vaultkeep.trigger.monitor import Monitor
+from vaultkeep.trigger.monitor import Monitor, unit_name_for
 from vaultkeep.trigger.notify import build_notifier
 from vaultkeep.trigger.paths import (
     monitor_lock_path,
@@ -40,6 +41,7 @@ from vaultkeep.trigger.process import PsutilProcessProvider
 from vaultkeep.trigger.service import manage_service, service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController
+from vaultkeep.trigger.version import DIAGNOSTICS_CAP_BYTES
 
 _LOG = logging.getLogger("vaultkeep.trigger")
 
@@ -134,12 +136,128 @@ def _format_age(timestamp: str | None) -> str:
     return f"{(now - parsed).total_seconds():.0f}s ago"
 
 
+def _backup_activity(
+    store: StateStore,
+    instance_id: str,
+    state: InstanceState | None,
+    blocked_reason: str | None,
+) -> tuple[str, str | None]:
+    """Read persisted activity, including attempts awaiting recovery association."""
+    recovery_state = state or InstanceState(instance_id=instance_id)
+    active_attempt_id = recovery_state.active_attempt_id
+    for attempt_id in store.list_attempt_ids():
+        request = store.read_request(attempt_id)
+        if request is None:
+            if store.read_launch(attempt_id) or store.read_receipt(attempt_id):
+                raise StateError(f"attempt {attempt_id} has no request")
+            continue
+        if request.instance_id != instance_id:
+            continue
+        if request.attempt_id != attempt_id:
+            raise StateError(f"attempt {attempt_id} has contradictory request ownership")
+        if store.attempt_is_protected(recovery_state, attempt_id, request):
+            if active_attempt_id is not None and active_attempt_id != attempt_id:
+                raise StateError(f"instance {instance_id} has multiple unreconciled attempts")
+            active_attempt_id = attempt_id
+    if active_attempt_id is not None:
+        return "active", active_attempt_id
+    if state is not None and blocked_reason is None:
+        return ("pending" if state.pending_request is not None else "idle"), None
+    return "unknown", None
+
+
+def _worker_status(unit: str) -> str:
+    """Describe a live worker probe without inferring backup completion."""
+    worker = RealSystemdController().unit_state(unit)
+    if worker is None:
+        return "UNKNOWN (systemd unavailable)"
+    detail = f"{worker.active_state}/{worker.sub_state}"
+    if worker.load_state == "loaded":
+        # A Type=oneshot worker executes ExecStart in activating/start.
+        if (worker.active_state, worker.sub_state) in (
+            ("activating", "start"),
+            ("active", "running"),
+        ):
+            return f"RUNNING ({detail})"
+        if worker.active_state == "deactivating":
+            return f"STOPPING ({detail})"
+    if worker.job_pending:
+        return f"QUEUED ({detail})"
+    if not worker.is_active_or_pending():
+        return f"STOPPED ({detail}; awaiting reconciliation)"
+    return f"UNKNOWN ({detail})"
+
+
+def _last_attempt_rows(store: StateStore, state: InstanceState) -> list[tuple[str, str]]:
+    if not state.attempt_summaries:
+        return []
+    summary = state.attempt_summaries[-1]
+    outcome = summary["outcome"]
+    rows = [("Last attempt outcome", str(outcome))]
+    if outcome in ("created", "unchanged", "result_unknown"):
+        return rows
+    attempt_id = summary["attempt_id"]
+    rows.append(("Last attempt", attempt_id))
+    if summary.get("exit_code") is not None:
+        rows.append(("Backup exit code", str(summary["exit_code"])))
+    if summary.get("signal") is not None:
+        rows.append(("Backup signal", str(summary["signal"])))
+    if summary.get("reason"):
+        rows.append(("Attempt reason", summary["reason"]))
+    # Read only this attempt's fixed log path, never a path supplied by a receipt.
+    if Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
+        raise StateError(f"invalid last attempt ID: {attempt_id!r}")
+    path = store.log_path(attempt_id)
+    rows.append(("Diagnostics path", str(path)))
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - DIAGNOSTICS_CAP_BYTES))
+            diagnostics = handle.read(DIAGNOSTICS_CAP_BYTES)
+    except FileNotFoundError:
+        rows.append(("Diagnostics", "unavailable (not recorded or no longer retained)"))
+        return rows
+    except OSError as error:
+        rows.append(("Diagnostics", f"unavailable ({error})"))
+        return rows
+    lines = [line for line in diagnostics.decode("utf-8", "replace").splitlines() if line.strip()]
+    if not lines:
+        rows.append(("Diagnostics", "no output recorded"))
+        return rows
+    for index, line in enumerate(lines[-10:]):
+        # Keep child output from injecting terminal control sequences or unbounded rows.
+        line = "".join(character if character.isprintable() else " " for character in line)
+        if len(line) > 500:
+            line = line[:497] + "..."
+        rows.append(("Diagnostic tail" if index == 0 else "", line))
+    return rows
+
+
 def _print_instance(
-    output: Console, state: InstanceState, blocked_reason: str | None = None
+    output: Console,
+    state: InstanceState | None,
+    blocked_reason: str | None,
+    *,
+    instance_id: str,
+    activity: str,
+    active_attempt_id: str | None,
+    scope: str | None,
+    store: StateStore,
 ) -> None:
-    rows = [("Armed", "yes" if state.armed else "no")]
+    rows = [("Backup activity", activity.upper())]
+    if active_attempt_id is not None:
+        unit = unit_name_for(active_attempt_id, scope)
+        if activity == "active":
+            rows.append(("Worker", _worker_status(unit)))
+        rows.append(("Active attempt", active_attempt_id))
+        rows.append(("Worker service", unit))
     if blocked_reason is not None:
         rows.append(("Dispatch blocked", blocked_reason))
+    if state is None:
+        rows.append(("State", "no recorded instances"))
+        output.fields(rows, section=f"Job {instance_id}")
+        return
+    rows.append(("Armed", "yes" if state.armed else "no"))
     _LOG.debug("Instance %s config fingerprint: %s", state.instance_id, state.config_fingerprint)
     if state.last_observation is not None:
         obs = state.last_observation
@@ -151,8 +269,6 @@ def _print_instance(
         rows.append(("Observation", "none recorded"))
     if state.pending_request is not None:
         rows.append(("Pending request", state.pending_request.request_id))
-    if state.active_attempt_id is not None:
-        rows.append(("Active attempt", state.active_attempt_id))
     if state.pending_request is not None and state.active_attempt_id is not None:
         rows.append(
             (
@@ -165,8 +281,7 @@ def _print_instance(
         rows.append(("Submission rejections", str(state.rejection.consecutive)))
     if state.review_required:
         rows.append(("Review required", state.review_reason or "yes"))
-    if state.attempt_summaries:
-        rows.append(("Last attempt outcome", str(state.attempt_summaries[-1].get("outcome"))))
+    rows.extend(_last_attempt_rows(store, state))
     rows.append(("Last monitor update", _format_age(state.last_monitor_update)))
     output.fields(rows, section=f"Job {state.instance_id}")
 
@@ -186,30 +301,10 @@ def _cmd_status_json(args: argparse.Namespace, config: TriggerConfig, store: Sta
         blocked = store.read_blocked(instance_id)
         if args.instance_id is not None and state is None and blocked is None:
             raise SelectionError(f"unknown instance: {instance_id}")
-        # Missing state is not evidence of idleness. An unassociated launch can
-        # still supply positive evidence of an unresolved attempt.
-        recovery_state = state or InstanceState(instance_id=instance_id)
-        pending = recovery_state.pending_request
+        pending = state.pending_request if state is not None else None
         pending_request_id = pending.request_id if pending is not None else None
-        active_attempt_id = recovery_state.active_attempt_id
-        for attempt_id in store.list_attempt_ids():
-            request = store.read_request(attempt_id)
-            if request is None:
-                if store.read_launch(attempt_id) or store.read_receipt(attempt_id):
-                    raise StateError(f"attempt {attempt_id} has no request")
-                continue
-            if request.instance_id != instance_id:
-                continue
-            if request.attempt_id != attempt_id:
-                raise StateError(f"attempt {attempt_id} has contradictory request ownership")
-            if store.attempt_is_protected(recovery_state, attempt_id, request):
-                if active_attempt_id is not None and active_attempt_id != attempt_id:
-                    raise StateError(f"instance {instance_id} has multiple unreconciled attempts")
-                active_attempt_id = attempt_id
-        if active_attempt_id is not None:
-            activity = "active"
-        elif state is not None and blocked is None:
-            activity = "pending" if pending_request_id is not None else "idle"
+        active_attempt_id = state.active_attempt_id if state is not None else None
+        activity, active_attempt_id = _backup_activity(store, instance_id, state, blocked)
     except (StateError, OSError) as error:
         Console(no_color=args.no_color).issue(f"{type(error).__name__}: {error}")
         exit_code = EXIT_CONFIG
@@ -255,35 +350,50 @@ def cmd_status(args: argparse.Namespace) -> int:
     if activity == "unknown":
         output.issue(f"Monitor runtime state is {runtime}.", warning=True)
     instance_ids = sorted(set(store.list_instance_ids()) | set(store.list_blocked_ids()))
-    if not instance_ids:
-        output.fields([("State", "no recorded instances")], section="Activity")
-        return EXIT_OK
     if args.instance_id is not None and args.instance_id not in instance_ids:
         raise SelectionError(f"unknown instance: {args.instance_id}")
     exit_code = EXIT_OK
-    for instance_id in instance_ids:
+    for instance_id in instance_ids or [config.job_id]:
         if args.instance_id is not None and instance_id != args.instance_id:
             continue
+        blocked_error: StateError | None = None
         try:
             blocked_reason = store.read_blocked(instance_id)
         except StateError as error:
+            blocked_error = error
             blocked_reason = str(error)
             exit_code = EXIT_CONFIG
         try:
             state = store.read_instance(instance_id)
         except StateError as error:
             output.issue(error)
-            rows = [("State", "unavailable")]
+            rows = [("Backup activity", "UNKNOWN"), ("State", "unavailable")]
             if blocked_reason is not None:
                 rows.append(("Dispatch blocked", blocked_reason))
             output.fields(rows, section=f"Job {instance_id}")
             exit_code = EXIT_CONFIG
             continue
-        if state is None:
-            if blocked_reason is not None:
-                output.fields([("Dispatch blocked", blocked_reason)], section=f"Job {instance_id}")
-            continue
-        _print_instance(output, state, blocked_reason)
+        active_attempt_id = state.active_attempt_id if state is not None else None
+        try:
+            if blocked_error is not None:
+                raise blocked_error
+            backup_activity, active_attempt_id = _backup_activity(
+                store, instance_id, state, blocked_reason
+            )
+        except (StateError, OSError) as error:
+            output.issue(error)
+            backup_activity = "unknown"
+            exit_code = EXIT_CONFIG
+        _print_instance(
+            output,
+            state,
+            blocked_reason,
+            instance_id=instance_id,
+            activity=backup_activity,
+            active_attempt_id=active_attempt_id,
+            scope=config.scope,
+            store=store,
+        )
     return exit_code
 
 

@@ -91,8 +91,38 @@ service separately. See [service operation](service-operation.md).
 
 `status` reads the selected job's recovery namespace. Its aligned report separates
 trigger enablement from monitor runtime (`RUNNING`, `STOPPED`, or unknown), and
-shows observation/update ages, pending and active attempt IDs, latest results, and
-review/block problems. It creates no state or runtime files. Full service names
+shows `Backup activity` (`IDLE`, `PENDING`, `ACTIVE`, or `UNKNOWN`), observation/update
+ages, pending and active attempt IDs, latest results, and review/block problems.
+Activity uses the same persisted evidence rules as [JSON status](#json-status),
+including unassociated attempts awaiting recovery. An active attempt also shows
+its exact `Worker service` name and a live `Worker` probe:
+
+| Worker | Meaning |
+| --- | --- |
+| `RUNNING` | systemd reports the worker's command executing. A oneshot worker normally reports `activating/start` throughout execution. |
+| `QUEUED` | A systemd job is pending without confirmed execution of the worker's command. |
+| `STOPPING` | The worker is deactivating. |
+| `STOPPED (...; awaiting reconciliation)` | The worker is inactive or failed with no pending job; its recorded attempt still awaits monitor reconciliation. This does not establish backup success. |
+| `UNKNOWN` | The systemd probe is unavailable or does not establish one of the states above. |
+
+Worker execution does not prove an archive is currently being written; it includes
+validation, unchanged checks, and other backup stages. Probes are bounded,
+synchronous snapshots and never start, stop, reset, or reconcile workers. JSON status
+remains a persisted-evidence report and does not perform these live worker probes.
+
+For the latest failed, blocked, deferred, or unknown-outcome attempt, the human
+report includes `Last attempt`, `Backup exit code` or `Backup signal` when recorded,
+and `Attempt reason` when one was saved. Exit codes belong to the original backup
+child, not the worker service. `Diagnostic tail` shows up to the last ten nonblank
+lines of that attempt's retained child output, with each line limited to 500
+characters. It is an output excerpt, not an inferred root cause. `Diagnostics path`
+identifies the fixed per-attempt `log.txt` for full inspection. Missing, empty, or
+unreadable logs are reported explicitly without changing the recorded outcome.
+Status never reads logs from unrelated attempts or a receipt-supplied path.
+Successful results (`created`, `unchanged`, and `result_unknown`) do not print
+failure diagnostics. These details do not change the JSON schema or exit semantics.
+
+Status creates no state or runtime files. Monitor service names
 and state paths appear in `info` diagnostics; fingerprints and probe details appear
 at `debug`. Reports and operational problems remain visible at every logging level;
 see [terminal output](../../README.md#terminal-output).

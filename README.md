@@ -1390,6 +1390,22 @@ vaultkeep --user --config "$job_config" trigger status
 systemctl --user list-units --all 'vaultkeep-trigger@*.service' 'vaultkeep-trigger-exec@*.service'
 ```
 
+Read `Backup activity` separately from `Monitor`: `IDLE` means no recorded work,
+`PENDING` means a request is waiting, `ACTIVE` means an attempt is tracked, and
+`UNKNOWN` means the available evidence is insufficient. For an active attempt,
+`Worker` reports the current systemd state and `Worker service` names its exact unit.
+`RUNNING (activating/start)` is normal while a oneshot backup worker executes.
+`QUEUED` means a systemd job is pending; `STOPPED (...; awaiting reconciliation)`
+means the worker has ended but the monitor has not yet cleared its attempt.
+An unavailable worker probe reports `UNKNOWN`. These are snapshots, not archive
+progress or a guarantee that another process cannot start a backup.
+
+For a failed, blocked, deferred, or unknown-outcome attempt, status also shows its
+ID, the backup's exit code or termination signal when recorded, any recorded
+attempt reason, and a short tail of its saved output. `Diagnostics path` points to
+the complete retained log. Missing or unreadable diagnostics are reported explicitly;
+the attempt outcome remains available. See [failure diagnosis](docs/trigger/troubleshooting.md#why-did-a-backup-fail).
+
 Use the exact service name printed by `status` to inspect logs:
 
 ```bash
