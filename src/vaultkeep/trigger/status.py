@@ -16,9 +16,115 @@ from vaultkeep.trigger.systemd import RealSystemdController, UnitState
 from vaultkeep.trigger.version import DIAGNOSTICS_CAP_BYTES
 
 
-def _timestamp(value: str | None) -> str:
+def _timestamp(value: str | None, *, seconds: bool = True) -> str:
     parsed = parse_utc(value)
-    return parsed.strftime("%Y-%m-%d %H:%M:%S UTC") if parsed else "unknown"
+    pattern = "%Y-%m-%d %H:%M:%S UTC" if seconds else "%Y-%m-%d %H:%M UTC"
+    return parsed.strftime(pattern) if parsed else "unknown"
+
+
+def elapsed_seconds(timestamp: str | None) -> float | None:
+    parsed, now = parse_utc(timestamp), parse_utc(utc_now())
+    if parsed is None or now is None:
+        return None
+    seconds = (now - parsed).total_seconds()
+    return seconds if seconds >= 0 else None
+
+
+def duration(seconds: float) -> str:
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def _concise(reason: str) -> str:
+    reason = "".join(c if c.isprintable() else " " for c in reason).strip()
+    return reason if len(reason) <= 160 else "See diagnostic details"
+
+
+def _log_rows(store: StateStore, attempt_id: str) -> list[tuple[str, str]]:
+    path = store.log_path(attempt_id)
+    try:
+        return [("Log", str(path))] if path.is_file() else []
+    except OSError:
+        return []
+
+
+def _application(
+    state: InstanceState | None,
+    store: StateStore,
+    *,
+    reliable: bool,
+    poll_seconds: float,
+    monitor_started_at: str | None,
+) -> tuple[str, str]:
+    """Use observations and confirmed requests, never arming alone as shutdown proof.
+
+    Arming and request history survive restarts. The existing lifetime lock's write
+    time bounds the current session; without it session-specific claims are unsafe.
+    """
+    if not reliable or state is None or state.last_observation is None:
+        return "UNKNOWN", ""
+    observation = state.last_observation
+    observed = parse_utc(observation.observed_at)
+    started = parse_utc(monitor_started_at)
+    age = elapsed_seconds(observation.observed_at)
+    if age is None or age > 2 * poll_seconds:
+        return "UNKNOWN", " (observations stale or unavailable; check monitor journal)"
+    if started is None or observed is None or observed < started:
+        return "UNKNOWN", " (current session observation unavailable)"
+    if observation.observation is Observation.RUNNING:
+        return "RUNNING", f" (observed {duration(age)} ago)"
+    if observation.observation is Observation.AMBIGUOUS:
+        return "UNKNOWN", " (identity ambiguous; check process matching)"
+    if observation.observation is Observation.INSPECTION_UNAVAILABLE:
+        return "UNKNOWN", " (inspection unavailable; check monitor journal)"
+    if state.armed or state.candidate_since:
+        return "UNKNOWN", " (shutdown not yet confirmed)"
+
+    # A request is created only after a running -> confirmed-stopped transition.
+    # latest_request_id is invalidated when the application is seen running again.
+    if state.latest_request_id:
+        request = state.pending_request
+        if request is None or request.request_id != state.latest_request_id:
+            attempt_ids = [state.active_attempt_id] if state.active_attempt_id else []
+            attempt_ids.extend(
+                item["attempt_id"]
+                for item in reversed(state.attempt_summaries)
+                if item["request_id"] == state.latest_request_id
+            )
+            request = None
+            for attempt_id in attempt_ids:
+                _validate_attempt_id(attempt_id)
+                candidate = store.read_request(attempt_id)
+                if candidate and (
+                    candidate.attempt_id != attempt_id or candidate.instance_id != state.instance_id
+                ):
+                    raise StateError(f"attempt {attempt_id} has contradictory request ownership")
+                if candidate and candidate.request_id == state.latest_request_id:
+                    request = candidate
+                    break
+        if (
+            request
+            and request.instance_id == state.instance_id
+            and request.config_fingerprint == state.config_fingerprint
+        ):
+            confirmed = parse_utc(request.confirmed_at)
+            stopped_age = elapsed_seconds(request.confirmed_at)
+            if confirmed and started <= confirmed <= observed and stopped_age is not None:
+                return "HAS STOPPED", f" ({duration(stopped_age)} ago)"
+        return "UNKNOWN", " (current session shutdown evidence unavailable)"
+    if (
+        state.latest_request_id is None
+        and not state.attempt_summaries
+        and not state.active_attempt_id
+        and not state.pending_request
+    ):
+        return "NOT YET DETECTED", ""
+    return "UNKNOWN", ""
 
 
 def _worker_status(worker: UnitState | None) -> str:
@@ -41,11 +147,15 @@ def _worker_status(worker: UnitState | None) -> str:
     return "UNKNOWN"
 
 
+def _validate_attempt_id(attempt_id: str) -> None:
+    if Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
+        raise StateError(f"invalid last attempt ID: {attempt_id!r}")
+
+
 def _receipt(
     store: StateStore, attempt_id: str, instance_id: str, request_id: str | None = None
 ) -> Receipt | None:
-    if Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
-        raise StateError(f"invalid last attempt ID: {attempt_id!r}")
+    _validate_attempt_id(attempt_id)
     receipt = store.read_receipt(attempt_id)
     if receipt and (
         receipt.attempt_id != attempt_id
@@ -68,36 +178,36 @@ def _failure_details(store: StateStore, attempt_id: str) -> list[tuple[str, str]
     diagnostics = "".join(
         c if c.isprintable() or c == "\n" else f"\\x{ord(c):02x}" for c in diagnostics
     )
-    # Only extract a path from the finalizer's explicit delimiter; never guess it
-    # from current configuration, a receipt-supplied log path, or arbitrary output.
+    # Recognize the finalizer's explicit error without exposing its destination
+    # path or internal exception representation in the concise reason.
     finalization = re.search(
         r"Cannot atomically finalize backup (.+?): \[Errno \d+\] ([^\n]+)", diagnostics
     )
     if finalization:
-        path, error = finalization.groups()
-        if "Permission denied" in error:
-            reason, action = (
-                "Permission denied during finalization",
-                "Check destination permissions",
-            )
-        else:
-            reason, action = (
-                "Backup finalization failed",
-                "Check destination access and diagnostics",
-            )
-        return [("Reason", reason), ("Backup", path), ("Action", action)]
+        _, error = finalization.groups()
+        reason = (
+            "Permission denied during finalization"
+            if "Permission denied" in error
+            else "Backup finalization failed"
+        )
+        return [("Reason", reason)]
     failures = [line.strip() for line in diagnostics.splitlines() if line.startswith("FAILED:")]
     if failures:
-        reason = "".join(c if c.isprintable() else " " for c in failures[-1][7:].strip())
-        if len(reason) <= 160:
-            return [
-                ("Reason", reason),
-                ("Action", "Inspect diagnostics and correct the reported error"),
-            ]
-    return [
-        ("Reason", "Not recorded or unavailable"),
-        ("Action", "Inspect the attempt diagnostics and worker journal"),
-    ]
+        return [("Reason", _concise(failures[-1][7:].strip()))]
+    return [("Reason", "Not recorded or unavailable")]
+
+
+def _result(outcome: str) -> str:
+    return {
+        "created": "SUCCESS",
+        "unchanged": "UNCHANGED",
+        "result_unknown": "SUCCESS (backup result unknown)",
+        "backup_failed": "FAILED",
+        "blocked": "BLOCKED",
+        "deferred": "DEFERRED",
+        "integration_error": "EXECUTION ERROR",
+        "outcome_unknown": "UNKNOWN",
+    }[outcome]
 
 
 def _last_attempt(
@@ -113,23 +223,8 @@ def _last_attempt(
     outcome = summary["outcome"]
     if receipt and receipt.outcome.value != outcome:
         raise StateError(f"attempt {attempt_id} has contradictory completion outcomes")
-    result = {
-        "created": "SUCCESS",
-        "unchanged": "UNCHANGED",
-        "result_unknown": "SUCCESS (backup result unknown)",
-        "backup_failed": "FAILED",
-        "blocked": "BLOCKED",
-        "deferred": "DEFERRED",
-        "integration_error": "EXECUTION ERROR",
-        "outcome_unknown": "UNKNOWN",
-    }[outcome]
+    result = _result(outcome)
     result = output.status(result)
-    if (
-        state.review_required
-        and summary.get("review_required")
-        and outcome in ("created", "unchanged")
-    ):
-        result += " (source consistency uncertain)"
     if summary.get("exit_code") is not None and outcome not in (
         "created",
         "unchanged",
@@ -139,48 +234,23 @@ def _last_attempt(
     if summary.get("signal") is not None:
         result += f" (signal {summary['signal']})"
     rows = [("Result", result)]
-    if receipt:
-        rows.append(("Completed", _timestamp(receipt.ended_at)))
-    elif summary.get("recorded_at"):
-        # recorded_at is reconciliation time, not backup completion time.
-        rows.append(("Recorded", _timestamp(summary["recorded_at"])))
+    if receipt and parse_utc(receipt.ended_at) is not None:
+        rows.append(("Completed", _timestamp(receipt.ended_at, seconds=False)))
     if outcome == "result_unknown":
         rows.append(("Detail", "Command succeeded; archive creation was not confirmed"))
     elif outcome not in ("created", "unchanged"):
-        rows.append(("Attempt", attempt_id))
         if summary.get("reason"):
-            reason = summary["reason"]
-            reason = "".join(c if c.isprintable() else " " for c in reason)
-            rows.append(("Reason", reason if len(reason) <= 160 else "See diagnostic details"))
-            rows.append(
-                (
-                    "Action",
-                    "Check process matching and monitor logs"
-                    if outcome == "blocked"
-                    else "Inspect the attempt diagnostics and worker journal",
-                )
-            )
+            rows.append(("Reason", _concise(summary["reason"])))
         elif outcome == "backup_failed":
             rows.extend(_failure_details(store, attempt_id))
         else:
-            rows.extend(
-                [
-                    ("Reason", "Not recorded or unavailable"),
-                    ("Action", "Inspect the attempt diagnostics and worker journal"),
-                ]
-            )
+            rows.append(("Reason", "Not recorded or unavailable"))
+        rows.extend(_log_rows(store, attempt_id))
         if outcome == "outcome_unknown":
             rows.append(
                 ("Impact", "Backup completion could not be verified; do not replay this attempt")
             )
-    if any(label == "Backup" for label, _ in rows):
-        rows = [(label, value) for label, value in rows if label != "Attempt"]
-    section = (
-        "Last backup"
-        if outcome in ("created", "unchanged", "result_unknown", "backup_failed")
-        else "Last completed attempt"
-    )
-    output.fields(rows, section=section)
+    output.fields(rows, section="Previous attempt")
     if verbose:
         output.fields(
             _diagnostic_rows(store, summary),
@@ -292,130 +362,97 @@ def print_instance(
     monitor: str,
     enabled: bool,
     poll_seconds: float,
+    monitor_started_at: str | None = None,
+    config_fingerprint: str | None = None,
 ) -> None:
     worker = None
     backup = activity.upper()
     unit = None
+    receipt = None
+    launch = None
+    elapsed = ""
     if active_attempt_id is not None and activity == "active":
         unit = unit_name_for(active_attempt_id, scope)
         worker = RealSystemdController().unit_state(unit)
         backup = _worker_status(worker)
-    rows = [("Backup", backup)]
-    if state is None:
-        rows.append(("State", "No monitoring state recorded"))
-    elif enabled:
-        rows.append(("Trigger armed", "YES" if state.armed else "NO"))
-    if active_attempt_id and activity == "active":
         receipt = _receipt(store, active_attempt_id, instance_id)
         if receipt:
-            rows.append(
-                (
-                    "Child completed",
-                    f"{_timestamp(receipt.ended_at)}; worker awaiting reconciliation",
-                )
+            backup = "COMPLETED"
+            elapsed = " (worker awaiting reconciliation)"
+        elif backup in ("STARTING", "RUNNING", "QUEUED", "STOPPING"):
+            launch = store.read_launch(active_attempt_id)
+            if launch and launch.attempt_id != active_attempt_id:
+                raise StateError(f"attempt {active_attempt_id} has contradictory launch ownership")
+            age = elapsed_seconds(launch.dispatched_at) if launch else None
+            if age is not None:
+                elapsed = f" ({duration(age)} since dispatch)"
+
+    application, recency = _application(
+        state,
+        store,
+        reliable=(
+            enabled
+            and monitor == "RUNNING"
+            and not blocked_reason
+            and (
+                config_fingerprint is None
+                or (state is not None and state.config_fingerprint == config_fingerprint)
             )
-        if backup in ("UNKNOWN", "STOPPED", "FAILED"):
+        ),
+        poll_seconds=poll_seconds,
+        monitor_started_at=monitor_started_at,
+    )
+    if enabled and state and config_fingerprint and state.config_fingerprint != config_fingerprint:
+        recency = " (configuration changed; validate and update monitor)"
+    rows = [("Application", output.status(application) + recency)]
+    if blocked_reason and activity != "active":
+        backup = "BLOCKED"
+    rows.append(("Backup", output.status(backup) + elapsed))
+    if state is None:
+        rows.append(("State", "No monitoring state recorded"))
+    if active_attempt_id and activity == "active":
+        if receipt:
+            rows.append(("Result", output.status(_result(receipt.outcome.value))))
+        elif backup in ("UNKNOWN", "STOPPED", "FAILED"):
             rows.extend(
                 [
                     ("Attempt", active_attempt_id),
-                    (
-                        "Detail",
-                        "Awaiting reconciliation; worker state does not establish backup outcome",
-                    ),
-                    ("Action", "Check monitor health and worker journal"),
+                    ("Detail", "Outcome awaits reconciliation; check monitor and worker journal"),
                 ]
             )
-    if state and state.pending_request:
-        rows.append(
-            (
-                "Pending backup",
-                "Waiting for previous attempt" if active_attempt_id else "Waiting for dispatch",
-            )
-        )
-    output.fields(rows, section="Current activity")
-    health: list[tuple[str, str]] = []
-    if enabled and monitor != "RUNNING":
-        health.extend(
-            [
-                ("Problem", "Monitoring is not confirmed running"),
-                ("Impact", "Application shutdowns may not trigger backups"),
-                (
-                    "Action",
-                    "Install the monitor after validation"
-                    if monitor == "NOT INSTALLED"
-                    else "Check monitor service and journal; validate the job before restarting",
-                ),
-            ]
-        )
-    elif enabled:
-        updated = parse_utc(state.last_monitor_update) if state else None
-        now = parse_utc(utc_now())
-        age = (now - updated).total_seconds() if now and updated else None
-        if age is None or age < 0 or age > 2 * poll_seconds:
-            health.extend(
-                [
-                    ("Problem", "Monitor updates are stale or unavailable"),
-                    ("Impact", "Lock ownership does not confirm responsive observation"),
-                    ("Action", "Check the monitor journal and validate the job"),
-                ]
-            )
+        if state and state.active_attempt_id == active_attempt_id and state.active_review_required:
+            rows.append(("Safety", _review_problem(state.active_review_reason)))
+            rows.append(("Action", "Check application activity and monitor journal"))
+            rows.extend(_log_rows(store, active_attempt_id))
     if blocked_reason:
-        health.extend(
-            [
-                ("Problem", "Backup dispatch blocked by recovery state"),
-                ("Reason", blocked_reason),
-                (
-                    "Action",
-                    "Preserve state and follow recovery instructions before restarting the monitor",
-                ),
-            ]
-        )
-    if state:
-        observation = state.last_observation
+        rows.append(("Dispatch", "BLOCKED (recovery state; preserve records)"))
+        rows.append(("Reason", _concise(blocked_reason)))
+        rows.append(("Action", "Follow recovery instructions before restarting the monitor"))
+    if state and state.pending_request:
+        if active_attempt_id:
+            rows.append(("Pending backup", "Waiting for previous attempt"))
         if (
-            enabled
-            and observation
-            and observation.observation
-            in (
-                Observation.AMBIGUOUS,
-                Observation.INSPECTION_UNAVAILABLE,
-            )
-        ):
-            health.extend(
-                [
-                    (
-                        "Last observation",
-                        "Application identity is ambiguous"
-                        if observation.observation is Observation.AMBIGUOUS
-                        else "Application inspection unavailable",
-                    ),
-                    ("Impact", "Automatic backup dispatch waits for reliable process observation"),
-                    ("Action", "Check process matching and inspection permissions"),
-                ]
-            )
-        if (
-            enabled
-            and state.pending_request
-            and state.rejection
+            state.rejection
             and state.rejection.request_id == state.pending_request.request_id
             and state.rejection.consecutive
         ):
-            health.extend(
-                [
-                    ("Submission rejections", str(state.rejection.consecutive)),
-                    ("Action", "Check worker installation and systemd user permissions"),
-                ]
+            rows.append(
+                ("Dispatch", "Submission rejected; check worker installation and permissions")
             )
-    output.fields(health, section="Monitoring health")
-    if state:
-        completed = [
-            item for item in state.attempt_summaries if item["attempt_id"] != active_attempt_id
-        ]
-        last = completed[-1] if completed else None
-        if last:
-            _last_attempt(output, store, state, last, verbose=verbose)
-        _outstanding(output, store, state, last["attempt_id"] if last else None)
+    output.fields(rows, section="Current activity")
+    completed = (
+        [item for item in state.attempt_summaries if item["attempt_id"] != active_attempt_id]
+        if state
+        else []
+    )
+    last = completed[-1] if completed else None
+    if last and state:
+        _last_attempt(output, store, state, last, verbose=verbose)
+    else:
+        output.fields([("Result", "NONE")], section="Previous attempt")
     if verbose:
+        if state:
+            _outstanding(output, store, state, last["attempt_id"] if last else None)
         details = [("Instance", instance_id)]
         if active_attempt_id:
             details.append(("Active attempt", active_attempt_id))
@@ -425,6 +462,13 @@ def print_instance(
             details.append(
                 ("Worker state", f"{worker.load_state}/{worker.active_state}/{worker.sub_state}")
             )
+        if launch:
+            details.append(("Dispatched", _timestamp(launch.dispatched_at)))
+        if receipt:
+            details.append(("Child started", _timestamp(receipt.started_at)))
+            details.append(("Child completed", _timestamp(receipt.ended_at)))
+        if monitor_started_at:
+            details.append(("Monitor session", _timestamp(monitor_started_at)))
         if state and state.last_observation:
             details.append(("Observation", state.last_observation.observation.value))
             if state.last_observation.reason:
@@ -452,6 +496,8 @@ def _diagnostic_rows(store: StateStore, summary: dict[str, Any]) -> list[tuple[s
         )
     attempt_id = summary["attempt_id"]
     rows.append(("Last attempt", attempt_id))
+    if summary.get("recorded_at"):
+        rows.append(("Recorded", _timestamp(summary["recorded_at"])))
     if summary.get("exit_code") is not None:
         rows.append(("Backup exit code", str(summary["exit_code"])))
     if summary.get("signal") is not None:
@@ -459,8 +505,7 @@ def _diagnostic_rows(store: StateStore, summary: dict[str, Any]) -> list[tuple[s
     if summary.get("reason"):
         rows.append(("Attempt reason", summary["reason"]))
     # Read only this attempt's fixed log path, never a path supplied by a receipt.
-    if Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
-        raise StateError(f"invalid last attempt ID: {attempt_id!r}")
+    _validate_attempt_id(attempt_id)
     if outcome in ("created", "unchanged", "result_unknown"):
         return rows
     path = store.log_path(attempt_id)

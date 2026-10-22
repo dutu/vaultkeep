@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import signal
+from datetime import UTC, datetime
 from types import FrameType
 
 from vaultkeep.cli.output import Console, configure_logging
@@ -39,7 +40,7 @@ from vaultkeep.trigger.preflight import runtime_preflight
 from vaultkeep.trigger.process import PsutilProcessProvider
 from vaultkeep.trigger.service import manage_service, service_name
 from vaultkeep.trigger.state import StateStore
-from vaultkeep.trigger.status import print_instance
+from vaultkeep.trigger.status import duration, elapsed_seconds, print_instance
 from vaultkeep.trigger.systemd import RealSystemdController
 
 _LOG = logging.getLogger("vaultkeep.trigger")
@@ -118,7 +119,16 @@ def _format_age(timestamp: str | None) -> str:
     if now is None:
         return "unknown"
     seconds = (now - parsed).total_seconds()
-    return f"{seconds:.0f}s ago" if seconds >= 0 else "unknown (timestamp is in the future)"
+    return f"{duration(seconds)} ago" if seconds >= 0 else "unknown (timestamp is in the future)"
+
+
+def _monitor_started_at(scope: str | None) -> str | None:
+    """The held lifetime lock is rewritten once when a monitoring session starts."""
+    try:
+        written = monitor_lock_path(scope).stat().st_mtime
+        return datetime.fromtimestamp(written, UTC).isoformat()
+    except (BlockedError, OSError, ValueError, OverflowError):
+        return None
 
 
 def _backup_activity(
@@ -239,12 +249,30 @@ def cmd_status(args: argparse.Namespace) -> int:
                 monitor = "STARTING"
     selected = next((record[1] for record in records if record[0] == config.job_id), records[0][1])
     freshness = _format_age(selected.last_monitor_update) if selected else "unknown"
+    monitor_started_at = _monitor_started_at(config.scope) if monitor == "RUNNING" else None
+    monitor_detail = ""
+    if monitor == "RUNNING":
+        age = elapsed_seconds(selected.last_monitor_update) if selected else None
+        updated = parse_utc(selected.last_monitor_update) if selected else None
+        started = parse_utc(monitor_started_at)
+        if age is None or age > 2 * config.poll_seconds:
+            monitor = "UNKNOWN"
+            monitor_detail = "; updates stale or unavailable; check monitor journal"
+        elif started is not None and updated is not None and updated < started:
+            monitor = "UNKNOWN"
+            monitor_detail = "; awaiting current-session update; check monitor journal"
+    elif config.enabled_instances():
+        monitor_detail = (
+            "; install after validation"
+            if monitor == "NOT INSTALLED"
+            else "; check monitor service and journal"
+        )
     output.heading("Trigger status")
     output.fields(
         [
             ("Job", config.job_id),
             ("Trigger", "ENABLED" if config.enabled_instances() else "DISABLED"),
-            ("Monitor", output.status(monitor) + f" (updated {freshness})"),
+            ("Monitor", output.status(monitor) + f" (updated {freshness}{monitor_detail})"),
         ]
     )
     for instance_id, state, blocked_reason, blocked_error, state_error in records:
@@ -254,6 +282,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             output.issue(state_error)
             output.fields(
                 [
+                    ("Application", "UNKNOWN"),
                     ("Backup", "UNKNOWN"),
                     ("State", "Unavailable; preserve records and follow recovery instructions"),
                 ],
@@ -279,6 +308,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             output.issue(error)
             backup_activity = "unknown"
             exit_code = EXIT_CONFIG
+        instance = config.instance_by_id(instance_id)
         print_instance(
             output,
             state,
@@ -290,8 +320,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             store=store,
             verbose=config.log_level == "DEBUG",
             monitor=monitor,
-            enabled=bool(config.enabled_instances()),
+            enabled=instance is not None and instance.enabled,
             poll_seconds=config.poll_seconds,
+            monitor_started_at=monitor_started_at,
+            config_fingerprint=instance.fingerprint() if instance else None,
         )
     return exit_code
 

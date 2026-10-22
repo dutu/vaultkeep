@@ -1390,33 +1390,38 @@ vaultkeep --user --config "$job_config" trigger status
 systemctl --user list-units --all 'vaultkeep-trigger@*.service' 'vaultkeep-trigger-exec@*.service'
 ```
 
-Read `Monitor` with its update age, then `Current activity` and `Last backup`.
-`IDLE` means no recorded work; `PENDING` means a request is waiting. `STARTING`
-means systemd reports an activating worker. Because the worker is a oneshot service,
-it can remain `STARTING` throughout backup execution. `RUNNING` requires an
-`active/running` worker. `STOPPED` or `FAILED` activity still awaiting reconciliation
-does not establish the backup outcome. `UNKNOWN` means evidence is insufficient.
+Read `Monitor` with its update age, then `Current activity` and `Previous attempt`.
+A held monitor lock with stale or unavailable updates is `UNKNOWN`; check the monitor
+journal. `Application` shows `RUNNING` with observation age, `HAS STOPPED` after a
+confirmed shutdown, or `NOT YET DETECTED` when current-session observations establish
+that the application has not yet been detected. Insufficient or stale evidence is
+`UNKNOWN`. An application already stopped at monitor startup is not a confirmed shutdown.
 
-`Last backup` reports the most recent completed result separately from current work.
-Failures include the attempt ID, original backup exit code or signal when recorded,
-a concise reason, and a corrective action. Recognized finalization errors identify the
-exact backup path. A receipt supplies completion time; a summary's recording time is
-labelled `Recorded`. No timestamp or archive outcome is inferred from missing evidence.
+For backups, `IDLE` means no recorded work; `PENDING` means a request is waiting.
+`STARTING` means systemd reports an activating worker. The oneshot worker can remain
+`STARTING` throughout backup execution; `RUNNING` requires `active/running`. Where
+available, elapsed time is labelled `since dispatch`, because dispatch does not establish
+when the worker entered its current state. `COMPLETED` means a receipt records child
+completion while its worker awaits reconciliation. `STOPPED` or `FAILED` without a
+receipt does not establish the backup outcome.
 
-`Monitoring health` explains current operational problems. `Outstanding issue`
-identifies unresolved execution or source-consistency uncertainty. A monitoring gap
-during backup does not establish archive corruption or a missed trigger. Resuming
-monitoring or completing a later backup does not establish the safety of an earlier
-attempt. Those risks remain outstanding. A matching receipt proving that the worker's
-final check prevented backup execution resolves that attempt's execution risk;
-its historical annotation is retained. Resolved annotations stay out of active warnings.
-See [status meanings](docs/trigger/cli.md#status) and [recovery](docs/trigger/recovery.md).
+`Previous attempt` reports the most recent completed result separately from current
+work, or `NONE` when no completed summary exists. `UNCHANGED` means no new archive was
+created. Failures include the recorded exit code or signal, a concise reason, and an
+existing diagnostic `Log` path when available. A receipt supplies the completion time;
+missing timestamps and log paths are omitted.
+
+Current monitoring, dispatch, and backup-safety problems remain visible beside the
+affected state. Historical monitoring gaps and older unresolved warnings remain in
+existing records and debug diagnostics. A later success does not establish the safety
+of an earlier attempt. See [status meanings](docs/trigger/cli.md#status) and
+[recovery](docs/trigger/recovery.md).
 
 For detailed investigation, set the job's `logging.level` to `debug` and rerun
-`trigger status`. The readable report then includes exact worker units, diagnostic
-paths, and capped raw error tails; diagnostic logging names the monitor unit and
-state directory. The complete retained child output remains in its private log.
-See [failure diagnosis](docs/trigger/troubleshooting.md#why-did-a-backup-fail).
+`trigger status`. Diagnostics include internal armed state, attempt IDs, exact worker
+units, historical review warnings, and capped raw error tails; diagnostic logging names
+the monitor unit and state directory. The complete retained child output remains in its
+private log. See [failure diagnosis](docs/trigger/troubleshooting.md#why-did-a-backup-fail).
 
 Use the monitor service name from debug diagnostics to inspect logs:
 

@@ -139,8 +139,10 @@ See the application guides for [Bisq](apps/bisq.md),
 Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`. `Monitor:
 RUNNING` describes the shutdown monitor. `Current activity` describes the backup
 separately. `STARTING` means an activating worker; a oneshot service can stay in this
-state throughout backup execution. `RUNNING` requires `active/running`. `STOPPED`
-or `FAILED` with an unresolved attempt is not a backup success claim, and `UNKNOWN`
+state throughout backup execution. Elapsed durations are labelled `since dispatch`.
+`RUNNING` requires `active/running`; `COMPLETED` means a receipt records child completion
+while the worker awaits reconciliation. `STOPPED` or `FAILED` with an unresolved
+attempt is not a backup success claim, and `UNKNOWN`
 means execution could not be confirmed. These are snapshots, not archive progress.
 
 Set `logging.level: debug` in the job and repeat `status` for exact worker units and
@@ -162,9 +164,9 @@ investigating an unresolved attempt.
 ## Why did a backup fail?
 
 1. Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`.
-   Read `Last backup` or `Last completed attempt`, the original exit code or signal,
-   `Reason`, any exact `Backup` path, and `Action`. A failed finalization does not
-   establish corruption. Current work and the previous result are reported separately.
+   Read `Previous attempt`, the original exit code or signal, `Reason`, and the
+   existing `Log` path when available. A failed finalization does not establish
+   corruption. Current work and the previous result are reported separately.
 
 2. For full context, set the job's `logging.level: debug` and rerun `status`.
    Read `Attempt diagnostics`, then copy `Diagnostics path`:
@@ -178,7 +180,7 @@ investigating an unresolved attempt.
    logging level after diagnosis; review and redact output before sharing.
 
 3. If diagnostics were not recorded or are no longer retained, use the reported attempt
-   ID and job identity to inspect the worker journal:
+   ID and job identity from debug diagnostics to inspect the worker journal:
 
    ```sh
    journalctl --user -u 'vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service' --no-pager

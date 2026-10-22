@@ -712,7 +712,7 @@ def test_blocked_resolution_preserves_other_attempt_risk(store, capsys, aggregat
     assert updated.review_required
     assert earlier.attempt_id in updated.review_reason
     assert updated.attempt_summaries[0] == state.attempt_summaries[0]
-    output = _review_status(store, instance.id, capsys)
+    output = _review_status(store, instance.id, capsys, verbose=True)
     assert earlier.attempt_id in output.split("Outstanding issue")[1]
     assert request.attempt_id not in output.split("Outstanding issue")[1]
 
@@ -761,7 +761,7 @@ def test_later_success_preserves_real_uncertainty_across_restart(
     assert updated.review_required
     assert updated.attempt_summaries[0] == previous_summary
     assert not updated.attempt_summaries[-1]["review_required"]
-    output = _review_status(store, instance.id, capsys)
+    output = _review_status(store, instance.id, capsys, verbose=True)
     assert previous.attempt_id in output.split("Outstanding issue")[1]
 
 
@@ -896,6 +896,6 @@ def test_history_cleanup_keeps_unresolved_attempt_identifiable(store, capsys):
     assert not store.request_path(oldest).exists()
     updated = store.read_instance(instance.id)
     assert updated.review_required and updated.attempt_summaries[0]["review_required"]
-    output = _review_status(store, instance.id, capsys)
+    output = _review_status(store, instance.id, capsys, verbose=True)
     assert oldest in output.split("Outstanding issue")[1]
     assert "Exact execution interval unavailable" in output
