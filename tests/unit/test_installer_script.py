@@ -386,6 +386,31 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> N
     assert snapshot(host) == first
 
 
+def test_missing_cli_module_reports_traceback_and_preserves_existing_install(
+    installed: dict[str, str], tmp_path: Path
+) -> None:
+    source = tmp_path / "incomplete-source"
+    shutil.copytree(CANDIDATE_SOURCE, source)
+    (source / "src/vaultkeep/cli/output.py").unlink()
+    before = snapshot(installed)
+
+    result = run_installer(installed, "install", source=source, check=False)
+
+    assert result.returncode != 0
+    assert "ERROR: installer: command failed (1):" in result.stderr
+    assert "ERROR: installer: Traceback (most recent call last):" in result.stderr
+    assert (
+        "ERROR: installer: ModuleNotFoundError: No module named 'vaultkeep.cli.output'"
+        in result.stderr
+    )
+    assert snapshot(installed) == before
+    assert not list((Path(installed["VAULTKEEP_INSTALL_PREFIX"]) / ".staging").iterdir())
+    assert (
+        subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
+        == CANDIDATE_VERSION
+    )
+
+
 def test_refresh_with_running_user_manager_and_absent_units(
     installed: dict[str, str], tmp_path: Path
 ) -> None:

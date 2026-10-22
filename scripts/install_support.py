@@ -35,7 +35,8 @@ def report_error(message: str) -> None:
         and not os.environ.get("NO_COLOR")
     ):
         prefix = "\033[1;31mERROR:\033[0m"
-    print(f"{prefix} installer: {message}", file=sys.stderr)
+    for line in message.splitlines() or [""]:
+        print(f"{prefix} installer: {line}", file=sys.stderr)
 
 
 def path_env(name: str, default: str) -> Path:
@@ -347,7 +348,11 @@ def write_manifest(
 def execute(argv: list[str]) -> str:
     result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
     if result.returncode:
-        fail(f"command failed ({result.returncode}): {' '.join(argv[:6])}")
+        message = f"command failed ({result.returncode}): {' '.join(argv[:6])}"
+        detail = result.stderr.strip() or result.stdout.strip()
+        if detail:
+            message += f"\n{detail}"
+        fail(message)
     return result.stdout
 
 

@@ -5,6 +5,26 @@ The examples below assume `vaultkeep` is on your `PATH`; otherwise use the
 absolute installed console-script path. For nondefault config, put `--config PATH`
 before `validate`, or before Trigger's `monitor` or `status`. The job YAML selects its recovery namespace.
 
+## Installer candidate fails `--version`
+
+The installer checks the candidate in staging before activating it. If a command
+fails, its error output follows the `command failed` line. Read that diagnostic
+to identify the cause. A successful `vaultkeep --version` after a staging failure
+checks the existing installation and does not mean the candidate passed.
+
+For `ModuleNotFoundError: No module named 'vaultkeep.cli.output'`, the source
+checkout is incomplete. From the checkout directory, check:
+
+```sh
+test -f src/vaultkeep/cli/output.py
+git ls-files --error-unmatch src/vaultkeep/cli/output.py
+```
+
+Both commands should succeed. If the file exists locally but is absent from Git,
+include it in the source commit before updating the target host. With a complete
+checkout, repeat `sudo ./install.sh install`. Keep schedules paused until
+installation and job validation succeed.
+
 ## Installer reports `inconclusive unit properties`
 
 Installer failures are written to stderr with an explicit `ERROR:` prefix, shown

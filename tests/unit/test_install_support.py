@@ -44,6 +44,45 @@ def test_helper_errors_are_explicit_and_color_only_on_terminals(
     )
 
 
+def test_multiline_helper_error_labels_every_line(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(support.sys, "stderr", output)
+
+    support.report_error("command failed (1): vaultkeep --version\nModuleNotFoundError: missing")
+
+    assert output.getvalue() == (
+        "ERROR: installer: command failed (1): vaultkeep --version\n"
+        "ERROR: installer: ModuleNotFoundError: missing\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr,expected",
+    [
+        (
+            "",
+            "Traceback:\nModuleNotFoundError: missing\n",
+            "Traceback:\nModuleNotFoundError: missing",
+        ),
+        ("stdout diagnostic\n", "", "stdout diagnostic"),
+        ("stdout noise", "stderr diagnostic", "stderr diagnostic"),
+        ("", "", ""),
+    ],
+)
+def test_failed_command_preserves_diagnostic(monkeypatch, stdout, stderr, expected):
+    monkeypatch.setattr(
+        support.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout, stderr),
+    )
+
+    with pytest.raises(ValueError) as error:
+        support.execute(["vaultkeep", "--version"])
+
+    message = "command failed (1): vaultkeep --version"
+    assert str(error.value) == message + (f"\n{expected}" if expected else "")
+
+
 @pytest.mark.parametrize(
     "value",
     [None, {}, "core", [], ["trigger"], ["core", "core"], ["trigger", "core"], ["core", "unknown"]],
