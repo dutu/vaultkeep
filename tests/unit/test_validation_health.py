@@ -10,7 +10,7 @@ from dataclasses import replace
 import pytest
 
 from vaultkeep.cli import main, validation
-from vaultkeep.scheduling import TimerManager, TimerPaths
+from vaultkeep.schedule import TimerManager, TimerPaths
 from vaultkeep.state.identity import job_identity_hash, job_state_path
 from vaultkeep.state.models import LastRunState, LastSuccessfulBackup, LocalState
 from vaultkeep.trigger.config import load_config
@@ -284,7 +284,7 @@ def test_incomplete_systemd_response_is_unknown(monkeypatch, stdout, code):
         assert "show" in command and kwargs["timeout"] == 15
         return subprocess.CompletedProcess(command, code, stdout, "bus unavailable")
 
-    monkeypatch.setattr(validation.subprocess, "run", inspect)
+    monkeypatch.setattr("vaultkeep.schedule.status.subprocess.run", inspect)
     with pytest.raises(validation.TimerError, match="cannot inspect"):
         validation._unit_properties("vaultkeep@test.timer", user_mode=True)
 
@@ -331,7 +331,7 @@ def test_source_failure_still_reports_automation_installation(health_job, monkey
                     {"attempt_id": "attempt", "request_id": "request", "outcome": "backup_failed"}
                 ]
             },
-            "Last Trigger backup: backup_failed",
+            "Last dispatch: backup_failed",
         ),
     ],
 )
@@ -469,7 +469,9 @@ def test_backup_timestamp_and_result_are_separate_fields(health_job, capsys):
 
     assert main(["--user", "--config", str(path), "validate"]) == 0
     output = capsys.readouterr().out
-    assert "  Last backup  2026-10-21 19:29:29 UTC\n  Last result  unchanged\n" in output
+    assert (
+        "  Last recorded run  2026-10-21 19:29:29 UTC\n  Last result        unchanged\n" in output
+    )
 
 
 def test_preflight_warning_is_visible_at_error_log_level(health_job, monkeypatch, capsys):

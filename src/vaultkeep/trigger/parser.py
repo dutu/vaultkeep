@@ -12,9 +12,6 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     )
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("monitor", help="monitor this job in the foreground")
-    status = commands.add_parser("status", help="report this job's persisted trigger state")
-    status.add_argument("instance_id", nargs="?", help=argparse.SUPPRESS)
-    status.add_argument("--json", action="store_true", help="report Trigger activity as JSON")
     for action, help_text in (
         ("install", "install and enable this job's user monitor service"),
         ("update", "refresh and restart this job's user monitor service"),

@@ -4,27 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from vaultkeep.diagnostics import duration, elapsed_seconds
 from vaultkeep.trigger.errors import StateError
-from vaultkeep.trigger.models import InstanceState, Observation, parse_utc, utc_now
+from vaultkeep.trigger.models import InstanceState, Observation, parse_utc
 from vaultkeep.trigger.state import StateStore
-
-
-def elapsed_seconds(timestamp: str | None) -> float | None:
-    parsed, now = parse_utc(timestamp), parse_utc(utc_now())
-    if parsed is None or now is None:
-        return None
-    seconds = (now - parsed).total_seconds()
-    return seconds if seconds >= 0 else None
-
-
-def duration(seconds: float) -> str:
-    minutes, seconds = divmod(int(seconds), 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m {seconds}s"
-    return f"{seconds}s"
 
 
 def application_status(

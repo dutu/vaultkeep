@@ -1,41 +1,71 @@
-"""Read-only human reports for trigger activity and retained execution evidence."""
+"""Read-only Trigger monitoring, dispatch, and recovery diagnostics."""
 
 from __future__ import annotations
 
-import os
-import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from vaultkeep.cli.output import Console
-from vaultkeep.progress import STALE_SECONDS, read_progress
-from vaultkeep.trigger.activity import application_status, duration, elapsed_seconds
-from vaultkeep.trigger.errors import StateError
-from vaultkeep.trigger.models import InstanceState, Receipt, parse_utc, utc_now
+from vaultkeep.diagnostics import concise, elapsed_seconds
+from vaultkeep.locking import job_lock_owner
+from vaultkeep.trigger.activity import application_status
+from vaultkeep.trigger.config import TriggerConfig
+from vaultkeep.trigger.errors import BlockedError, StateError
+from vaultkeep.trigger.models import InstanceState, Receipt, parse_utc
 from vaultkeep.trigger.monitor import unit_name_for
-from vaultkeep.trigger.process import PsutilProcessProvider
+from vaultkeep.trigger.paths import monitor_lock_path, state_root
+from vaultkeep.trigger.service import service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController, UnitState
-from vaultkeep.trigger.version import DIAGNOSTICS_CAP_BYTES
 
 
-def _timestamp(value: str | None, *, seconds: bool = True) -> str:
-    parsed = parse_utc(value)
-    pattern = "%Y-%m-%d %H:%M:%S UTC" if seconds else "%Y-%m-%d %H:%M UTC"
-    return parsed.strftime(pattern) if parsed else "unknown"
-
-
-def _concise(reason: str) -> str:
-    reason = "".join(c if c.isprintable() else " " for c in reason).strip()
-    return reason if len(reason) <= 160 else "See diagnostic details"
-
-
-def _log_rows(store: StateStore, attempt_id: str) -> list[tuple[str, str]]:
-    path = store.log_path(attempt_id)
+def _monitor_status(scope: str | None) -> str:
+    """Observe the lifetime lock without acquiring it or changing its timestamps."""
     try:
-        return [("Log", str(path))] if path.is_file() else []
-    except OSError:
-        return []
+        owner = job_lock_owner(monitor_lock_path(scope))
+    except BlockedError:
+        return "unknown"
+    return "unknown" if owner is None else "running" if owner else "stopped"
+
+
+def _monitor_started_at(scope: str | None) -> str | None:
+    """The held lifetime lock is rewritten once when a monitoring session starts."""
+    try:
+        written = monitor_lock_path(scope).stat().st_mtime
+        return datetime.fromtimestamp(written, UTC).isoformat()
+    except (BlockedError, OSError, ValueError, OverflowError):
+        return None
+
+
+def _dispatch_activity(
+    store: StateStore,
+    instance_id: str,
+    state: InstanceState | None,
+    blocked_reason: str | None,
+) -> tuple[str, str | None]:
+    """Read persisted dispatch activity, including attempts awaiting recovery association."""
+    recovery_state = state or InstanceState(instance_id=instance_id)
+    active_attempt_id = recovery_state.active_attempt_id
+    for attempt_id in store.list_attempt_ids():
+        _validate_attempt_id(attempt_id)
+        request = store.read_request(attempt_id)
+        if request is None:
+            if store.read_launch(attempt_id) or store.read_receipt(attempt_id):
+                raise StateError(f"attempt {attempt_id} has no request")
+            continue
+        if request.instance_id != instance_id:
+            continue
+        if request.attempt_id != attempt_id:
+            raise StateError(f"attempt {attempt_id} has contradictory request ownership")
+        if store.attempt_is_protected(recovery_state, attempt_id, request):
+            if active_attempt_id is not None and active_attempt_id != attempt_id:
+                raise StateError(f"instance {instance_id} has multiple unreconciled attempts")
+            active_attempt_id = attempt_id
+    if active_attempt_id is not None:
+        return "active", active_attempt_id
+    if state is not None and blocked_reason is None:
+        return ("pending" if state.pending_request is not None else "idle"), None
+    return "unknown", None
 
 
 def _worker_status(worker: UnitState | None) -> str:
@@ -58,35 +88,8 @@ def _worker_status(worker: UnitState | None) -> str:
     return "UNKNOWN"
 
 
-def _backup_progress(store: StateStore, attempt_id: str) -> tuple[str, str] | None:
-    record = read_progress(store.progress_path(attempt_id), attempt_id)
-    if record is None:
-        return None
-    started = parse_utc(record.started_at)
-    phase_started = parse_utc(record.phase_started_at)
-    updated = parse_utc(record.updated_at)
-    now = parse_utc(utc_now())
-    if (
-        started is None
-        or phase_started is None
-        or updated is None
-        or now is None
-        or not started <= phase_started <= updated <= now
-        or (now - updated).total_seconds() > STALE_SECONDS
-    ):
-        return "UNKNOWN", " (backup progress stale or invalid; check worker journal)"
-    if record.state == "finished":
-        return "FINISHING", " (awaiting backup result)"
-    if PsutilProcessProvider.alive(record.pid, record.create_time) is not True:
-        return "UNKNOWN", " (backup process unavailable; awaiting result)"
-    phase_age = duration((now - phase_started).total_seconds())
-    total_age = duration((now - started).total_seconds())
-    status = "RUNNING" if record.state == "running" else "PREPARING"
-    return status, f": {record.phase} ({phase_age} / {total_age} elapsed)"
-
-
 def _validate_attempt_id(attempt_id: str) -> None:
-    if Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
+    if not attempt_id or Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
         raise StateError(f"invalid last attempt ID: {attempt_id!r}")
 
 
@@ -104,98 +107,6 @@ def _receipt(
     return receipt
 
 
-def _failure_details(store: StateStore, attempt_id: str) -> list[tuple[str, str]]:
-    try:
-        with store.log_path(attempt_id).open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            handle.seek(max(0, handle.tell() - DIAGNOSTICS_CAP_BYTES))
-            data = handle.read(DIAGNOSTICS_CAP_BYTES)
-    except OSError:
-        data = b""
-    diagnostics = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", data.decode("utf-8", "replace"))
-    diagnostics = "".join(
-        c if c.isprintable() or c == "\n" else f"\\x{ord(c):02x}" for c in diagnostics
-    )
-    # Recognize the finalizer's explicit error without exposing its destination
-    # path or internal exception representation in the concise reason.
-    finalization = re.search(
-        r"Cannot atomically finalize backup (.+?): \[Errno \d+\] ([^\n]+)", diagnostics
-    )
-    if finalization:
-        _, error = finalization.groups()
-        reason = (
-            "Permission denied during finalization"
-            if "Permission denied" in error
-            else "Backup finalization failed"
-        )
-        return [("Reason", reason)]
-    failures = [line.strip() for line in diagnostics.splitlines() if line.startswith("FAILED:")]
-    if failures:
-        return [("Reason", _concise(failures[-1][7:].strip()))]
-    return [("Reason", "Not recorded or unavailable")]
-
-
-def _result(outcome: str) -> str:
-    return {
-        "created": "SUCCESS",
-        "unchanged": "UNCHANGED",
-        "result_unknown": "SUCCESS (backup result unknown)",
-        "backup_failed": "FAILED",
-        "blocked": "BLOCKED",
-        "deferred": "DEFERRED",
-        "integration_error": "EXECUTION ERROR",
-        "outcome_unknown": "UNKNOWN",
-    }[outcome]
-
-
-def _last_attempt(
-    output: Console,
-    store: StateStore,
-    state: InstanceState,
-    summary: dict[str, Any],
-    *,
-    verbose: bool,
-) -> None:
-    attempt_id = summary["attempt_id"]
-    receipt = _receipt(store, attempt_id, state.instance_id, summary["request_id"])
-    outcome = summary["outcome"]
-    if receipt and receipt.outcome.value != outcome:
-        raise StateError(f"attempt {attempt_id} has contradictory completion outcomes")
-    result = _result(outcome)
-    result = output.status(result)
-    if summary.get("exit_code") is not None and outcome not in (
-        "created",
-        "unchanged",
-        "result_unknown",
-    ):
-        result += f" (exit code {summary['exit_code']})"
-    if summary.get("signal") is not None:
-        result += f" (signal {summary['signal']})"
-    rows = [("Result", result)]
-    if receipt and parse_utc(receipt.ended_at) is not None:
-        rows.append(("Completed", _timestamp(receipt.ended_at, seconds=False)))
-    if outcome == "result_unknown":
-        rows.append(("Detail", "Command succeeded; archive creation was not confirmed"))
-    elif outcome not in ("created", "unchanged"):
-        if summary.get("reason"):
-            rows.append(("Reason", _concise(summary["reason"])))
-        elif outcome == "backup_failed":
-            rows.extend(_failure_details(store, attempt_id))
-        else:
-            rows.append(("Reason", "Not recorded or unavailable"))
-        rows.extend(_log_rows(store, attempt_id))
-        if outcome == "outcome_unknown":
-            rows.append(
-                ("Impact", "Backup completion could not be verified; do not replay this attempt")
-            )
-    output.fields(rows, section="Previous attempt")
-    if verbose:
-        output.fields(
-            _diagnostic_rows(store, summary),
-            section="Attempt diagnostics",
-        )
-
-
 def _review_problem(reason: str | None) -> str:
     if reason:
         if "monitoring gap" in reason:
@@ -207,276 +118,238 @@ def _review_problem(reason: str | None) -> str:
     return "Application stopped state could not be verified during backup execution"
 
 
-def _outstanding(
-    output: Console, store: StateStore, state: InstanceState, last_id: str | None
-) -> None:
-    if not state.review_required:
-        return
-    # A later success cannot establish the safety of an earlier archive.
-    # BLOCKED annotations remain historical: that attempt did not invoke backup.
-    unresolved = [
-        summary
-        for summary in state.attempt_summaries
-        if summary.get("review_required") and summary["outcome"] != "blocked"
-    ]
-    identified = False
-    for index, summary in enumerate(unresolved):
-        attempt_id = summary["attempt_id"]
-        if summary["outcome"] == "outcome_unknown" and attempt_id == last_id:
-            identified = True  # Explained with the last result already.
-            continue
-        receipt = _receipt(store, attempt_id, state.instance_id, summary["request_id"])
-        problem = (
-            "Backup outcome could not be established"
-            if summary["outcome"] == "outcome_unknown"
-            else _review_problem(state.review_reason if index == 0 else None)
-        )
-        rows = [("Problem", problem), ("Attempt", attempt_id)]
-        if receipt:
-            rows.append(
-                (
-                    "Execution period",
-                    f"{_timestamp(receipt.started_at)} — {_timestamp(receipt.ended_at)}",
-                )
-            )
-        else:
-            rows.append(("Period", "Exact execution interval unavailable"))
-        rows.extend(
-            [
-                (
-                    "Impact",
-                    "Execution and backup completion are unknown"
-                    if summary["outcome"] == "outcome_unknown"
-                    else "Source consistency is uncertain; archive corruption is not established",
-                ),
-                (
-                    "Action",
-                    "Review backup and app activity; obtain a new backup with the app stopped",
-                ),
-            ]
-        )
-        output.fields(rows, section="Outstanding issue")
-        identified = True
-    if state.active_review_required and state.active_attempt_id not in {
-        item["attempt_id"] for item in unresolved
-    }:
-        output.fields(
-            [
-                ("Problem", _review_problem(state.active_review_reason)),
-                ("Attempt", state.active_attempt_id or "unknown"),
-                ("Impact", "Source consistency may be affected"),
-                (
-                    "Action",
-                    "Check application activity and review the backup when this attempt ends",
-                ),
-            ],
-            section="Outstanding issue",
-        )
-        identified = True
-    if not identified:
-        output.fields(
-            [
-                ("Problem", "Earlier backup execution requires review"),
-                ("Affected attempt", "Not identified in retained state"),
-                ("Detail", "Unresolved execution-safety annotation; exact cause unavailable"),
-                ("Impact", "Backup safety could not be verified"),
-                ("Action", "Review retained attempt records and backup consistency"),
-            ],
-            section="Outstanding issue",
-        )
-
-
-def print_instance(
-    output: Console,
-    state: InstanceState | None,
-    blocked_reason: str | None,
-    *,
-    instance_id: str,
-    activity: str,
-    active_attempt_id: str | None,
-    scope: str | None,
-    store: StateStore,
-    verbose: bool,
-    monitor: str,
-    enabled: bool,
-    poll_seconds: float,
-    monitor_started_at: str | None = None,
-    config_fingerprint: str | None = None,
-) -> None:
-    worker = None
-    backup = activity.upper()
-    unit = None
-    receipt = None
-    launch = None
-    elapsed = ""
-    if active_attempt_id is not None and activity == "active":
-        unit = unit_name_for(active_attempt_id, scope)
-        receipt = _receipt(store, active_attempt_id, instance_id)
-        live_progress = _backup_progress(store, active_attempt_id) if receipt is None else None
-        if receipt:
-            backup = "COMPLETED"
-            elapsed = " (worker awaiting reconciliation)"
-        elif live_progress is not None:
-            backup, elapsed = live_progress
-        # Live progress identifies the backup process directly. Slow/unavailable
-        # systemd probes must not hide a fresh phase report in the normal view.
-        if verbose or (receipt is None and live_progress is None):
-            worker = RealSystemdController().unit_state(unit)
-        if receipt is None and live_progress is None:
-            backup = _worker_status(worker)
-            if backup in ("STARTING", "RUNNING"):
-                backup = "UNKNOWN"
-                elapsed = " (backup progress unavailable)"
-        if verbose or (receipt is None and live_progress is None):
-            launch = store.read_launch(active_attempt_id)
-            if launch and launch.attempt_id != active_attempt_id:
-                raise StateError(f"attempt {active_attempt_id} has contradictory launch ownership")
-            age = elapsed_seconds(launch.dispatched_at) if launch else None
-            if receipt is None and live_progress is None and age is not None:
-                elapsed += f" ({duration(age)} since dispatch)"
-
-    application, recency = application_status(
-        state,
-        store,
-        reliable=(
-            enabled
-            and monitor == "RUNNING"
-            and not blocked_reason
-            and (
-                config_fingerprint is None
-                or (state is not None and state.config_fingerprint == config_fingerprint)
-            )
-        ),
-        poll_seconds=poll_seconds,
-        monitor_started_at=monitor_started_at,
-    )
-    if enabled and state and config_fingerprint and state.config_fingerprint != config_fingerprint:
-        recency = " (configuration changed; validate and update monitor)"
-    rows = [("Application", output.status(application) + recency)]
-    if blocked_reason and activity != "active":
-        backup = "BLOCKED"
-    rows.append(("Backup", output.status(backup) + elapsed))
-    if state is None:
-        rows.append(("State", "No monitoring state recorded"))
-    if active_attempt_id and activity == "active":
-        if receipt:
-            rows.append(("Result", output.status(_result(receipt.outcome.value))))
-        elif backup in ("UNKNOWN", "STOPPED", "FAILED"):
-            rows.extend(
-                [
-                    ("Attempt", active_attempt_id),
-                    ("Detail", "Outcome awaits reconciliation; check monitor and worker journal"),
-                ]
-            )
-        if state and state.active_attempt_id == active_attempt_id and state.active_review_required:
-            rows.append(("Safety", _review_problem(state.active_review_reason)))
-            rows.append(("Action", "Check application activity and monitor journal"))
-            rows.extend(_log_rows(store, active_attempt_id))
-    if blocked_reason:
-        rows.append(("Dispatch", "BLOCKED (recovery state; preserve records)"))
-        rows.append(("Reason", _concise(blocked_reason)))
-        rows.append(("Action", "Follow recovery instructions before restarting the monitor"))
-    if state and state.pending_request:
-        if active_attempt_id:
-            rows.append(("Pending backup", "Waiting for previous attempt"))
-        if (
-            state.rejection
-            and state.rejection.request_id == state.pending_request.request_id
-            and state.rejection.consecutive
-        ):
-            rows.append(
-                ("Dispatch", "Submission rejected; check worker installation and permissions")
-            )
-    output.fields(rows, section="Current activity")
-    completed = (
-        [item for item in state.attempt_summaries if item["attempt_id"] != active_attempt_id]
-        if state
-        else []
-    )
-    last = completed[-1] if completed else None
-    if last and state:
-        _last_attempt(output, store, state, last, verbose=verbose)
-    else:
-        output.fields([("Result", "NONE")], section="Previous attempt")
-    if verbose:
-        if state:
-            _outstanding(output, store, state, last["attempt_id"] if last else None)
-        details = [("Instance", instance_id)]
-        if active_attempt_id:
-            details.append(("Active attempt", active_attempt_id))
-        if unit:
-            details.append(("Worker service", unit))
-        if worker:
-            details.append(
-                ("Worker state", f"{worker.load_state}/{worker.active_state}/{worker.sub_state}")
-            )
-        if launch:
-            details.append(("Dispatched", _timestamp(launch.dispatched_at)))
-        if receipt:
-            details.append(("Child started", _timestamp(receipt.started_at)))
-            details.append(("Child completed", _timestamp(receipt.ended_at)))
-        if monitor_started_at:
-            details.append(("Monitor session", _timestamp(monitor_started_at)))
-        if state and state.last_observation:
-            details.append(("Observation", state.last_observation.observation.value))
-            if state.last_observation.reason:
-                details.append(("Observation reason", state.last_observation.reason))
-        if state:
-            details.append(("Review reason", state.review_reason or "none"))
-            details.append(("Stored armed", "yes" if state.armed else "no"))
-            details.append(("Configuration fingerprint", state.config_fingerprint or "unknown"))
-            if state.pending_request:
-                details.append(("Pending request", state.pending_request.request_id))
-            if state.blocked_wait_started_at:
-                details.append(("Waiting since", _timestamp(state.blocked_wait_started_at)))
-        output.fields(details, section="Monitor diagnostics")
-
-
-def _diagnostic_rows(store: StateStore, summary: dict[str, Any]) -> list[tuple[str, str]]:
-    outcome = summary["outcome"]
-    rows = [("Last attempt outcome", str(outcome))]
-    if summary.get("review_required"):
-        rows.append(
-            (
-                "Review annotation",
-                "recorded (execution was blocked)" if outcome == "blocked" else "recorded",
-            )
-        )
-    attempt_id = summary["attempt_id"]
-    rows.append(("Last attempt", attempt_id))
-    if summary.get("recorded_at"):
-        rows.append(("Recorded", _timestamp(summary["recorded_at"])))
-    if summary.get("exit_code") is not None:
-        rows.append(("Backup exit code", str(summary["exit_code"])))
-    if summary.get("signal") is not None:
-        rows.append(("Backup signal", str(summary["signal"])))
-    if summary.get("reason"):
-        rows.append(("Attempt reason", summary["reason"]))
-    # Read only this attempt's fixed log path, never a path supplied by a receipt.
-    _validate_attempt_id(attempt_id)
-    if outcome in ("created", "unchanged", "result_unknown"):
-        return rows
-    path = store.log_path(attempt_id)
-    rows.append(("Diagnostics path", str(path)))
+def trigger_status(config: TriggerConfig) -> dict[str, Any] | None:
+    """Return configured monitoring or retained recovery evidence; omit unused placeholders."""
+    configured = bool(config.instances)
+    diagnostics: list[str] = []
+    result: dict[str, Any] = {
+        "enabled": bool(config.enabled_instances()),
+        "monitor": "UNKNOWN",
+        "monitor_updated_seconds_ago": None,
+        "application": "UNKNOWN",
+        "application_detail": "",
+        "dispatch": "UNKNOWN",
+        "pending_request_id": None,
+        "active_attempt_id": None,
+        "diagnostics": diagnostics,
+        "safety": [],
+    }
+    blocked = None
     try:
-        with path.open("rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            handle.seek(max(0, handle.tell() - DIAGNOSTICS_CAP_BYTES))
-            diagnostics = handle.read(DIAGNOSTICS_CAP_BYTES)
-    except FileNotFoundError:
-        rows.append(("Diagnostics", "unavailable (not recorded or no longer retained)"))
-        return rows
-    except OSError as error:
-        rows.append(("Diagnostics", f"unavailable ({error})"))
-        return rows
-    lines = [line for line in diagnostics.decode("utf-8", "replace").splitlines() if line.strip()]
-    if not lines:
-        rows.append(("Diagnostics", "no output recorded"))
-        return rows
-    for index, line in enumerate(lines[-10:]):
-        # Keep child output from injecting terminal control sequences or unbounded rows.
-        line = "".join(character if character.isprintable() else " " for character in line)
-        if len(line) > 500:
-            line = line[:497] + "..."
-        rows.append(("Diagnostic tail" if index == 0 else "", line))
-    return rows
+        store = StateStore(state_root(config.scope))
+        if config.log_level == "DEBUG":
+            result["details"] = {
+                "monitor_service": service_name(config),
+                "state_directory": str(store.root),
+            }
+        blocked = store.read_blocked(config.job_id)
+        if blocked:
+            diagnostics.extend(
+                [concise(blocked), "Preserve records and follow recovery instructions"]
+            )
+        state = store.read_instance(config.job_id)
+        runtime = _monitor_status(config.scope).upper()
+        activity, attempt_id = _dispatch_activity(store, config.job_id, state, blocked)
+        configured = (
+            configured
+            or state is not None
+            or blocked is not None
+            or attempt_id is not None
+            or runtime == "RUNNING"
+        )
+        if not configured:
+            return None
+        monitor = runtime
+        if runtime == "STOPPED":
+            unit = RealSystemdController().unit_state(service_name(config))
+            if unit:
+                configured = configured or unit.load_state != "not-found"
+                monitor = (
+                    "FAILED"
+                    if unit.active_state == "failed"
+                    else "NOT INSTALLED"
+                    if unit.load_state == "not-found"
+                    else "STARTING"
+                    if unit.active_state == "activating"
+                    else "STOPPED"
+                )
+        started_at = _monitor_started_at(config.scope) if runtime == "RUNNING" else None
+        age = elapsed_seconds(state.last_monitor_update) if state else None
+        result["monitor_updated_seconds_ago"] = age
+        if runtime == "RUNNING":
+            started = parse_utc(started_at)
+            updated = parse_utc(state.last_monitor_update) if state else None
+            if age is None or age > 2 * config.poll_seconds:
+                monitor = "UNKNOWN"
+                diagnostics.append("Monitor updates stale or unavailable; check monitor journal")
+            elif started is None or updated is None or updated < started:
+                monitor = "UNKNOWN"
+                diagnostics.append("Awaiting current-session monitor update; check monitor journal")
+        if monitor in ("STOPPED", "FAILED", "NOT INSTALLED") and config.enabled_instances():
+            diagnostics.append(
+                "Check monitor service and journal; install after validation if missing"
+            )
+        result["monitor"] = monitor
+        result["dispatch"] = activity.upper()
+        result["active_attempt_id"] = attempt_id
+        instance = config.instance_by_id(config.job_id)
+        application, recency = application_status(
+            state,
+            store,
+            reliable=(
+                instance is not None
+                and instance.enabled
+                and monitor == "RUNNING"
+                and blocked is None
+                and state is not None
+                and state.config_fingerprint == instance.fingerprint()
+            ),
+            poll_seconds=config.poll_seconds,
+            monitor_started_at=started_at,
+        )
+        result["application"], result["application_detail"] = application, recency
+        if (
+            instance
+            and instance.enabled
+            and state
+            and state.config_fingerprint != instance.fingerprint()
+        ):
+            diagnostics.append("Configuration changed; validate and update monitor")
+        if state is None:
+            diagnostics.append("No monitoring state recorded")
+        if state and state.pending_request:
+            result["pending_request_id"] = state.pending_request.request_id
+            if state.rejection and (
+                state.rejection.request_id == state.pending_request.request_id
+                and state.rejection.consecutive
+            ):
+                diagnostics.append("Submission rejected; check worker installation and permissions")
+        if attempt_id:
+            receipt = _receipt(store, attempt_id, config.job_id)
+            request = store.read_request(attempt_id)
+            if (
+                request is None
+                or request.instance_id != config.job_id
+                or request.attempt_id != attempt_id
+                or (receipt and receipt.request_id != request.request_id)
+                or (
+                    state is not None
+                    and state.active_attempt_id == attempt_id
+                    and state.active_request_id is not None
+                    and state.active_request_id != request.request_id
+                )
+            ):
+                raise StateError(f"attempt {attempt_id} has contradictory request ownership")
+            if receipt:
+                result["dispatch"] = (
+                    "BLOCKED" if receipt.outcome.value == "blocked" else "AWAITING RECONCILIATION"
+                )
+                if receipt.blocked_reason:
+                    diagnostics.append(concise(receipt.blocked_reason))
+            else:
+                worker = RealSystemdController().unit_state(unit_name_for(attempt_id, config.scope))
+                result["worker"] = _worker_status(worker)
+                diagnostics.append(
+                    "Dispatch outcome awaits reconciliation; check monitor and worker journal"
+                )
+            launch = store.read_launch(attempt_id)
+            if launch:
+                if launch.attempt_id != attempt_id:
+                    raise StateError(f"attempt {attempt_id} has contradictory launch ownership")
+                result["dispatched_seconds_ago"] = elapsed_seconds(launch.dispatched_at)
+        if blocked:
+            result["dispatch"] = "BLOCKED"
+        if state:
+            # Summaries remain orchestration evidence. Only initiation problems and
+            # unresolved safety annotations belong here; backup results live in Backup.
+            for summary in state.attempt_summaries:
+                receipt = _receipt(
+                    store, summary["attempt_id"], config.job_id, summary["request_id"]
+                )
+                if receipt and receipt.outcome.value != summary["outcome"]:
+                    raise StateError("contradictory completion outcomes")
+            if state.attempt_summaries:
+                last = state.attempt_summaries[-1]
+                if last["outcome"] in (
+                    "blocked",
+                    "deferred",
+                    "integration_error",
+                    "outcome_unknown",
+                ):
+                    diagnostics.append(
+                        {
+                            "blocked": "Previous dispatch BLOCKED; backup was not started",
+                            "deferred": "Previous dispatch DEFERRED; job lock was held",
+                            "integration_error": (
+                                "Previous dispatch EXECUTION ERROR; check worker diagnostics"
+                            ),
+                            "outcome_unknown": (
+                                "Previous dispatch outcome UNKNOWN; do not replay the attempt"
+                            ),
+                        }[last["outcome"]]
+                    )
+                    if last.get("reason"):
+                        diagnostics.append(concise(last["reason"]))
+                    log = store.log_path(last["attempt_id"])
+                    if log.is_file():
+                        result["log_path"] = str(log)
+            if state.review_required:
+                for summary in state.attempt_summaries:
+                    if summary.get("review_required") and summary["outcome"] != "blocked":
+                        result["safety"].append(
+                            {
+                                "attempt_id": summary["attempt_id"],
+                                "execution_period": (
+                                    f"{receipt.started_at} — {receipt.ended_at}"
+                                    if (
+                                        receipt := _receipt(
+                                            store,
+                                            summary["attempt_id"],
+                                            config.job_id,
+                                            summary["request_id"],
+                                        )
+                                    )
+                                    else "Exact execution interval unavailable"
+                                ),
+                                "reason": "Backup outcome could not be established"
+                                if summary["outcome"] == "outcome_unknown"
+                                else _review_problem(state.review_reason),
+                            }
+                        )
+                if not result["safety"] and not state.active_review_required:
+                    result["safety"].append({"reason": "Earlier backup execution requires review"})
+            if state.active_review_required and state.active_attempt_id not in {
+                item.get("attempt_id") for item in result["safety"]
+            }:
+                result["safety"].append(
+                    {
+                        "attempt_id": state.active_attempt_id,
+                        "reason": _review_problem(state.active_review_reason),
+                    }
+                )
+            if result["safety"]:
+                diagnostics.append(
+                    "Review backup and app activity; obtain a new backup with the app stopped"
+                )
+            if config.log_level == "DEBUG":
+                result["details"].update(
+                    {
+                        "instance": config.job_id,
+                        "monitor_session": started_at,
+                        "armed": state.armed,
+                        "review_reason": state.review_reason,
+                        "observation": state.last_observation.observation.value
+                        if state.last_observation
+                        else None,
+                        "observation_reason": state.last_observation.reason
+                        if state.last_observation
+                        else None,
+                    }
+                )
+    except (StateError, OSError, BlockedError, UnicodeError) as error:
+        configured = True
+        diagnostics.append(str(error))
+        result["dispatch"] = "BLOCKED" if blocked else "UNKNOWN"
+        result["application"] = "UNKNOWN"
+        result["read_error"] = True
+    return result if configured else None

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from vaultkeep import workflow
+from vaultkeep.backup import workflow
 from vaultkeep.cli.commands import main
 from vaultkeep.config import JobConfig
 from vaultkeep.destination import finalize as finalize_module
@@ -315,7 +315,7 @@ def test_user_workflow_paths_use_xdg_locations(
 
 
 @pytest.mark.parametrize("user_mode", [False, True])
-@pytest.mark.parametrize("action", ["install", "update", "status", "next", "disable", "remove"])
+@pytest.mark.parametrize("action", ["install", "update", "next", "disable", "remove"])
 def test_schedule_dispatches_global_job_selection(monkeypatch, tmp_path, user_mode, action):
     from vaultkeep.cli import commands
 
@@ -407,7 +407,7 @@ def test_job_and_version_options_must_precede_command(command, option):
 
 @pytest.mark.parametrize("command", ["trigger", "schedule"])
 def test_shared_lifecycle_actions_provide_help(command, capsys):
-    for action in ("install", "update", "status", "disable", "remove"):
+    for action in ("install", "update", "disable", "remove"):
         with pytest.raises(SystemExit) as error:
             main([command, action, "--help"])
         assert error.value.code == 0

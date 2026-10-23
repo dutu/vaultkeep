@@ -5,7 +5,7 @@ Trigger is part of the `vaultkeep` command:
 ```text
 vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger monitor
 vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] validate [--schema-only]
-vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger status [--json]
+vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] status [--json]
 vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger install
 vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger update
 vaultkeep --user --config JOB.yaml [--param KEY=VALUE ...] trigger disable
@@ -20,7 +20,7 @@ Root-mode backup jobs use manual execution or system timers.
 
 `--config` selects the complete YAML job. Put all job options (`--user`, `--config`,
 and `--param`) before `trigger`, as in
-`vaultkeep --user --config JOB.yaml --param NETWORK=mainnet trigger status`.
+`vaultkeep --user --config JOB.yaml --param NETWORK=mainnet trigger monitor`.
 Trigger always uses the systemd user manager and user-mode backups. Parameters
 override the job's `trigger.params` defaults. Use the application-wide
 `vaultkeep --version` to inspect the installed version.
@@ -58,7 +58,7 @@ installation, history, and health checks, and says so in the result. See the
 
 Complete validation exits nonzero for missing installation or failed health checks
 (normally 3; backup and state errors retain their core codes). This is independent
-of the Trigger service/status/worker exit table below. A just-started monitor may not yet
+of the Trigger service/worker exit table below. A just-started monitor may not yet
 have recorded its first update; wait for an observation and validate again.
 
 Validation does not certify wallet process identity, writer coverage, matcher overlap,
@@ -87,202 +87,18 @@ unit rather than adopting or overwriting it. Job changes require explicit valida
 and `update`; there is no automatic reload. Identity changes require retiring the old
 service separately. See [service operation](service-operation.md).
 
-## Status
+## Job status
 
-`status` is a read-only report of monitor health, application detection, current backup
-activity, and the most recent completed attempt. A healthy report looks like this:
-
-```text
-Vaultkeep — Trigger status
-
-Job:      app
-Trigger:  ENABLED
-Monitor:  RUNNING (updated 1s ago)
-
-Current activity
-  Application  RUNNING (observed 1s ago)
-  Backup       IDLE
-
-Previous attempt
-  Result     SUCCESS
-  Completed  2026-10-22 09:47 UTC
-```
-
-`Monitor` combines runtime activity with update freshness. A held lock with updates older
-than twice the configured poll interval, missing updates, or future timestamps is
-`UNKNOWN`; check the monitor journal and validate the job. Updates from before the
-current session also remain `UNKNOWN` until the new monitor writes an update. When the
-monitor is stopped, a systemd probe distinguishes `STOPPED`, `FAILED`, `NOT INSTALLED`, or `STARTING` when
-possible. An unavailable runtime probe is `UNKNOWN`. Trigger `ENABLED` refers to job
-configuration, not systemd enablement.
-
-| Application | Meaning |
-| --- | --- |
-| `RUNNING` | A fresh observation in the current monitoring session detected the configured application. The observation age is included. |
-| `CONFIRMING STOP` | Fresh stopped observations have started a shutdown confirmation interval in this session. Backup dispatch waits for confirmation. |
-| `HAS STOPPED` | Fresh stopped observations and a retained shutdown request confirmed in this session establish a running-to-stopped transition. The age is measured from shutdown confirmation. |
-| `NOT YET DETECTED` | Current-session observations show the application stopped, with no retained evidence of prior detection or a shutdown request. Starting monitoring with the application already stopped does not establish a shutdown. |
-| `UNKNOWN` | Detection cannot be established reliably: for example, observations are stale, current-session confirmation evidence is missing, identity is ambiguous, inspection is unavailable, or the monitor is stopped. |
-
-Session checks use the existing monitor lifetime lock's write timestamp. Arming and
-shutdown history survive monitor restarts; they alone cannot establish current-session
-detection. When the available evidence cannot distinguish prior-session history from
-current-session detection, the report uses `UNKNOWN`. Missing session timestamps,
-unobserved configuration changes, and disabled monitoring also prevent a current
-application-state claim. No additional detection history is stored for status.
-
-Current backup activity starts with the same attempt ownership as
-[JSON status](#json-status), including unassociated attempts awaiting recovery.
-The human report adds live workflow phases and completion receipts:
-
-| Backup activity | Meaning |
-| --- | --- |
-| `IDLE` | No recorded pending or active attempt. |
-| `PENDING` | A request is waiting for dispatch. |
-| `PREPARING: <phase>` | The worker is checking the application and executable before invoking the backup command. |
-| `RUNNING: <phase>` | The backup command reports its current workflow phase and its process identity is still live. This does not establish backup completion. |
-| `FINISHING` | The backup workflow has ended; its result still awaits a worker receipt. |
-| `QUEUED` | A systemd job is pending without confirmed execution. |
-| `STOPPING` | The worker is deactivating. |
-| `COMPLETED` | A receipt records child completion; the worker still awaits reconciliation. The recorded result appears in current activity. |
-| `STOPPED` / `FAILED` | The worker has ended without a retained completion receipt; its attempt still awaits reconciliation. Neither establishes the backup outcome. |
-| `BLOCKED` | Recovery state prevents dispatch. An already active worker keeps its activity state, with the dispatch block explained separately. |
-| `UNKNOWN` | Live backup progress is missing, stale, invalid, or its process identity cannot be confirmed; alternatively, state or the worker probe is unavailable. An active service alone does not establish the backup phase. |
-
-For example:
-
-```text
-Backup  RUNNING: Creating and compressing archive (45s / 1m 31s elapsed)
-```
-
-The first duration measures time in the current phase; the second measures total backup
-command time. `PREPARING` uses the same format for worker preparation time; the total
-starts again when the backup command begins. Phases come from the workflow's existing
-callbacks, including hashing, archive creation/compression, verification, finalization,
-retention, and hooks. These elapsed times are not a completion percentage or an estimate
-of remaining time.
-
-Live progress refreshes on phase changes and every 10 seconds during backup execution.
-Reports older than 30 seconds, future/inconsistent timestamps, and a missing or replaced
-reporting process cannot establish `RUNNING`. Preparation updates occur at each worker
-check. A fresh phase is available independently of monitor health and without a systemd
-worker probe; debug output still probes and includes the raw worker state. A completion
-receipt takes precedence over progress. Progress never authorizes dispatch, replay, or
-a successful result.
-
-Attempts started by an older worker may have no progress record. With no usable progress,
-systemd probes still identify `QUEUED`, `STOPPING`, `STOPPED`, or `FAILED`; activating or
-running workers show `UNKNOWN (backup progress unavailable)`. An existing valid launch
-timestamp adds `since dispatch` time to fallback states, not phase or backup execution
-time. JSON status retains its existing coarse activity fields and schema.
-
-`Previous attempt` excludes the current unresolved attempt, even if that attempt already
-has a receipt. It distinguishes `SUCCESS` (created), `UNCHANGED` (no new archive),
-`SUCCESS (backup result unknown)` (exit zero without a recognized result marker),
-`FAILED`, `BLOCKED`, `DEFERRED`, `EXECUTION ERROR`, and `UNKNOWN`. Exit codes and signals
-are included when recorded. `Completed` comes only from a retained receipt; summary
-recording time remains in debug diagnostics. With no completed summary, the result is
-`NONE`. Missing completion timestamps are omitted.
-
-Failed attempts include a concise reason and the existing per-attempt `Log` path when
-available. Normal output omits destination paths, attempt IDs, service names, and raw
-error tails, except identifiers needed to investigate an unresolved current worker.
-Missing or unreadable diagnostics do not change the recorded outcome. Status never
-follows a receipt-supplied diagnostic path.
-
-Current dispatch blocks, submission rejections, detection failures, and active-attempt
-safety problems remain visible beside the affected current state. Historical monitoring
-gaps and older unresolved risks appear only in debug diagnostics and existing records.
-Hiding these warnings from normal output does not clear them or change their safety
-semantics. A later success does not resolve an earlier attempt's uncertainty;
-see [execution review warnings](recovery.md#execution-review-warnings).
-
-Set the job's `logging.level: debug` and rerun `status` for internal armed state,
-attempt IDs, exact systemd units, observation details, retained review warnings, and
-summary recording timestamps. Failure diagnostics include up to ten nonblank lines,
-each capped at 500 characters, from the fixed per-attempt `log.txt`; full retained output
-remains in that file. Probes never start, stop, reset, or reconcile workers. JSON status
-retains its existing schema and does not perform live service probes.
-
-Reports and current operational problems remain visible at every logging level; see
-[terminal output](../../README.md#terminal-output). Status creates no state or runtime
-files and requires the job YAML even when its trigger is disabled. Exit 0 means a
-readable report, including when the previous attempt failed; corrupt or incompatible
-records produce exit 2. Neither exit 0 nor a running service certifies backup health.
-
-### JSON status
-
-For scripts, add `--json`:
-
-```sh
-vaultkeep --user --config JOB.yaml trigger status --json
-```
-
-The command writes one JSON object followed by a newline to stdout. Field order is
-deterministic; diagnostics go to stderr. Omitting `--json` preserves the human-readable
-report. The existing optional positional instance selection also works with JSON:
-`status INSTANCE_ID --json`. Without an instance selection, JSON reports the configured
-job's instance. Configuration and parameter selection resolve the same recovery
-namespace as other Trigger commands.
-
-Example for a job with readable idle state and a stopped monitor:
-
-```json
-{
-  "active_attempt_id": null,
-  "backup_activity": "idle",
-  "job_id": "app",
-  "monitor_status": "stopped",
-  "pending_request_id": null,
-  "schema_version": 1
-}
-```
-
-| Field | Meaning |
-| --- | --- |
-| `schema_version` | Integer schema version, currently `1`. |
-| `job_id` | Job identifier from the selected YAML configuration. |
-| `backup_activity` | `idle`, `pending`, `active`, or `unknown`, as defined below. |
-| `pending_request_id` | Recorded pending request ID, or `null`. |
-| `active_attempt_id` | Recorded active or unresolved recovery attempt ID, or `null`. |
-| `monitor_status` | `running` when the monitor's lifetime lock is held, `stopped` when it is free or absent, or `unknown` when runtime/lock information is unavailable. |
-
-Activity reflects persisted Trigger evidence:
-
-- `idle`: Readable instance state records no pending request or active/unresolved
-  attempt, and no state-error block prevents interpreting that evidence.
-- `pending`: A pending request exists without an active/unresolved attempt.
-- `active`: An active association or unresolved recovery attempt exists. This takes
-  precedence over pending work and includes queued, executing, and unresolved workers.
-  It does **not** verify live execution or mean an archive is currently being written.
-- `unknown`: Evidence is insufficient, including missing, corrupt, incompatible,
-  unreadable, or blocked state without a known active attempt.
-
-JSON status uses the existing recovery rules to include unassociated attempts that
-still require reconciliation. It does not reconcile or repair them, change persisted
-state, take exclusive execution locks, or change services. A saved active association
-remains `active` even if a receipt exists or the monitor is stopped; the monitor must
-reconcile worker and queued-job termination before clearing that association.
-
-Exit 0 means the report was read successfully, including `unknown` for missing state
-or unavailable monitor information. State read/validation errors produce a JSON report
-with `backup_activity: "unknown"`, diagnostics on stderr, and exit 2. Configuration or
-instance-selection errors retain their nonzero exits and may produce no JSON. Check
-the exit code before interpreting a report. Exit codes do not indicate backup activity.
-
-Monitor health is separate from backup activity: lock ownership does not prove monitor
-responsiveness, and a stopped monitor does not establish that independent workers
-have finished. This report covers Trigger-managed work for the selected job; it does
-not inspect backups started manually, by timers, or by other applications. It reads
-records without an execution lock, so concurrent transitions can occur during or
-immediately after the check. An `idle` result is not permission to start an application
-and provides no guarantee that another process will not initiate a backup.
+Use `vaultkeep --user --config JOB.yaml status` or `status --json` to inspect backup
+execution, monitor freshness, application detection, and dispatch recovery. Backup
+results come from the common backup engine. Trigger contributes its own monitoring,
+requests, blocks, and source-consistency warnings. See the [status reference](../status.md).
 
 ## Exit codes
 
 | Code | Meaning |
 | ---: | --- |
-| 0 | Command succeeded or status was readable. |
+| 0 | Command succeeded. |
 | 1 | Reserved usage-error vocabulary; an unhandled Python error may also exit 1. |
 | 2 | Argument, job/trigger configuration, selection, or recovery-state error. |
 | 3 | Blocked runtime prerequisite or failed service-manager action. |

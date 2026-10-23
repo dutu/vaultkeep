@@ -9,7 +9,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from vaultkeep.config.models import JobConfig
-from vaultkeep.scheduling import (
+from vaultkeep.schedule import (
     SERVICE_TEMPLATE,
     TIMER_TEMPLATE,
     TimerManager,

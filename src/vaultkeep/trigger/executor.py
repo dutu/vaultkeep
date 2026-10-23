@@ -6,7 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from vaultkeep.progress import PROGRESS_PATH_ENV, ProgressReporter
+from vaultkeep.backup.results import classify_command
 from vaultkeep.trigger.childproc import ChildRunner, RealChildRunner
 from vaultkeep.trigger.config import matcher_from_canonical
 from vaultkeep.trigger.detection import detect_spec
@@ -25,7 +25,6 @@ from vaultkeep.trigger.models import (
     utc_now,
 )
 from vaultkeep.trigger.process import ProcessProvider, PsutilProcessProvider
-from vaultkeep.trigger.results import classify_exit
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.version import DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
 from vaultkeep.version import installed_version
@@ -93,8 +92,6 @@ def exec_worker(
         )
 
     started_at = utc_now()
-    progress = ProgressReporter(store.progress_path(attempt_id), state="preparing")
-    progress.report("Checking application has stopped")
 
     # Authoritative final process/identity recheck from the frozen request snapshot.
     detection = detect_spec(
@@ -123,7 +120,6 @@ def exec_worker(
         )
 
     # Capture the actual VaultKeep version immediately before invocation.
-    progress.report("Checking backup executable")
     version_result = runner.run(
         [request.vaultkeep, "--version"],
         env=request.environment,
@@ -137,12 +133,17 @@ def exec_worker(
             "VaultKeep execution version differs from preflight/contract"
         )
 
-    progress.report("Starting backup command")
     environment = dict(request.environment)
-    environment[PROGRESS_PATH_ENV] = str(store.progress_path(attempt_id))
     child = runner.run(_vaultkeep_argv(request, "run"), env=environment)
 
-    outcome = classify_exit(child.exit_code, child.stdout_tail)
+    outcome = {
+        "SUCCESS": AttemptOutcome.CREATED,
+        "UNCHANGED": AttemptOutcome.UNCHANGED,
+        "UNKNOWN": AttemptOutcome.RESULT_UNKNOWN,
+        "DEFERRED": AttemptOutcome.DEFERRED,
+        "EXECUTION ERROR": AttemptOutcome.INTEGRATION_ERROR,
+        "FAILED": AttemptOutcome.BACKUP_FAILED,
+    }[classify_command(child.exit_code, child.stdout_tail)]
     diagnostics_ref: str | None = None
     diagnostics_truncated = child.diagnostics_truncated
     if child.diagnostics:

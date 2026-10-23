@@ -49,6 +49,8 @@ def create_parser() -> argparse.ArgumentParser:
     # Monitor/install preflight already checks its own runtime prerequisites. Keep
     # its bounded child validation independent of service installation and health.
     validate.add_argument("--backup-only", action="store_true", help=argparse.SUPPRESS)
+    status = commands.add_parser("status", help="report backup, Trigger, and Schedule status")
+    status.add_argument("--json", action="store_true", help="report job status as JSON")
     commands.add_parser("run", help="run this job's backup now")
     commands.add_parser("list", help="list this job's stored backups")
     commands.add_parser("verify", help="verify this job's stored backups")
@@ -59,7 +61,6 @@ def create_parser() -> argparse.ArgumentParser:
     for action, help_text in (
         ("install", "install and enable this job's timer"),
         ("update", "refresh this job's installed timer"),
-        ("status", "report this job's timer status"),
         ("next", "show the next scheduled run"),
         ("disable", "stop and disable this job's timer"),
         ("remove", "remove this job's timer; preserve backups and state"),

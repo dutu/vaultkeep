@@ -185,13 +185,14 @@ def test_status_reports_durable_block_without_mutating_evidence(
     store.write_instance(InstanceState(instance_id="broken", active_attempt_id="ghost"))
     store.write_blocked("broken", "active attempt ghost has no request")
     before = {path: path.read_bytes() for path in store.root.rglob("*.json")}
-    monkeypatch.setattr("vaultkeep.trigger.cli.state_root", lambda _scope: store.root)
-    monkeypatch.setattr(
-        "vaultkeep.trigger.cli._monitor_runtime_status", lambda _scope: "not running"
+    monkeypatch.setattr("vaultkeep.trigger.status.state_root", lambda _scope: store.root)
+    monkeypatch.setattr("vaultkeep.trigger.status._monitor_status", lambda _scope: "stopped")
+    valid_config.update(
+        job={"id": "broken"}, trigger={"enabled": False}, schedule={"enabled": False}
     )
     path = store.root.parent / "app.yaml"
     path.write_text(json.dumps(valid_config))
-    assert main(["--user", "--config", str(path), "trigger", "status", "broken"]) == 0
+    assert main(["--user", "--config", str(path), "status"]) == 15
     assert "active attempt ghost has no request" in capsys.readouterr().out
     assert {path: path.read_bytes() for path in store.root.rglob("*.json")} == before
 
@@ -207,14 +208,18 @@ def test_status_reports_readable_instances_and_block_when_another_record_is_corr
     store.write_blocked("broken", "corrupt instance state requires review")
     store.write_instance(InstanceState(instance_id="healthy", armed=True))
     before = {path: path.read_bytes() for path in store.root.rglob("*.json")}
-    monkeypatch.setattr("vaultkeep.trigger.cli.state_root", lambda _scope: store.root)
-    monkeypatch.setattr("vaultkeep.trigger.cli._monitor_runtime_status", lambda _scope: "running")
+    monkeypatch.setattr("vaultkeep.trigger.status.state_root", lambda _scope: store.root)
+    monkeypatch.setattr("vaultkeep.trigger.status._monitor_status", lambda _scope: "running")
+    valid_config.update(
+        job={"id": "broken"}, trigger={"enabled": False}, schedule={"enabled": False}
+    )
     path = store.root.parent / "app.yaml"
     path.write_text(json.dumps(valid_config))
-    assert main(["--user", "--config", str(path), "trigger", "status"]) == 2
+    assert main(["--user", "--config", str(path), "status"]) == 15
     output = capsys.readouterr()
     assert "corrupt instance state requires review" in output.out
-    assert "Instance:  healthy" in output.out and "FAILED:" in output.err
+    assert "Application  UNKNOWN" in " ".join(output.out.split()) or "UNKNOWN" in output.out
+    assert "healthy" not in output.out
     assert {path: path.read_bytes() for path in store.root.rglob("*.json")} == before
 
 

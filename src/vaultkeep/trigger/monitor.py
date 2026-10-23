@@ -12,7 +12,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 
-from vaultkeep.progress import STALE_SECONDS, read_progress
+from vaultkeep.backup.paths import user_workflow_paths
+from vaultkeep.backup.status import backup_status
+from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.config import INSTANCE_ID_PATTERN, InstanceConfig, TriggerConfig
 from vaultkeep.trigger.detection import DetectionResult, detect
@@ -627,33 +629,33 @@ class Monitor:
         phase_started_at = None
         phase_elapsed = 0.0
         if not state.active_outcome_pending:
-            record = read_progress(self.store.progress_path(attempt_id), attempt_id)
-            started = parse_utc(record.started_at) if record else None
-            phase_started = parse_utc(record.phase_started_at) if record else None
-            updated = parse_utc(record.updated_at) if record else None
-            now = _now_dt()
-            if (
-                record is None
-                or started is None
-                or phase_started is None
-                or updated is None
-                or not started <= phase_started <= updated <= now
-                or (now - updated).total_seconds() > STALE_SECONDS
-                or (
-                    record.state != "finished"
-                    and self.provider.alive(record.pid, record.create_time) is not True
-                )
-            ):
-                # Avoid inventing activity before the first progress record. If
-                # previously observed progress becomes unusable, stop claiming it
-                # is still running on the desktop.
+            request = self.store.read_request(attempt_id)
+            if request is None:
+                return
+            status = backup_status(
+                user_workflow_paths(environ=request.environment),
+                request.instance_id,
+                job_identity_hash(
+                    Path(request.job_config), request.instance_id, runtime_params=request.job_params
+                ),
+            )
+            current = status["current"]
+            if current is None or status["activity"] not in ("RUNNING", "FINISHING"):
                 if state.instance_id not in self._last_activity:
                     return
                 activity, phase = "unknown", "Backup progress unavailable; awaiting result"
-            elif record.state != "finished":
-                activity, phase = record.state, record.phase
-                phase_started_at = record.phase_started_at
-                phase_elapsed = (now - phase_started).total_seconds()
+            elif status["activity"] != "FINISHING":
+                # Report only current job activity begun after this confirmed request.
+                # This is informational; receipts remain the dispatch recovery evidence.
+                started, confirmed = (
+                    parse_utc(current["started_at"]),
+                    parse_utc(request.confirmed_at),
+                )
+                if started is None or confirmed is None or started < confirmed:
+                    return
+                activity, phase = "running", current["phase"]
+                phase_elapsed = current["phase_elapsed_seconds"] or 0.0
+                phase_started_at = current["phase_started_at"]
         current = (attempt_id, activity, phase, phase_started_at)
         monotonic_now = self._clock()
         previous = self._last_activity.get(state.instance_id)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from vaultkeep.state.models import LocalState
 
 def write_local_state(path: Path, state: LocalState) -> None:
     """Atomically replace state.json after flushing file and directory metadata."""
+    write_json(path, state.model_dump(mode="json"))
+
+
+def write_json(path: Path, data: Mapping[str, object]) -> None:
+    """Atomically persist a private JSON record with file and directory fsync."""
     temporary_path: Path | None = None
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -25,7 +31,7 @@ def write_local_state(path: Path, state: LocalState) -> None:
         temporary_path = Path(temporary_name)
         payload = (
             json.dumps(
-                state.model_dump(mode="json"),
+                data,
                 ensure_ascii=True,
                 allow_nan=False,
                 sort_keys=True,

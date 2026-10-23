@@ -124,7 +124,7 @@ sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
 Manage the timer:
 
 ```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule status
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml status
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule next
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule update
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule disable

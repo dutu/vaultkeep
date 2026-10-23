@@ -9,9 +9,10 @@ from typing import Any
 
 import pytest
 
-from vaultkeep import workflow
 from vaultkeep.archive.base import ArchiveArtifact, ArchiveBuildRequest
 from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum_sidecar
+from vaultkeep.backup import workflow
+from vaultkeep.backup.status import backup_status
 from vaultkeep.destination import finalize as finalize_module
 from vaultkeep.errors import (
     DestinationCommitDurabilityError,
@@ -19,6 +20,7 @@ from vaultkeep.errors import (
     DestinationTemplateError,
     HookError,
 )
+from vaultkeep.state.identity import job_identity_hash
 
 
 @pytest.fixture
@@ -104,6 +106,14 @@ def test_precommit_failure_removes_only_current_partial_and_preserves_previous_b
         with pytest.raises((HookError, DestinationFinalizeError)):
             _run(job)
 
+    report = backup_status(
+        workflow.WorkflowPaths(job.parent / "state", job.parent / "cache", job.parent / "locks"),
+        "app",
+        job_identity_hash(job, "app"),
+    )
+    assert report["previous"]["result"] == "FAILED"
+    if stage == "rename":
+        assert report["previous"]["reason"] == "Backup finalization failed"
     assert set(destination.iterdir()) == {previous.archive_path.parent, older_partial}
     assert previous.archive_path.read_bytes() == b"archive"
     assert (older_partial / "data").read_bytes() == b"preserve"
@@ -132,6 +142,9 @@ def test_cleanup_failure_reports_remaining_path_and_preserves_original_error(
     assert partial.name.startswith("~$.partial-vaultkeep-")
     assert f"Cannot remove partial backup directory {partial}" in caplog.text
     assert "cleanup denied" in caplog.text
+    log = next((job.parent / "state").rglob("execution.log"))
+    assert "cleanup denied" in log.read_text()
+    assert "archive failed" in log.read_text()
 
 
 def test_cleanup_does_not_follow_symlinks_inside_staging(

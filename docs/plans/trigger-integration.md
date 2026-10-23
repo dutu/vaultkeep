@@ -23,7 +23,7 @@ than another configuration path. Strict schema validation rejects simultaneous
 
 Ship complete disabled examples for scheduled/manual jobs and each supported app.
 The README provides installation, configuration, explicit activation, everyday
-operation, maintenance, migration and removal procedures. Detailed references stay
+operation, maintenance and removal procedures. Detailed references stay
 under `docs/trigger/`.
 
 ## Per-job monitoring and workers
@@ -45,12 +45,14 @@ are refused. The shared worker template receives `<identity>_<attempt-uuid>` and
 validates both parts before reading that identity's frozen request.
 
 Keep the existing lifecycle, final process recheck, durable request/launch/receipt
-protocol, no-replay rules, per-job locking and result classification. Monitor stop,
+protocol, no-replay rules and per-job locking. Backup owns execution results and
+progress; Trigger retains the outcome needed for dispatch recovery. Monitor stop,
 restart, disable or removal never terminates workers. The backup subprocess uses the
 installation's own CLI and preserves the original user's runtime lock namespace.
 
-`vaultkeep --user trigger` supports per-job foreground monitor, status,
-install, update, disable and remove. Installation of the application never enables
+`vaultkeep --user trigger` supports per-job foreground monitoring,
+install, update, disable and remove. `vaultkeep status` independently combines Backup,
+Trigger and Schedule information, with one human/JSON interpretation. Installation of the application never enables
 monitoring; activation is an explicit per-job operation. Generated monitor services
 have clear ownership markers and do not adopt unrelated units or local overrides.
 

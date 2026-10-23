@@ -13,14 +13,14 @@ from typing import Any
 
 import pytest
 
-from vaultkeep import hooks, workflow
+from vaultkeep import hooks
+from vaultkeep.backup import workflow
+from vaultkeep.backup.results import classify_command
 from vaultkeep.cli.commands import main
 from vaultkeep.errors import ArchiveCreationError, DestinationError, LockError
 from vaultkeep.file_backups import file_key
 from vaultkeep.locking import JobLock, job_lock_path
 from vaultkeep.state.identity import job_identity_hash
-from vaultkeep.trigger.models import AttemptOutcome
-from vaultkeep.trigger.results import classify_exit
 
 pytestmark = pytest.mark.skipif(
     not all(Path(tool).is_file() for tool in ("/usr/bin/tar", "/usr/bin/zstd")),
@@ -182,12 +182,12 @@ def test_partial_failure_continues_reports_nonzero_and_retries_only_failed_walle
     assert "'personal wallet': failed" in output.err
     assert "simulated archive failure" in output.err
     assert "'savings': created" in output.err
-    assert classify_exit(exit_code, output.out) == AttemptOutcome.BACKUP_FAILED
+    assert classify_command(exit_code, output.out) == "FAILED"
     assert [outcome.result for outcome in _run(file_job).files] == ["created", "unchanged"]
     assert main(["--user", "--config", str(file_job), "run"]) == 0
     output = capsys.readouterr()
     assert output.out == "run: unchanged\n"
-    assert classify_exit(0, output.out) == AttemptOutcome.UNCHANGED
+    assert classify_command(0, output.out) == "UNCHANGED"
 
 
 def test_empty_directory_creates_nothing_and_does_not_prune_histories(file_job: Path) -> None:

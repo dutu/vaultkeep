@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from vaultkeep import workflow
+from vaultkeep.backup import workflow
 from vaultkeep.config import JobConfig
 from vaultkeep.errors import DestinationError
 

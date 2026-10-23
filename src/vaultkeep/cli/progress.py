@@ -1,33 +1,29 @@
-"""Terminal stage reporting and optional live progress for triggered backups."""
+"""Terminal stage reporting, independent of persisted backup progress."""
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic
 
+from vaultkeep.backup.progress import HEARTBEAT_SECONDS
 from vaultkeep.cli.output import Console
-from vaultkeep.progress import HEARTBEAT_SECONDS, ProgressReporter
 
 _HEARTBEAT_SECONDS = HEARTBEAT_SECONDS
 
 
 @contextmanager
-def terminal_progress(
-    *, no_color: bool = False, progress_path: Path | None = None
-) -> Iterator[Callable[[str], None] | None]:
-    """Report real workflow phases to a terminal and/or a private progress record."""
+def terminal_progress(*, no_color: bool = False) -> Iterator[Callable[[str], None] | None]:
+    """Present workflow phases on an interactive terminal."""
     stream = sys.stderr
     output = Console(no_color=no_color)
     terminal = stream.isatty()
-    if not terminal and progress_path is None:
+    if not terminal:
         yield None
         return
 
-    reporter = ProgressReporter(progress_path, state="running") if progress_path else None
     started = monotonic()
     stopped = Event()
     lock = Lock()
@@ -50,16 +46,12 @@ def terminal_progress(
         with lock:
             current_stage = message
             if not stopped.is_set():
-                if reporter:
-                    reporter.report(message)
                 write(message)
 
     def heartbeat() -> None:
         while not stopped.wait(_HEARTBEAT_SECONDS):
             with lock:
                 if current_stage is not None and not stopped.is_set():
-                    if reporter:
-                        reporter.heartbeat()
                     write(f"{current_stage} (still running)")
 
     worker = Thread(target=heartbeat, name="vaultkeep-progress", daemon=True)
@@ -69,5 +61,3 @@ def terminal_progress(
     finally:
         stopped.set()
         worker.join()
-        if reporter:
-            reporter.finish()

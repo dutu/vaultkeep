@@ -10,6 +10,7 @@ import pytest
 
 from vaultkeep.archive import checksums as checksums_module
 from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum_sidecar
+from vaultkeep.backup.workflow import list_backups, prune_backups, verify_backups
 from vaultkeep.config.models import JobConfig
 from vaultkeep.destination.discovery import discover_backups
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
@@ -17,7 +18,6 @@ from vaultkeep.destination.pruning import build_prune_plan, execute_prune_plan
 from vaultkeep.destination.templates import allocate_job_backup_paths, create_staging_directory
 from vaultkeep.errors import DestinationError, DestinationTemplateError, PruneError
 from vaultkeep.file_backups import file_config
-from vaultkeep.workflow import list_backups, prune_backups, verify_backups
 
 
 def _config(tmp_path: Path, valid_config: dict[str, Any]) -> JobConfig:

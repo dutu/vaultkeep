@@ -16,7 +16,10 @@ from tests.trigger.conftest import (
     make_instance,
     make_request,
 )
-from vaultkeep.progress import ProgressReporter
+from vaultkeep.backup.execution import Execution
+from vaultkeep.backup.paths import WorkflowPaths
+from vaultkeep.state.identity import job_identity_hash
+from vaultkeep.trigger import monitor as monitor_module
 from vaultkeep.trigger.config import NotificationConfig
 from vaultkeep.trigger.errors import BlockedError
 from vaultkeep.trigger.matcher import ProcessInfo
@@ -290,8 +293,19 @@ def live_activity(store, monkeypatch):
     monitor, controller, notifier = _make(store, provider, instance=instance)
     monitor.config = replace(monitor.config, notifications=NotificationConfig(enabled=True))
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "active", "running")
-    reporter = ProgressReporter(store.progress_path(request.attempt_id), state="running")
-    return monitor, controller, notifier, request, reporter
+    paths = WorkflowPaths(store.root / "backup", store.root / "cache", store.root / "locks")
+    identity = job_identity_hash(
+        Path(request.job_config), request.instance_id, runtime_params=request.job_params
+    )
+    monkeypatch.setattr("vaultkeep.trigger.monitor.user_workflow_paths", lambda **_kwargs: paths)
+    monkeypatch.setattr(
+        "vaultkeep.diagnostics.utc_now", lambda: monitor_module._now_dt().isoformat()
+    )
+    with Execution(paths, request.instance_id, identity) as execution:
+        reporter = execution._reporter
+        reporter._path.unlink()  # No live phase has been observed by the monitor yet.
+        yield monitor, controller, notifier, request, reporter
+        execution.complete("created")
 
 
 def test_phase_notifications_deduplicate_polls_and_finish_after_worker_ends(live_activity, store):
@@ -355,7 +369,8 @@ def test_phase_notification_refreshes_every_ten_seconds_and_resets_on_change(
         "vaultkeep.trigger.monitor._now_dt", lambda: start + timedelta(seconds=seconds[0])
     )
     monkeypatch.setattr(
-        "vaultkeep.progress._now", lambda: (start + timedelta(seconds=seconds[0])).isoformat()
+        "vaultkeep.backup.progress._now",
+        lambda: (start + timedelta(seconds=seconds[0])).isoformat(),
     )
     reporter.report("Checking existing backups")
     for elapsed in (0, 9, 10, 19, 20):
@@ -386,7 +401,7 @@ def test_first_phase_notification_omits_elapsed_but_refresh_preserves_actual_pha
 ):
     monitor, _controller, notifier, _request, reporter = live_activity
     start = datetime.now(UTC)
-    monkeypatch.setattr("vaultkeep.progress._now", lambda: start.isoformat())
+    monkeypatch.setattr("vaultkeep.backup.progress._now", lambda: start.isoformat())
     reporter.report("Checking existing backups")
     monkeypatch.setattr("vaultkeep.trigger.monitor._now_dt", lambda: start + timedelta(seconds=20))
     monitor.run_once()
@@ -394,7 +409,7 @@ def test_first_phase_notification_omits_elapsed_but_refresh_preserves_actual_pha
     monitor._clock = lambda: 10.0
     monkeypatch.setattr("vaultkeep.trigger.monitor._now_dt", lambda: start + timedelta(seconds=30))
     monkeypatch.setattr(
-        "vaultkeep.progress._now", lambda: (start + timedelta(seconds=30)).isoformat()
+        "vaultkeep.backup.progress._now", lambda: (start + timedelta(seconds=30)).isoformat()
     )
     reporter.heartbeat()
     monitor.run_once()
@@ -411,7 +426,7 @@ def test_waiting_notifications_refresh_and_stop_after_completion(
     reporter.report("Verifying archive")
     monitor.run_once()
     if lost_progress:
-        store.progress_path(request.attempt_id).unlink()
+        reporter._path.unlink()
     else:
         reporter.finish()
     monitor.run_once()
@@ -612,7 +627,7 @@ def test_receipt_takes_precedence_over_phase_notifications(
 @pytest.mark.parametrize(
     "change",
     [
-        {"attempt_id": "another-attempt"},
+        {"execution_id": "another-execution"},
         {"started_at": "invalid"},
         {"phase_started_at": "2000-01-01T00:00:00Z"},
         {"updated_at": "2000-01-01T00:00:00Z"},
@@ -624,7 +639,7 @@ def test_receipt_takes_precedence_over_phase_notifications(
 def test_invalid_progress_never_announces_a_phase(live_activity, store, change):
     monitor, _controller, notifier, request, reporter = live_activity
     reporter.report("Verifying archive")
-    path = store.progress_path(request.attempt_id)
+    path = reporter._path
     data = json.loads(path.read_text())
     path.write_text(json.dumps(data | change))
     monitor.run_once()
@@ -636,31 +651,16 @@ def test_missing_or_dead_progress_never_announces_a_phase(live_activity, monkeyp
     monitor, _controller, notifier, _request, reporter = live_activity
     monitor.run_once()
     reporter.report("Verifying archive")
-    monkeypatch.setattr(monitor.provider, "alive", lambda _pid, _created: alive)
+    monkeypatch.setattr("vaultkeep.backup.status.process_alive", lambda *_args: alive)
     monitor.run_once()
     assert not notifier.calls
-
-
-def test_preparing_progress_is_displayed_before_backup_starts(live_activity, store):
-    monitor, _controller, notifier, request, _reporter = live_activity
-    ProgressReporter(store.progress_path(request.attempt_id), state="preparing").report(
-        "Checking backup prerequisites"
-    )
-    monitor.run_once()
-    assert notifier.calls == [
-        (
-            "VaultKeep Trigger: backup preparing",
-            "instance electrum-main: Checking backup prerequisites",
-        )
-    ]
-    assert notifier.options == [(request.instance_id, False)]
 
 
 def test_lost_progress_updates_to_unknown_once_and_recovers(live_activity, store):
     monitor, _controller, notifier, request, reporter = live_activity
     reporter.report("Verifying archive")
     monitor.run_once()
-    store.progress_path(request.attempt_id).unlink()
+    reporter._path.unlink()
     monitor.run_once()
     monitor.run_once()
     assert notifier.calls[-1] == (
@@ -691,7 +691,7 @@ def test_disabled_notifications_do_not_read_live_progress(live_activity, monkeyp
     def fail(*_args):
         pytest.fail("disabled progress notifications must not read telemetry")
 
-    monkeypatch.setattr("vaultkeep.trigger.monitor.read_progress", fail)
+    monkeypatch.setattr("vaultkeep.trigger.monitor.backup_status", fail)
     monitor.run_once()
     assert not notifier.calls
 
@@ -977,26 +977,19 @@ def test_positive_worker_evidence_resets_rejection_count_without_rearming_alerts
 
 
 def _review_status(store, instance_id, capsys, *, verbose=False):
-    from vaultkeep.cli.output import Console
-    from vaultkeep.trigger.status import print_instance
+    from unittest.mock import patch
 
-    state = store.read_instance(instance_id)
-    assert state is not None
-    print_instance(
-        Console(no_color=True),
-        state,
-        None,
-        instance_id=instance_id,
-        activity="idle",
-        active_attempt_id=state.active_attempt_id,
-        scope=None,
-        store=store,
-        verbose=verbose,
-        monitor="RUNNING",
-        enabled=True,
-        poll_seconds=2,
+    from vaultkeep.trigger.status import trigger_status
+
+    instance = make_instance(instance_id=instance_id)
+    monitor, _, _ = _make(store, FakeProvider([]), instance=instance)
+    config = replace(
+        monitor.config, job_id=instance_id, scope="a" * 16, log_level="DEBUG" if verbose else "INFO"
     )
-    return " ".join(capsys.readouterr().out.split())
+    with patch("vaultkeep.trigger.status.state_root", return_value=store.root):
+        result = trigger_status(config)
+    assert not result.get("read_error"), result
+    return json.dumps(result["safety"])
 
 
 @pytest.mark.parametrize("recovery", ["startup", "delayed_poll", "retired"])
@@ -1036,7 +1029,7 @@ def test_gap_does_not_create_review_when_execution_was_excluded(store, recovery,
     updated = store.read_instance(instance.id)
     assert updated is not None and not updated.review_required
     assert not updated.attempt_summaries[-1]["review_required"]
-    assert "Outstanding issue" not in _review_status(store, instance.id, capsys)
+    assert _review_status(store, instance.id, capsys) == "[]"
     assert store.receipt_path(request.attempt_id).read_bytes() == receipt_bytes
 
 
@@ -1098,9 +1091,9 @@ def test_final_check_refusal_resolves_only_its_execution_review(store, capsys, c
     restarted, _, _ = _make(store, FakeProvider([]), controller=controller, instance=instance)
     restarted._startup_reconcile()
     assert not store.read_instance(instance.id).review_required
-    assert "Outstanding issue" not in _review_status(store, instance.id, capsys, verbose=True)
+    assert _review_status(store, instance.id, capsys, verbose=True) == "[]"
     output = _review_status(store, instance.id, capsys, verbose=True)
-    assert "Review annotation recorded (execution was blocked)" in output
+    assert output == "[]"
     assert store.receipt_path(request.attempt_id).read_bytes() == receipt_bytes
 
 
@@ -1150,8 +1143,8 @@ def test_blocked_resolution_preserves_other_attempt_risk(store, capsys, aggregat
     assert earlier.attempt_id in updated.review_reason
     assert updated.attempt_summaries[0] == state.attempt_summaries[0]
     output = _review_status(store, instance.id, capsys, verbose=True)
-    assert earlier.attempt_id in output.split("Outstanding issue")[1]
-    assert request.attempt_id not in output.split("Outstanding issue")[1]
+    assert earlier.attempt_id in output
+    assert request.attempt_id not in output
 
 
 @pytest.mark.parametrize(
@@ -1199,7 +1192,7 @@ def test_later_success_preserves_real_uncertainty_across_restart(
     assert updated.attempt_summaries[0] == previous_summary
     assert not updated.attempt_summaries[-1]["review_required"]
     output = _review_status(store, instance.id, capsys, verbose=True)
-    assert previous.attempt_id in output.split("Outstanding issue")[1]
+    assert previous.attempt_id in output
 
 
 def test_delay_and_restart_preserve_risk_while_worker_is_still_running(store):
@@ -1334,5 +1327,5 @@ def test_history_cleanup_keeps_unresolved_attempt_identifiable(store, capsys):
     updated = store.read_instance(instance.id)
     assert updated.review_required and updated.attempt_summaries[0]["review_required"]
     output = _review_status(store, instance.id, capsys, verbose=True)
-    assert oldest in output.split("Outstanding issue")[1]
+    assert oldest in output
     assert "Exact execution interval unavailable" in output

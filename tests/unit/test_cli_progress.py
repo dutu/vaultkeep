@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import io
-import os
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
 import pytest
 
+from vaultkeep.backup.workflow import CommandResult
 from vaultkeep.cli import commands
 from vaultkeep.cli import progress as progress_module
 from vaultkeep.errors import DestinationError
-from vaultkeep.progress import PROGRESS_PATH_ENV, read_progress
-from vaultkeep.workflow import CommandResult
 
 
 class TerminalOutput(io.StringIO):
@@ -171,39 +169,6 @@ def test_captured_command_has_no_progress_or_background_thread(
     assert captured.out == f"{command}: {result}\n"
     assert captured.err == ""
     assert progress_threads == []
-
-
-def test_triggered_run_publishes_live_phases_without_terminal_output(
-    tmp_path, monkeypatch, capsys, progress_threads
-):
-    path = tmp_path / "progress.json"
-    monkeypatch.setenv(PROGRESS_PATH_ENV, str(path))
-    monkeypatch.setattr(progress_module, "_HEARTBEAT_SECONDS", 0.01)
-    heartbeat = Event()
-    original = progress_module.ProgressReporter.heartbeat
-
-    def beat(reporter):
-        original(reporter)
-        heartbeat.set()
-
-    monkeypatch.setattr(progress_module.ProgressReporter, "heartbeat", beat)
-
-    def run(_config, **kwargs):
-        assert PROGRESS_PATH_ENV not in os.environ
-        kwargs["progress"]("Creating and compressing archive")
-        assert heartbeat.wait(timeout=2)
-        record = read_progress(path, tmp_path.name)
-        assert record is not None and record.state == "running"
-        assert record.phase == "Creating and compressing archive"
-        return CommandResult("run", "created")
-
-    monkeypatch.setattr(commands, "run_backup", run)
-    assert commands.main(["--user", "--config", "app.yaml", "run"]) == 0
-    record = read_progress(path, tmp_path.name)
-    assert record is not None and record.state == "finished"
-    captured = capsys.readouterr()
-    assert captured.out == "run: created\n" and captured.err == ""
-    assert len(progress_threads) == 1 and not progress_threads[0].is_alive()
 
 
 @pytest.mark.parametrize("error", [DestinationError("unavailable"), KeyboardInterrupt()])

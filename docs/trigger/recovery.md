@@ -136,9 +136,9 @@ a legacy aggregate warning with unknown attribution is preserved for evidence re
 New warnings identify their attempt in the existing reason fields. This requires no
 schema change, migration, or new persistence structure.
 
-Current-attempt safety problems remain visible in normal status. Historical review
-warnings remain in retained records and debug status without appearing in the normal
-report. Set the job's `logging.level: debug` and rerun `trigger status` to inspect them.
+Current and unresolved historical safety warnings remain visible in the Trigger
+section of `vaultkeep status`, with affected attempts and execution periods when
+known. They are separate from the latest backup execution result.
 
 Resolved final-check events remain available in retained history and debug status,
 rather than appearing as outstanding execution risks. There is no time-based expiry,
@@ -148,7 +148,7 @@ from the stored records.
 
 ## Operator review and repair
 
-1. Inspect `vaultkeep --user --config JOB.yaml trigger status`, the monitor journal, the selected worker unit/job,
+1. Inspect `vaultkeep --user --config JOB.yaml status`, the monitor journal, the selected worker unit/job,
    and private attempt records. A stopped monitor is not evidence that its workers
    stopped. If the user manager is unreachable, retain the active association and
    wait for reliable evidence rather than assuming absence.

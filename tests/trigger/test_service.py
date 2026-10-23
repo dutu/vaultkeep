@@ -132,7 +132,7 @@ def test_root_schedule_and_user_trigger_coexist(
 ) -> None:
     from copy import deepcopy
 
-    from vaultkeep.scheduling import TimerManager, TimerPaths
+    from vaultkeep.schedule import TimerManager, TimerPaths
 
     root_config = deepcopy(valid_config)
     root_config["schedule"]["enabled"] = True

@@ -1467,7 +1467,7 @@ Timer commands:
 ```bash
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule install
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule update
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule status
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule next
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule disable
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule remove
@@ -1492,11 +1492,53 @@ The user-mode jobs directory defaults to `${XDG_CONFIG_HOME:-~/.config}/vaultkee
 
 The CLI provides a jobs-directory override for testing and nonstandard installations.
 
-## 17.1 Manual and scheduled workflow parity
+## 17.1 Common execution and job status
 
-Manual and scheduled execution invoke the same `run` workflow.
+Manual `run`, Schedule's generated systemd service, and Trigger's worker child all
+invoke `vaultkeep.backup.workflow.run_backup`. Initiators decide when to execute;
+`vaultkeep.backup` owns locking, the entire execution lifecycle, progress, outcomes,
+and execution diagnostics. Trigger and Schedule are sibling initiation packages;
+Backup imports neither of them.
 
-There must not be a separate scheduled execution path.
+`vaultkeep status` independently collects Backup, Trigger, and Schedule evidence.
+One collected interpretation feeds human and JSON renderers. It reads no sources or
+destination archives, performs no runtime preflight, takes no locks, reconciles no
+attempts, and never writes or repairs records. See the [operational status reference](../status.md).
+
+The engine acquires the parent job lock before semantic/runtime checks and progress.
+It stamps that held lock with a fresh execution ID. Rejected invocations publish
+nothing. Per-file children retain independent archive state but share the parent
+execution's lock, phase stream, and aggregate result.
+
+Alongside archive `state.json`, `execution.json` contains a current execution start
+and the preceding attempt's result. It uses private atomic JSON replacement, file
+and directory fsync, and bounded validated reads. A start includes execution ID,
+UTC time, PID and process creation time when available. Final evidence adds result,
+completion time, duration, exit code/signal and concise reason after cleanup and all
+remaining workflow work. Archive state still retains the last successfully created
+backup and credential/change-detection facts; it cannot establish execution completion.
+
+A killed process leaves an unfinished start. Readers report UNKNOWN; the next owning
+execution retains that uncertain attempt as its previous result. Caught SIGTERM and
+interruptions record INTERRUPTED after normal cleanup. Failures before archive-state
+persistence and after commit use the same result path. A post-commit failure preserves
+its archive. The private execution log rotates at 64 KiB with one retained segment.
+
+The engine atomically publishes `progress.json` on phases and a ten-second heartbeat.
+Live activity requires matching execution/lock ownership, PID and creation time, and
+valid ordered timestamps no more than thirty seconds old. Linux `/proc/locks` supplies
+lock ownership without acquiring any lock. Unavailable ownership or telemetry means
+UNKNOWN. A released lock alone never proves completion; a reliable completion record
+wins over stale progress. The lock's execution stamp detects a new attempt whose
+telemetry writes failed, including on filesystems with coarse timestamps. Progress,
+logging, and completion-record I/O remain best-effort and never fail archive work.
+
+Trigger retains requests, launch records, receipts and recovery summaries because
+child completion and submission uncertainty govern safe orchestration. It obtains
+live phases for desktop notifications through Backup's status interpretation; it
+never writes progress or presents a parallel backup history. Blocked or rejected
+dispatches and unresolved application-safety warnings belong to Trigger. Schedule
+owns timer rendering and health, without execution state or result classification.
 
 ## 17.2 Logging
 
@@ -1718,7 +1760,7 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 
 `schedule install` and `schedule update` write a temporary drop-in, validate it, atomically replace the final file, and restore the preceding file and enabled state when a later lifecycle operation fails.
 
-`schedule status` reports the instance state, effective unit content, last trigger, and next trigger.
+`vaultkeep status` reports concise timer installation, health, enablement, next execution, and diagnostics in its Schedule section.
 
 `schedule next` reports systemd's effective next trigger and fails with a timer-management error when the instance is not installed.
 
@@ -1836,7 +1878,10 @@ Each job must have a local lock to prevent overlapping runs of the same configur
 The lock identity is derived from:
 
 - canonical config path;
-- job ID.
+- job ID;
+- explicit runtime parameters.
+
+Per-file archive state includes the file key; execution ownership uses the parent job identity.
 
 Lock path:
 
@@ -1860,73 +1905,37 @@ If the same job is already running:
 
 ## 21. Modular architecture
 
-V1 package structure:
+The implementation groups execution and initiation responsibilities as follows:
 
 ```text
 vaultkeep/
-├── __init__.py
-├── __main__.py
-├── cli/
-│   ├── parser.py
-│   ├── commands.py
-│   └── output.py
-├── application/
-│   ├── run_job.py
-│   ├── validate_job.py
-│   ├── prune_job.py
-│   └── timers.py
+├── cli/           # parsing, commands, unified status collection and presentation
+├── backup/
+│   ├── workflow.py    # archive, hooks, finalization, retention, archive state
+│   ├── execution.py   # parent lock and execution lifecycle
+│   ├── paths.py       # root/user local paths
+│   ├── progress.py    # atomic phase snapshots
+│   ├── records.py     # bounded execution evidence
+│   ├── results.py     # common outcomes and error classification
+│   └── status.py      # read-only backup interpretation
+├── trigger/       # detection, shutdown confirmation, dispatch and recovery
+├── schedule/      # systemd timers and scheduler health
 ├── config/
-│   ├── loader.py
-│   ├── models.py
-│   ├── duplicate_keys.py
-│   └── versions.py
 ├── validation/
-│   ├── schema.py
-│   ├── semantic.py
-│   └── runtime.py
 ├── sources/
-│   ├── discovery.py
-│   ├── exclusions.py
-│   ├── entries.py
-│   └── hashing.py
 ├── archive/
-│   ├── base.py
-│   ├── tar_zstd.py
-│   ├── tar_7z.py
-│   └── verification.py
 ├── destination/
-│   ├── filesystem.py
-│   ├── templates.py
-│   ├── discovery.py
-│   ├── finalize.py
-│   └── pruning.py
 ├── retention/
-│   ├── buckets.py
-│   ├── planner.py
-│   └── models.py
-├── state/
-│   ├── manifest.py
-│   ├── local_state.py
-│   └── atomic.py
-├── scheduling/
-│   ├── model.py
-│   ├── systemd.py
-│   └── registry.py
-├── hooks/
-│   ├── models.py
-│   ├── validation.py
-│   └── runner.py
-├── system/
-│   ├── commands.py
-│   ├── mounts.py
-│   ├── locking.py
-│   └── filesystem.py
-├── logging/
-│   └── setup.py
-└── errors.py
+├── state/         # common identity, archive state and atomic persistence
+├── hooks.py
+├── locking.py
+└── diagnostics.py
 ```
 
-This is the v1 logical package structure. Adjacent responsibilities can share a file when separating them would create only trivial wrappers; the layering rules remain mandatory.
+The dependency is Manual / Schedule / Trigger → Backup. The status collector reads
+these three components independently. Shared archive, configuration, destination,
+and persistence modules remain common; no launcher hierarchy or execution service
+is needed.
 
 ## 21.1 Layering
 
@@ -1977,8 +1986,9 @@ The v1 `run` workflow remains concise:
 ```text
 parse CLI
 → load config
-→ validate schema and semantics
-→ acquire job lock
+→ validate schema and identify job
+→ acquire job lock and record execution start
+→ validate semantics
 → runtime preflight
 → start hook lifecycle
 → run before_check
@@ -2011,6 +2021,7 @@ parse CLI
 → prune obsolete backups
 → run on_success
 → atomically record the final run result
+→ persist common execution result and release lock
 → return success
 ```
 
@@ -2049,15 +2060,14 @@ V1 exit code map:
 0   Success, including unchanged
 2   Invalid command-line arguments
 3   Invalid configuration
-4   Source error
-5   Destination or mount error
-7   Archive creation failure
-8   Verification or source-consistency failure
-9   Retention failure
+5   Destination, mount, finalization, or retention error
+7   Source, archive, verification, or generic execution failure
 10  Job lock already held
 11  Hook execution failure
 14  Timer management failure
-15  State or manifest failure
+15  Local state or status-inspection error
+130 Interrupted by SIGINT
+143 Interrupted by SIGTERM
 ```
 
 The application exposes a structured internal error hierarchy.
@@ -2865,7 +2875,7 @@ V1 Vaultkeep is designed as:
 - strict about unknown and malformed configuration;
 - count-based and calendar-bucketed for hourly/daily/weekly/monthly/yearly retention with coarser-tier horizons limiting finer-tier selections;
 - equipped with controlled lifecycle hooks for preparation, source quiescing, cleanup, and result notification;
-- equipped with helper commands for timer installation, updates, status, next-run reporting, disabling, removal, validation, and synchronization;
+- equipped with helper commands for timer installation, updates, next-run reporting, disabling, removal, validation, and synchronization, with timer health in unified job status;
 - installed, updated, and uninstalled by an idempotent root-run Debian installer with an atomic current-release switch, retained rollback release, ownership manifest, non-mutating update and removal plans, and explicit purge mode;
 - modular and extensively testable;
 - conservative about deletion and partial failures.

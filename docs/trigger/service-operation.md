@@ -47,8 +47,8 @@ locks concurrently. A duplicate monitor for the same identity is refused.
 
 The backup child receives the user's original `XDG_RUNTIME_DIR`, so its normal job
 lock is shared with manual and timer-driven backups. Moving the job or changing its
-ID/parameters creates a new identity; stop and drain the old identity first. Legacy
-shared recovery evidence requires explicit [migration](migration.md).
+ID/parameters creates a new identity; stop and drain the old identity first. Preserve
+its recovery evidence until any uncertainty has been reviewed.
 
 The worker's VaultKeep child environment is frozen in its request: `HOME` is the
 account home; absolute `XDG_STATE_HOME`/`XDG_CACHE_HOME` values are kept, otherwise

@@ -95,10 +95,10 @@ def require_generated(original: str, rendered: str, *, variable: tuple[str, ...]
 
 def plan(document: dict[str, Any]) -> dict[str, Any]:
     """Render existing jobs; retain snapshots before any mutation."""
-    from vaultkeep.scheduling import TimerManager, TimerPaths, render_schedule
+    from vaultkeep.backup.workflow import load_validated_config
+    from vaultkeep.schedule import TimerManager, TimerPaths, render_schedule
     from vaultkeep.trigger.config import load_config as load_trigger
     from vaultkeep.trigger.service import render_service, service_name
-    from vaultkeep.workflow import load_validated_config
 
     user = document["user"]
     paths = TimerPaths(**{key: Path(value) for key, value in document["paths"].items()})
@@ -239,8 +239,8 @@ def apply(document: dict[str, Any], *, restore: bool = False) -> None:
 
 def validate(document: dict[str, Any]) -> None:
     """Validate all jobs and runtime readiness only for launchers being resumed."""
+    from vaultkeep.backup.workflow import load_validated_config, validate_job
     from vaultkeep.trigger.config import load_config as load_trigger
-    from vaultkeep.workflow import load_validated_config, validate_job
 
     for job in document["jobs"]:
         config_path = Path(job["config"])

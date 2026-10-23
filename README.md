@@ -25,6 +25,7 @@ and [user mode guide](docs/user-mode.md).
   - [Destination mount checks](#destination-mount-checks)
   - [CLI reference](#cli-reference)
   - [Terminal output](#terminal-output)
+  - [Check job status](#check-job-status)
   - [Check the installed version](#check-the-installed-version)
   - [Validate a job configuration](#validate-a-job-configuration)
   - [Start backups in the chosen mode](#start-backups-in-the-chosen-mode)
@@ -596,20 +597,19 @@ vaultkeep --version
 
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] run
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
 
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule install
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule update
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule status
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule next
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule disable
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule remove
 
 vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger install
 vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger update
-vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger status [--json]
 vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger disable
 vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger remove
 vaultkeep --user --config <job.yaml> [--param KEY=VALUE ...] trigger monitor
@@ -621,7 +621,7 @@ vaultkeep [--user] schedules sync [--dry-run]
 
 Every command and action supports `-h` or `--help` in its own position, for example
 `vaultkeep schedule --help`, `vaultkeep schedule install --help`, or
-`vaultkeep trigger status --help`. Version inspection uses `vaultkeep --version`.
+`vaultkeep status --help`. Version inspection uses `vaultkeep --version`.
 
 Use `--user` for per-user job configuration, per-user state, and systemd user timers. Omit it for root mode. Root-mode operations that read protected sources, write root-owned state, manage system timers, or use root-owned secrets must be run with `sudo`.
 
@@ -690,9 +690,45 @@ and remove it when no longer needed. `--dry-run` continues to show detailed plan
 commands without creating a transcript or changing the deployment.
 
 Validation reports remain on stdout, with detailed errors on stderr. Version output,
-Trigger status JSON, schedule listings, and backup result markers such as
-`run: created` retain their existing format. Use `trigger status --json` for scripts
-that need Trigger activity; human-readable reports may evolve.
+Job status JSON, schedule listings, and backup result markers such as
+`run: created` remain suitable for scripts. Use `status --json` for backup activity
+and results, with separate Trigger and Schedule information when configured.
+
+### Check job status
+
+1. Inspect the selected job using the same mode, configuration path, and runtime
+   parameters used to run it:
+
+   ```bash
+   vaultkeep --user --config /path/to/job.yaml status
+   # For a root-mode job:
+   sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml status
+   ```
+
+   Backup activity is always shown. A running backup reports its phase, phase elapsed
+   time, and total elapsed time. `Previous backup` reports the previous execution's
+   result, completion time, and duration independently of current activity.
+   `SUCCESS` means an archive was created; `UNCHANGED` means no new archive was needed.
+   Failures and interruptions include a concise reason and a diagnostic log when
+   available. `UNKNOWN` means the evidence cannot establish activity or completion.
+
+2. Check the configured automation section: Trigger shows monitor freshness,
+   application detection, pending requests, dispatch blocks, and safety warnings.
+   Schedule shows timer installation, health, enablement, and the next execution.
+   Manual-only jobs omit these sections.
+
+3. For scripts, request the same report as JSON:
+
+   ```bash
+   vaultkeep --user --config /path/to/job.yaml status --json
+   ```
+
+Status only reads local evidence and systemd information. It does not require the
+sources or destination to be online and never starts, stops, repairs, or reconciles
+anything. Missing or damaged evidence remains explicit. Exit 0 means the report was
+readable, including a previous failed backup; inspection errors use exit 15 and
+configuration errors use exit 3. Inspect the JSON result fields to decide job health.
+See the [status reference](docs/status.md) for fields, uncertainty, and diagnostics.
 
 ### Check the installed version
 
@@ -800,7 +836,7 @@ an account-owned `XDG_RUNTIME_DIR`. Validation reports missing runtime prerequis
    ```bash
    vaultkeep --user --config "$job_config" validate
    vaultkeep --user --config "$job_config" schedule install
-   vaultkeep --user --config "$job_config" schedule status
+   vaultkeep --user --config "$job_config" status
    vaultkeep --user --config "$job_config" schedule next
    vaultkeep --user --config "$job_config" validate
    ```
@@ -821,7 +857,7 @@ an account-owned `XDG_RUNTIME_DIR`. Validation reports missing runtime prerequis
    ```bash
    vaultkeep --user --config "$job_config" validate
    vaultkeep --user --config "$job_config" trigger install
-   vaultkeep --user --config "$job_config" trigger status
+   vaultkeep --user --config "$job_config" status
    vaultkeep --user --config "$job_config" validate
    ```
 
@@ -838,7 +874,6 @@ Trigger and Schedule share the lifecycle actions:
 | --- | --- |
 | `install` | Create and enable this job's automation. |
 | `update` | Refresh generated units after editing the configuration. |
-| `status` | Inspect the selected automation. |
 | `disable` | Stop and disable future automatic starts. |
 | `remove` | Disable and remove the job's generated automation units. |
 
@@ -882,8 +917,8 @@ When stderr is a terminal, `run` displays the current stage and elapsed time,
 including source hashing, compression, verification, and retention. Long stages
 repeat every 10 seconds with a `still running` message. Elapsed time is for the
 whole run; these updates indicate the active stage, not a completion percentage.
-Progress is omitted when stderr is redirected or captured, including scheduled
-runs. The final result remains on stdout as `run: created` or `run: unchanged`.
+Terminal updates are omitted when stderr is redirected or captured. Every run,
+including scheduled execution, still publishes progress for `vaultkeep status`. The final result remains on stdout as `run: created` or `run: unchanged`.
 After `run: created`, the terminal also shows the archive path, archive size,
 total run duration, and number of backups removed by retention. This summary
 uses stderr and is omitted when stderr is redirected or captured.
@@ -1010,7 +1045,7 @@ For a parameterized job, pass the same parameters to every timer command:
 
 ```text
 vaultkeep [--user] --config <job.yaml> --param repo=nas-a schedule install
-vaultkeep [--user] --config <job.yaml> --param repo=nas-a schedule status
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a status
 vaultkeep [--user] --config <job.yaml> --param repo=nas-a schedule remove
 ```
 
@@ -1023,7 +1058,7 @@ vaultkeep [--user] --config <job.yaml> schedule update
 Inspect the timer:
 
 ```text
-vaultkeep [--user] --config <job.yaml> schedule status
+vaultkeep [--user] --config <job.yaml> status
 vaultkeep [--user] --config <job.yaml> schedule next
 ```
 
@@ -1084,7 +1119,7 @@ schedule:
   persistent: true
 ```
 
-Manual and scheduled runs execute the same backup workflow. A per-job lock prevents concurrent execution of the same job.
+Manual, scheduled, and shutdown-triggered runs execute the same backup workflow. A per-job lock prevents concurrent execution of the same job.
 
 ### Manage all job timers
 
@@ -1276,7 +1311,7 @@ vaultkeep [--user] --config <job.yaml> validate
 Inspect timer and service status through Vaultkeep:
 
 ```text
-vaultkeep [--user] --config <job.yaml> schedule status
+vaultkeep [--user] --config <job.yaml> status
 ```
 
 Inspect systemd directly when needed:
@@ -1300,15 +1335,14 @@ Common exit codes:
 | 0 | Success, including unchanged |
 | 2 | Invalid command-line arguments |
 | 3 | Invalid configuration or validation health/setup failure |
-| 4 | Source error |
-| 5 | Destination or mount error |
-| 7 | Archive creation failure |
-| 8 | Verification or source-consistency failure |
-| 9 | Retention failure |
+| 5 | Destination, mount, finalization, or retention error |
+| 7 | Source, archive, verification, or generic execution failure |
 | 10 | Job lock already held |
 | 11 | Hook execution failure |
 | 14 | Timer management failure |
-| 15 | State or manifest failure |
+| 15 | Local state or status-inspection error |
+| 130 | Interrupted by SIGINT |
+| 143 | Interrupted by SIGTERM |
 
 Local job state is stored in the mode-specific state directory:
 
@@ -1392,7 +1426,7 @@ Install and activate this job's user monitor only after validation:
 ```bash
 vaultkeep --user --config "$job_config" trigger install
 vaultkeep --user --config "$job_config" validate
-vaultkeep --user --config "$job_config" trigger status
+vaultkeep --user --config "$job_config" status
 ```
 
 `install` creates and enables a service named
@@ -1436,7 +1470,7 @@ The backup notification updates when the observed phase changes, for example fro
 seconds with the current phase's elapsed time, such as `Checking existing backups (20s)`.
 The first notification for each phase omits elapsed time.
 After the worker ends, the final result includes the local completion time and remains
-until you dismiss it. Changes to the `Current activity` / `Application` state also
+until you dismiss it. Changes to the Trigger `Application` state also
 produce separate notifications after the first observation establishes a baseline.
 Delivery uses the backup owner's desktop session; popup
 visibility and expiration depend on desktop settings. The monitor automatically
@@ -1451,52 +1485,26 @@ setup](docs/trigger/notifications.md) and
 
 ```bash
 vaultkeep --user --config "$job_config" validate
-vaultkeep --user --config "$job_config" trigger status
+vaultkeep --user --config "$job_config" status
 systemctl --user list-units --all 'vaultkeep-trigger@*.service' 'vaultkeep-trigger-exec@*.service'
 ```
 
-Read `Monitor` with its update age, then `Current activity` and `Previous attempt`.
-A held monitor lock with stale or unavailable updates is `UNKNOWN`; check the monitor
-journal. `Application` shows `RUNNING` with observation age, `CONFIRMING STOP` during
-the shutdown confirmation interval, `HAS STOPPED` after a
-confirmed shutdown, or `NOT YET DETECTED` when current-session observations establish
-that the application has not yet been detected. Insufficient or stale evidence is
-`UNKNOWN`. An application already stopped at monitor startup is not a confirmed shutdown.
+The [job status report](#check-job-status) separates Backup activity and the previous
+execution result from Trigger monitoring and dispatch. Read `Monitor` with its update
+age and `Application` with its observation age. `RUNNING` confirms that the monitor
+actually detected the application. `CONFIRMING STOP`, `HAS STOPPED`, and
+`NOT YET DETECTED` describe the confirmed lifecycle; stale or unavailable evidence is
+`UNKNOWN`. A stopped application at monitor startup is not a confirmed shutdown.
 
-For backups, `IDLE` means no recorded work; `PENDING` means a request is waiting.
-Active backups report their actual workflow phase and elapsed times:
-
-```text
-Backup  RUNNING: Creating and compressing archive (45s / 1m 31s elapsed)
-```
-
-The first duration is time in the current phase; the second is total backup command
-time. Phases include source hashing, compression, verification, finalization, and hooks.
-`PREPARING` covers worker checks before invoking the backup command. `FINISHING` means
-the workflow has ended and its result is being recorded. Missing or stale progress is
-`UNKNOWN`; check the worker journal. Backups started before upgrading may lack live
-progress. See [status meanings](docs/trigger/cli.md#status) for freshness checks and
-fallback states. `COMPLETED` means a receipt records child
-completion while its worker awaits reconciliation. `STOPPED` or `FAILED` without a
-receipt does not establish the backup outcome.
-
-`Previous attempt` reports the most recent completed result separately from current
-work, or `NONE` when no completed summary exists. `UNCHANGED` means no new archive was
-created. Failures include the recorded exit code or signal, a concise reason, and an
-existing diagnostic `Log` path when available. A receipt supplies the completion time;
-missing timestamps and log paths are omitted.
-
-Current monitoring, dispatch, and backup-safety problems remain visible beside the
-affected state. Historical monitoring gaps and older unresolved warnings remain in
-existing records and debug diagnostics. A later success does not establish the safety
-of an earlier attempt. See [status meanings](docs/trigger/cli.md#status) and
+Pending requests, blocked dispatches, and unresolved source-consistency warnings
+appear under Trigger. A dispatch blocked by the application's final recheck is not
+a failed backup. Receipts and launch records remain available for recovery; status
+never reconciles them. See [status meanings](docs/status.md) and
 [recovery](docs/trigger/recovery.md).
 
-For detailed investigation, set the job's `logging.level` to `debug` and rerun
-`trigger status`. Diagnostics include internal armed state, attempt IDs, exact worker
-units, historical review warnings, and capped raw error tails; diagnostic logging names
-the monitor unit and state directory. The complete retained child output remains in its
-private log. See [failure diagnosis](docs/trigger/troubleshooting.md#why-did-a-backup-fail).
+Set `logging.level: debug` and rerun `status` for monitor unit names, state paths,
+observations, and bounded backup diagnostic tails. Use the displayed `Log` path for
+full retained failure details. Review logs before sharing them.
 
 Use the monitor service name from debug diagnostics to inspect logs:
 
@@ -1524,24 +1532,11 @@ These operations preserve recovery state and leave already dispatched workers
 running. Drain workers before switching to scheduled execution. For a temporary
 maintenance pause, use `systemctl --user stop <monitor-unit>` to preserve enablement.
 
-`status` is read-only. Exit 0 means a readable report, including when a backup failed.
-Compare monitor update ages with lock ownership; a held lock alone does not prove that
-monitoring is responsive. Unknown outcomes or review warnings require
-[evidence review](docs/trigger/recovery.md). Older standalone Trigger installations
-require [migration](docs/trigger/migration.md) before starting these per-job monitors.
-
-For machine-readable Trigger activity, run:
-
-```bash
-vaultkeep --user --config "$job_config" trigger status --json
-```
-
-The JSON reports persisted activity as `idle`, `pending`, `active`, or `unknown`, with
-request/attempt IDs and a separate monitor status. Missing state is `unknown`.
-`active` includes unresolved attempts and does not verify live archive writing.
-The report covers Trigger-managed work only; `idle` cannot guarantee that an application
-can safely start or that another process will not start a backup. See the
-[JSON schema and limitations](docs/trigger/cli.md#json-status).
+`status` is read-only. Unknown outcomes or review warnings require
+[evidence review](docs/trigger/recovery.md). A readable report does not establish
+that starting an application is safe; another process can initiate a backup after
+inspection. Use `status --json` for programmatic checks; its `backup`, `trigger`, and
+`schedule` sections use the same interpretation as the terminal report.
 
 ## Maintenance and removal
 
@@ -1614,8 +1609,7 @@ saved shell commands or scripts. Put `--user`, `--config`, and `--param` before
 
 Install and update automatically refresh existing managed per-job monitor commands,
 including monitors installed with the previous option order. Disabled and inactive
-monitors stay disabled or inactive. Standalone Trigger installations still require
-[migration](docs/trigger/migration.md).
+monitors stay disabled or inactive.
 
 After editing a job outside an application update, refresh it explicitly as the
 application owner, using its original YAML path and parameters:
@@ -1646,9 +1640,7 @@ If the installed version is different from the checkout version, `install` stops
 
 ### Update the application
 
-Upgrade Debian 12 to Debian 13 first. The installer accepts earlier core-only and
-combined deployments. Existing standalone Trigger configurations and recovery
-evidence require the [migration procedure](docs/trigger/migration.md).
+Use Debian 13 for application updates.
 
 Fetch and select the newer release in the source checkout. The installer [pauses and resumes existing schedules automatically](#pause-and-resume-for-maintenance) and refuses active backup work:
 
@@ -1762,14 +1754,14 @@ sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
 ```
 
 `--purge` affects only managed core `/etc/vaultkeep` and `/var/lib/vaultkeep`.
-Every user's legacy Trigger TOML, per-job state directories, receipts, launch records, logs,
+Every user's per-job Trigger state directories, receipts, launch records, logs,
 blocks, review warnings, and user-mode core data survive normal uninstall and purge.
 It does not remove backup archives, wallets, or hook executables. Installer-added Debian packages remain installed because other applications can use them.
 
 Each account should inspect `systemctl --user list-unit-files 'vaultkeep-trigger*'`
 and remove only its obsolete local units/drop-ins after backing them up. Reload that
 user manager. Keep Trigger data unless it is deliberately retired after all work is
-gone and evidence reviewed; see [migration and cleanup](docs/trigger/migration.md).
+gone and evidence reviewed; see [recovery](docs/trigger/recovery.md).
 
 ## Design and implementation reference
 

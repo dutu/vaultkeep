@@ -10,7 +10,8 @@ from typing import Any
 
 import pytest
 
-from vaultkeep import hooks, workflow
+from vaultkeep import hooks
+from vaultkeep.backup import workflow
 from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import DestinationError, HookError
 from vaultkeep.state.models import BackupStateRecord, HookOutcomeState, LocalState
@@ -80,7 +81,7 @@ def _patch_creation_workflow(
         archive_path=tmp_path / "stage" / "archive.tar.zst",
         checksum_path=tmp_path / "stage" / "archive.tar.zst.sha256",
     )
-    monkeypatch.setattr(workflow, "load_validated_config", lambda *args, **kwargs: config)
+    monkeypatch.setattr(workflow, "load_config", lambda *args, **kwargs: config)
     monkeypatch.setattr(workflow, "_validate_runtime", lambda *args, **kwargs: None)
     monkeypatch.setattr(workflow, "_validate_configured_hooks", lambda value: None)
     monkeypatch.setattr(workflow, "job_identity_hash", lambda *args, **kwargs: "a" * 16)

@@ -491,7 +491,7 @@ Run after the installer gate on a systemd Debian host.
 
   ```bash
   sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule install
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule status
+  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml status
   sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule next
   sudo vaultkeep schedules list
   sudo vaultkeep schedules validate

@@ -3,31 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections.abc import Sequence
 from contextlib import suppress
-from pathlib import Path
 from time import monotonic
 
-from vaultkeep.cli.output import Console, command_logging
-from vaultkeep.cli.parser import create_parser
-from vaultkeep.cli.progress import terminal_progress
-from vaultkeep.config import parse_runtime_parameters
-from vaultkeep.errors import (
-    ConfigurationError,
-    DestinationError,
-    HookError,
-    LockError,
-    StateError,
-    TimerError,
-    VaultkeepError,
-)
-from vaultkeep.locking import deployment_lock, requires_deployment_lock
-from vaultkeep.progress import PROGRESS_PATH_ENV
-from vaultkeep.scheduling import TimerManager
-from vaultkeep.version import installed_version
-from vaultkeep.workflow import (
+from vaultkeep.backup.results import BackupInterrupted, failure_exit_code
+from vaultkeep.backup.workflow import (
     CommandResult,
     list_backups,
     prune_backups,
@@ -35,6 +17,18 @@ from vaultkeep.workflow import (
     validate_job,
     verify_backups,
 )
+from vaultkeep.cli.output import Console, command_logging
+from vaultkeep.cli.parser import create_parser
+from vaultkeep.cli.progress import terminal_progress
+from vaultkeep.config import parse_runtime_parameters
+from vaultkeep.errors import (
+    ConfigurationError,
+    LockError,
+    VaultkeepError,
+)
+from vaultkeep.locking import deployment_lock, requires_deployment_lock
+from vaultkeep.schedule import TimerManager
+from vaultkeep.version import installed_version
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -85,6 +79,16 @@ def _dispatch(
         output.issue(error)
         return 3
     try:
+        if namespace.command == "status":
+            from vaultkeep.cli.status import status_command
+
+            return status_command(
+                namespace.config,
+                user_mode=namespace.user_mode,
+                runtime_params=runtime_params,
+                json_output=namespace.json,
+                output=output,
+            )
         if namespace.command == "validate":
             if not namespace.backup_only:
                 from vaultkeep.cli.validation import validate_command
@@ -101,13 +105,7 @@ def _dispatch(
             )
         elif namespace.command == "run":
             started = monotonic()
-            # This is an internal worker-to-child handoff. Hooks and any nested
-            # Vaultkeep commands must not inherit this attempt's reporting path.
-            progress_path = os.environ.pop(PROGRESS_PATH_ENV, None)
-            with terminal_progress(
-                no_color=namespace.no_color,
-                progress_path=Path(progress_path) if progress_path else None,
-            ) as progress:
+            with terminal_progress(no_color=namespace.no_color) as progress:
                 result = run_backup(
                     namespace.config,
                     runtime_params=runtime_params,
@@ -137,8 +135,6 @@ def _dispatch(
                     manager.install(namespace.config, runtime_params=runtime_params)
                 elif namespace.action == "update":
                     manager.update(namespace.config, runtime_params=runtime_params)
-                elif namespace.action == "status":
-                    print(manager.status(namespace.config, runtime_params=runtime_params))
                 elif namespace.action == "next":
                     print(manager.next(namespace.config, runtime_params=runtime_params))
                 elif namespace.action == "disable":
@@ -156,27 +152,9 @@ def _dispatch(
             else:
                 print("\n".join(manager.sync(dry_run=namespace.dry_run)))
             return 0
-    except ConfigurationError as error:
+    except (VaultkeepError, OSError, BackupInterrupted) as error:
         output.issue(error)
-        return 3
-    except StateError as error:
-        output.issue(error)
-        return 15
-    except DestinationError as error:
-        output.issue(error)
-        return 5
-    except HookError as error:
-        output.issue(error)
-        return 11
-    except LockError as error:
-        output.issue(error)
-        return 10
-    except TimerError as error:
-        output.issue(error)
-        return 14
-    except VaultkeepError as error:
-        output.issue(error)
-        return 7
+        return failure_exit_code(error)
     print(f"{result.command}: {result.result}", flush=True)
     if result.files:
         _print_file_results(result, output)

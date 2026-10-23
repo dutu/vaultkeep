@@ -178,7 +178,7 @@ vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml validate
 Manage the user timer:
 
 ```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule status
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml status
 vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule next
 vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule update
 vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule disable

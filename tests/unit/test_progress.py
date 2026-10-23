@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from vaultkeep.progress import ProgressReporter, read_progress
+from vaultkeep.backup.progress import ProgressReporter, read_progress
 
 
 def test_phase_changes_heartbeat_and_finish(tmp_path, monkeypatch):
@@ -22,8 +22,8 @@ def test_phase_changes_heartbeat_and_finish(tmp_path, monkeypatch):
             "2026-10-22T10:00:30Z",
         ]
     )
-    monkeypatch.setattr("vaultkeep.progress._now", times.__next__)
-    reporter = ProgressReporter(path, state="running")
+    monkeypatch.setattr("vaultkeep.backup.progress._now", times.__next__)
+    reporter = ProgressReporter(path, execution_id=tmp_path.name)
     reporter.report("Hashing source files")
     reporter.heartbeat()
     reporter.report("Hashing source files")
@@ -49,8 +49,8 @@ def test_progress_failure_is_best_effort_and_leaves_no_partial_record(
     def fail(*_args):
         raise OSError("reporting storage unavailable")
 
-    monkeypatch.setattr("vaultkeep.progress.os.replace", fail)
-    reporter = ProgressReporter(tmp_path / "progress.json", state="running")
+    monkeypatch.setattr("vaultkeep.backup.progress.os.replace", fail)
+    reporter = ProgressReporter(tmp_path / "progress.json", execution_id=tmp_path.name)
     reporter.report("Hashing source files")
     reporter.report("Verifying archive")
     reporter.heartbeat()
@@ -61,7 +61,7 @@ def test_progress_failure_is_best_effort_and_leaves_no_partial_record(
 
 def test_progress_phase_is_printable_and_bounded(tmp_path):
     path = tmp_path / "progress.json"
-    ProgressReporter(path, state="running").report("phase\n\x1b" + "x" * 500)
+    ProgressReporter(path, execution_id=tmp_path.name).report("phase\n\x1b" + "x" * 500)
     record = read_progress(path, tmp_path.name)
     assert record is not None and record.phase.isprintable()
     assert len(record.phase) == 160
@@ -72,7 +72,7 @@ def test_progress_phase_is_printable_and_bounded(tmp_path):
     [
         {"schema_version": 2},
         {"schema_version": True},
-        {"attempt_id": "another-attempt"},
+        {"execution_id": "another-attempt"},
         {"state": "success"},
         {"phase": "\x1b[31mspoofed phase"},
         {"phase": "x" * 161},
@@ -84,7 +84,7 @@ def test_progress_phase_is_printable_and_bounded(tmp_path):
 )
 def test_invalid_progress_is_ignored(tmp_path, change):
     path = tmp_path / "progress.json"
-    ProgressReporter(path, state="running").report("Hashing source files")
+    ProgressReporter(path, execution_id=tmp_path.name).report("Hashing source files")
     data = json.loads(path.read_text())
     data.update(change)
     path.write_text(json.dumps(data))

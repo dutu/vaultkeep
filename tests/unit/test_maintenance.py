@@ -17,7 +17,7 @@ from vaultkeep import maintenance
 from vaultkeep.cli import main
 from vaultkeep.errors import LockError
 from vaultkeep.locking import deployment_lock
-from vaultkeep.scheduling import TimerManager, TimerPaths
+from vaultkeep.schedule import TimerManager, TimerPaths
 from vaultkeep.trigger.config import load_config
 from vaultkeep.trigger.service import render_service, service_name
 
@@ -50,7 +50,7 @@ def scheduled_job(tmp_path, valid_config, monkeypatch, *, user, params=None):
     monkeypatch.setattr(manager, "_systemctl", lambda *args, **kwargs: "")
     manager.install(config, runtime_params=params)
     monkeypatch.setattr(
-        "vaultkeep.scheduling.subprocess.run",
+        "vaultkeep.schedule.subprocess.run",
         lambda *args, **kwargs: pytest.fail("refresh must not invoke systemctl"),
     )
     return spec, paths, config
@@ -117,7 +117,7 @@ def test_refresh_old_monitor_command_without_activating_or_changing_permissions(
     spec, path, new = monitor_job(tmp_path, valid_config)
     old = path.read_bytes(), path.stat().st_mtime_ns
     monkeypatch.setattr(
-        "vaultkeep.scheduling.subprocess.run",
+        "vaultkeep.schedule.subprocess.run",
         lambda *args, **kwargs: pytest.fail("refresh must not invoke systemctl"),
     )
     plan = maintenance.plan(spec)
@@ -167,7 +167,7 @@ def test_concurrent_edit_is_never_overwritten(tmp_path, valid_config, restore):
 def test_edit_during_rendering_is_never_adopted_as_an_original_snapshot(
     tmp_path, valid_config, monkeypatch
 ):
-    from vaultkeep.workflow import load_validated_config
+    from vaultkeep.backup.workflow import load_validated_config
 
     spec, path, _ = monitor_job(tmp_path, valid_config)
 
@@ -176,7 +176,7 @@ def test_edit_during_rendering_is_never_adopted_as_an_original_snapshot(
         path.write_text("concurrent operator edit\n")
         return config
 
-    monkeypatch.setattr("vaultkeep.workflow.load_validated_config", validate_and_edit)
+    monkeypatch.setattr("vaultkeep.backup.workflow.load_validated_config", validate_and_edit)
     plan = maintenance.plan(spec)
     with pytest.raises(ValueError, match="changed during maintenance"):
         maintenance.apply(plan)
@@ -196,8 +196,10 @@ def test_unit_symlink_is_not_followed(tmp_path, valid_config):
 
 def test_validation_checks_runtime_only_for_previously_active_jobs(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr("vaultkeep.workflow.load_validated_config", lambda *a, **kw: None)
-    monkeypatch.setattr("vaultkeep.workflow.validate_job", lambda path, **kw: calls.append(path))
+    monkeypatch.setattr("vaultkeep.backup.workflow.load_validated_config", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "vaultkeep.backup.workflow.validate_job", lambda path, **kw: calls.append(path)
+    )
     jobs = [
         {"config": str(tmp_path / name), "params": {}, "unit": unit, "monitor": False}
         for name, unit in (("a.yaml", "a.timer"), ("b.yaml", "b.timer"))
@@ -255,9 +257,9 @@ def test_installed_entry_point_checks_maintenance_before_loading_backup_code(tmp
     path.touch()
     script = (
         "import sys; from vaultkeep.cli import main; "
-        "assert 'vaultkeep.workflow' not in sys.modules; "
+        "assert 'vaultkeep.backup.workflow' not in sys.modules; "
         "code = main(['--config', '/unused.yaml', 'run']); "
-        "assert 'vaultkeep.workflow' not in sys.modules; raise SystemExit(code)"
+        "assert 'vaultkeep.backup.workflow' not in sys.modules; raise SystemExit(code)"
     )
     with path.open("rb") as installer:
         fcntl.flock(installer.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

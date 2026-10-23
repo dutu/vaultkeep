@@ -19,7 +19,7 @@ settings. Notifications remain disabled unless `trigger.notifications.enabled` i
   seconds with its elapsed time, for example `Checking existing backups (20s)`.
   The timer resets when the phase changes. Updates occur on the first monitor poll
   after the interval; short phases between polls may not be displayed.
-- Changes to the `Current activity` / `Application` state shown by `trigger status`:
+- Changes to the Trigger `Application` state shown by `vaultkeep status`:
   `RUNNING`, `CONFIRMING STOP`, `HAS STOPPED`, `NOT YET DETECTED`, or `UNKNOWN`.
   The first fresh observation after monitor startup establishes the baseline without
   an alert. Later changes show the previous and new states; repeated observations
@@ -56,7 +56,8 @@ unavailable desktop, failed delivery, or user dismissal does not stop a backup.
 Changing the selected session bus clears replacement IDs so another desktop does
 not receive IDs allocated by the previous session.
 
-Activity uses the same attempt-specific progress records as `trigger status`. Invalid,
+Activity consumes the common backup engine's job status, including its lock ownership,
+process identity, and progress freshness checks. Invalid,
 stale, or mismatched records and unavailable processes do not establish a running
 phase. If previously displayed activity becomes unavailable, the notification reports
 that progress is unavailable while awaiting the result. A finished progress record

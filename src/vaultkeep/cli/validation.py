@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
+from vaultkeep.backup.workflow import validate_job
 from vaultkeep.cli.output import Console, configure_logging
 from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
 from vaultkeep.errors import (
@@ -21,7 +22,8 @@ from vaultkeep.errors import (
     VaultkeepError,
 )
 from vaultkeep.file_backups import file_key, select_files
-from vaultkeep.scheduling import TimerManager
+from vaultkeep.schedule import TimerManager
+from vaultkeep.schedule.status import unit_properties as _unit_properties
 from vaultkeep.state.identity import job_identity_hash, job_state_path
 from vaultkeep.state.local_state import StateLoadStatus, load_local_state
 from vaultkeep.trigger.config import TriggerConfig
@@ -35,7 +37,6 @@ from vaultkeep.trigger.service import service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController
 from vaultkeep.validation import validate_semantics
-from vaultkeep.workflow import WorkflowPaths, user_workflow_paths, validate_job
 
 _LOG = logging.getLogger("vaultkeep.cli.validation")
 
@@ -114,33 +115,6 @@ class _Report:
         for action in self.actions:
             self.output.print(f"Next: {action}")
         return self.exit_code
-
-
-def _unit_properties(unit: str, *, user_mode: bool) -> dict[str, str]:
-    command = ["systemctl"]
-    if user_mode:
-        command.append("--user")
-    command.extend(
-        [
-            "show",
-            "--all",
-            "--no-pager",
-            "--property=LoadState,ActiveState,SubState,UnitFileState,NextElapseUSecRealtime,Result",
-            unit,
-        ]
-    )
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise TimerError(f"cannot inspect {unit}: {error}") from error
-    values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-    if not values.get("LoadState") or (result.returncode and values["LoadState"] != "not-found"):
-        raise TimerError(f"cannot inspect {unit}: {result.stderr.strip() or 'incomplete response'}")
-    if values["LoadState"] != "not-found" and any(
-        not values.get(key) for key in ("ActiveState", "SubState", "UnitFileState")
-    ):
-        raise TimerError(f"cannot inspect {unit}: incomplete response")
-    return values
 
 
 def _service_health(
@@ -241,9 +215,9 @@ def _trigger_state_health(
         latest = state.attempt_summaries[-1]
         outcome = latest["outcome"]
         if outcome not in (AttemptOutcome.CREATED.value, AttemptOutcome.UNCHANGED.value):
-            report.problem("Last Trigger backup", str(outcome))
+            report.problem("Last dispatch", str(outcome))
         else:
-            report.row("Last Trigger backup", str(outcome))
+            report.row("Last dispatch", str(outcome))
 
 
 def _trigger_health(report: _Report, config_path: Path, params: dict[str, str]) -> None:
@@ -299,7 +273,7 @@ def _schedule_health(
     elif backup["LoadState"] != "loaded":
         report.problem("Backup service", backup["LoadState"])
     elif backup["ActiveState"] == "failed" or backup.get("Result") not in (None, "", "success"):
-        report.problem("Last scheduled backup", backup.get("Result") or backup["ActiveState"])
+        report.problem("Schedule service", backup.get("Result") or backup["ActiveState"])
     else:
         report.row("Backup service", f"{backup['ActiveState']} ({backup['SubState']})")
 
@@ -330,7 +304,7 @@ def _backup_history(
             expected_job_id=config.job.id,
             expected_identity_hash=identity,
         )
-        label = f"Last backup ({name})" if name is not None else "Last backup"
+        label = f"Last recorded run ({name})" if name is not None else "Last recorded run"
         if loaded.status == StateLoadStatus.UNUSABLE:
             report.problem(label, f"state unreadable — {loaded.reason}", code=15)
         elif loaded.state is not None and loaded.state.last_run is not None:

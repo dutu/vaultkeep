@@ -60,7 +60,7 @@ the reported condition before retrying.
 ```sh
 systemctl --user status --no-pager 'vaultkeep-trigger@<job-id>-<identity>.service'
 journalctl --user -u 'vaultkeep-trigger@<job-id>-<identity>.service' -n 100 --no-pager
-vaultkeep --user --config /absolute/path/job.yaml trigger status
+vaultkeep --user --config /absolute/path/job.yaml status
 systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
 systemctl --user list-jobs --no-pager
 ```
@@ -156,52 +156,34 @@ itself explain a monitoring gap.
 
 ## Is a backup running?
 
-Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`. `Monitor:
-RUNNING` describes the shutdown monitor. `Current activity` describes the backup
-separately. `RUNNING: Creating and compressing archive (45s / 1m 31s elapsed)` reports
-the actual backup phase, time in that phase, and total backup command time. `PREPARING`
-reports the worker's application/executable checks; `FINISHING` awaits a recorded result.
-Long phases refresh their progress every 10 seconds. Missing or stale progress and an
-unavailable reporting process produce `UNKNOWN`; inspect the worker journal. Attempts
-started before upgrading may lack progress. systemd's oneshot service state alone cannot
-distinguish backup phases. `COMPLETED` means a receipt records child completion
-while the worker awaits reconciliation. `STOPPED` or `FAILED` with an unresolved
-attempt is not a backup success claim, and `UNKNOWN`
-means execution could not be confirmed. These are snapshots, not archive progress.
+Run `vaultkeep --user --config /absolute/path/job.yaml status`. The Backup section
+reports the execution phase and both elapsed times. It applies equally to manual,
+scheduled, and triggered runs. Monitor health and application detection are separate
+fields under Trigger. `UNKNOWN` requires investigation; stale progress, a released
+lock, or a systemd service state alone cannot establish completion.
 
-Set `logging.level: debug` in the job and repeat `status` for exact worker units and
-raw service states alongside the readable report.
-
-Use the exact `Worker service` from that report to inspect the attempt:
-
-```sh
-systemctl --user status --no-pager '<worker-service>'
-journalctl --user -u '<worker-service>' -n 100 --no-pager
-```
-
-The monitor journal records detection and request events. Backup child output is
-retained separately in the attempt's private `log.txt` under the reported Trigger
-state root; the worker journal may contain only its final summary. These reports
-show workflow phases and elapsed time, without a live archive progress percentage.
-Preserve recovery evidence when
-investigating an unresolved attempt.
+See the [status reference](../status.md). Set `logging.level: debug` to include exact
+monitor units and state paths. Backup failures name the engine's private execution
+log. Trigger worker diagnostics remain in the attempt's `log.txt` for dispatch and
+recovery investigation. Preserve both when investigating uncertain dispatches.
 
 ## Why did a backup fail?
 
-1. Run `vaultkeep --user --config /absolute/path/job.yaml trigger status`.
-   Read `Previous attempt`, the original exit code or signal, `Reason`, and the
+1. Run `vaultkeep --user --config /absolute/path/job.yaml status`.
+   Read `Previous backup`, the original exit code or signal, `Reason`, and the
    existing `Log` path when available. A failed finalization does not establish
    corruption. Current work and the previous result are reported separately.
 
 2. For full context, set the job's `logging.level: debug` and rerun `status`.
-   Read `Attempt diagnostics`, then copy `Diagnostics path`:
+   Read `Backup diagnostics`, then use the displayed `Log` path:
 
    ```sh
    tail -n 40 '<diagnostics-path>'
    ```
 
    Debug output includes at most ten nonblank lines, each capped at 500 characters.
-   The private log retains up to 256 KiB of combined child output. Restore the desired
+   The backup log rotates at 64 KiB with one retained segment. Trigger additionally
+   retains up to 256 KiB of combined child output per dispatch attempt. Restore the desired
    logging level after diagnosis; review and redact output before sharing.
 
 3. If diagnostics were not recorded or are no longer retained, use the reported attempt

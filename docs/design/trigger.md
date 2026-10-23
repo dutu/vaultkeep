@@ -38,7 +38,7 @@ Use `src/vaultkeep/trigger`, the root package metadata and dependency lock, stan
 
 **Deferred.** Manual `run`, socket or manual spool submission, online backups, multi-instance jobs, live reload, global concurrency controls, conflict groups, and VaultKeep compromise-marking extensions. V1 provides no operator-initiated backup or explicit replay command for an uncertain request; manual review and direct VaultKeep operation remain operator actions.
 
-**Other non-goals.** Changes to wallet applications or their startup procedures; private VaultKeep imports; a backup engine or restore; credential duplication; a network API; Bisq 2, Windows, macOS, or non-systemd init. The backup workflow remains behind the normal Vaultkeep CLI; process isolation and durable worker receipts are retained within the unified application.
+**Other non-goals.** Changes to wallet applications or their startup procedures; a separate backup engine or restore; credential duplication; a network API; Bisq 2, Windows, macOS, or non-systemd init. The backup workflow remains behind the normal Vaultkeep CLI; process isolation and durable worker receipts are retained within the unified application.
 
 Operational procedures belong in the [user guide](../../README.md); remaining validation work belongs in the [implementation plan](../plans/trigger-validation.md).
 
@@ -56,7 +56,7 @@ The source-review baseline is 2026-10-13, with the CLI/validation/locking behavi
 | Contention | Held job lock returns exit code 10 | Record contention as deferred execution, not successful completion |
 | Lock identity | Canonical configuration path, YAML job ID, and runtime parameters contribute to the lock identity | Preserve VaultKeep locks; different configurations can still conflict over shared resources |
 | Concurrency | Per-job advisory locks; no general destination/shared-resource lock was found | Allow parallel independent instances; require reviewed distinct destination roots and serialize each instance |
-| Results | Human-readable stdout/stderr; no structured CLI result option or public execution-status API was found | Parse the trailing stdout result and retain an independent durable receipt |
+| Results | Backup owns execution evidence; `vaultkeep status --json` exposes unified job status | Parse the child command result for the immutable dispatch receipt; use Backup status for live notification phases |
 | Configuration | YAML jobs own sources, destinations, archive/encryption settings, retention, and hooks | Trigger does not copy or reinterpret backup configuration or credentials |
 | Validation | `validate --schema-only` loads YAML schema; full `validate` checks backup paths and destination writability plus enabled automation prerequisites, installation, and health | Pass configured parameters; internal backup preflight uses `validate --backup-only` to avoid requiring an installed/healthy monitor before installation or startup |
 | Version | `--version` prints the installed distribution version | Record preflight and execution versions; warn on a reviewed-contract mismatch |
@@ -81,7 +81,7 @@ from [Trigger command exits](../trigger/cli.md#exit-codes):
 | 14 | `TimerError` |
 | 15 | `StateError` |
 
-Codes 4 (source), 8 (verification), and 9 (retention) from an earlier VaultKeep documentation table are not emitted by the reviewed dispatcher version; do not branch on them. This table is not exhaustive: treat any other nonzero exit, an uncaught-exception exit (1, with traceback), or signal termination as a failure with captured diagnostics rather than an unknown success. Direct subprocess return codes are negative for signal termination; preserve the signal separately instead of assuming a shell's 128 + signal encoding.
+SIGTERM and SIGINT caught by the common engine record INTERRUPTED and return 143/130. This table is not exhaustive: treat any other nonzero exit, an uncaught-exception exit (1, with traceback), or signal termination as a failure with captured diagnostics rather than an unknown success. Direct subprocess return codes are negative for signal termination; preserve the signal separately instead of assuming a shell's 128 + signal encoding.
 
 ### Environment and lock resolution
 
@@ -93,7 +93,7 @@ For the VaultKeep child, validate and snapshot an explicit environment: `HOME` s
 
 VaultKeep continues to honor the selected XDG paths even though Trigger's own state root is fixed. Manual and timer-driven VaultKeep runs must use the same HOME/runtime lock namespace to share its job lock. Trigger does not control those external runs.
 
-Reviewed source references in the VaultKeep repository: `src/vaultkeep/cli/parser.py`, `src/vaultkeep/cli/commands.py`, `src/vaultkeep/errors.py`, `src/vaultkeep/workflow.py`, `src/vaultkeep/locking.py`, `src/vaultkeep/state/identity.py`, `src/vaultkeep/archive/builder.py`, `src/vaultkeep/hooks.py`, and `src/vaultkeep/scheduling.py`.
+Reviewed source references in the VaultKeep repository: `src/vaultkeep/cli/parser.py`, `src/vaultkeep/cli/commands.py`, `src/vaultkeep/errors.py`, `src/vaultkeep/backup/workflow.py`, `src/vaultkeep/locking.py`, `src/vaultkeep/state/identity.py`, `src/vaultkeep/archive/builder.py`, `src/vaultkeep/hooks.py`, and `src/vaultkeep/schedule/`.
 
 The command shape is already supported:
 
@@ -109,6 +109,11 @@ The detailed wallet-specific source findings and enablement gates are maintained
 [process detection](../trigger/process-detection.md#validation-before-enabling).
 
 ## Architecture and interfaces
+
+Trigger and Schedule are parallel initiation components. Both invoke the common
+Backup lifecycle described in [execution and job status](architecture_and_design.md#171-common-execution-and-job-status).
+The unified status collector keeps backup outcomes separate from dispatch receipts,
+monitor health, application observations and recovery warnings.
 
 Keep configuration, process detection, lifecycle, persistence, monitor, worker/executor, notifications, and CLI responsibilities small. There is no socket server, manual submission spool, or general shared-resource scheduler.
 
@@ -148,7 +153,6 @@ Resolve account home from the effective UID's operating system account record. A
     request.json
     launch.json
     receipt.json
-    progress.json
     log.txt
 ```
 
@@ -157,17 +161,13 @@ Resolve account home from the effective UID's operating system account record. A
 - Request records carry `schema_version`, request/attempt/instance IDs, confirmation time, boot/config fingerprint, frozen matcher/data directory, configured absolute job path and parameter mapping (VaultKeep canonicalizes its own lock identity), absolute VaultKeep executable, selected environment, preflight version, and effective deadline.
 - The launch marker records the attempt/unit name and dispatch-intent timestamp. It means the start may have been submitted, not that VaultKeep began or completed. The monitor durably adds submission-rejection classification and diagnostics to this record before requeueing a request classified as not accepted; deployed code semantics still require verification.
 - Receipts carry IDs/schema version, start/end UTC timestamps and duration, attempt outcome, VaultKeep exit code or signal, actual execution version, classified outcome, raw trailing result/marker fields (null if absent), diagnostic reference/truncation flag, and blocked/integration-error details when applicable.
-- `progress.json` is optional live telemetry. The worker reports preparation phases,
-  then passes its fixed per-attempt path to the backup command through the internal
-  `VAULTKEEP_PROGRESS_PATH` environment variable. The command consumes that variable
-  and publishes existing workflow phases, with a heartbeat every 10 seconds. Records
-  include schema/attempt identity, phase, preparing/running/finished state, UTC start,
-  phase-start and update timestamps, and the reporting PID/creation time. Snapshots
-  are atomically replaced with mode 0600, without durable fsyncs. Missing, incompatible,
-  damaged, stale (over 30 seconds), or unverifiable telemetry affects reporting only;
-  it never blocks dispatch, changes recovery ownership, or establishes completion.
-  Receipts take precedence. The existing attempt cleanup removes progress with the
-  other attempt artifacts. No new instance/request/receipt schema is required.
+- Backup-owned progress, completion evidence and diagnostics live under the core job
+  identity, independent of Trigger attempts. The monitor consumes
+  `vaultkeep.backup.status.backup_status` for notification phases. It never supplies
+  a progress path, writes execution progress, or classifies progress independently.
+  Missing or stale telemetry affects notifications only and never authorizes dispatch,
+  replay, recovery, or successful completion. Receipts remain authoritative for worker
+  orchestration; unified job status gets backup outcomes directly from Backup.
 - Persist UTC timestamps; use monotonic timing only within the current process. Never reuse a saved monotonic timestamp after restart. Unknown schema versions block dispatch and preserve evidence; migrations must be explicit and tested.
 - Corrupt or contradictory state preserves diagnosis material and blocks uncertain replay for its owning instance. Persist a separate versioned `blocked/<instance-id>.json` diagnostic without rewriting the original state, and continue monitoring healthy instances. The block survives restart until the operator reviews and repairs the evidence and removes the diagnostic. Failure to persist a block prevents further dispatch. The current loader validates schema/types and association checks. A request-file size cap was part of the design requirements but is not currently implemented; it must not be advertised as an enforced bound.
 - Retain the 50 most recent cleanup-eligible completed attempts per instance, excluding active, pending, unreconciled, or otherwise recovery-referenced records. Preserve necessary safety/uncertainty summaries in instance state beyond diagnostic retention.

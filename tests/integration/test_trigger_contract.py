@@ -48,7 +48,7 @@ def test_installed_worker_core_contract(
     ]
     config["destination"] = {
         "root": str(destination / "{NETWORK}"),
-        "name_template": "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}",
+        "name_template": "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%S%fZ}",
     }
     config["hooks"] = {}
     job = tmp_path / "app.yaml"
@@ -69,6 +69,7 @@ CONTRACT = r"""
 import fcntl
 import json
 import os
+import shlex
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -79,7 +80,7 @@ from io import StringIO
 from pathlib import Path
 
 from vaultkeep.cli.output import Console
-from vaultkeep.progress import read_progress
+from vaultkeep.backup.progress import read_progress
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.childproc import RealChildRunner
 from vaultkeep.trigger.config import JobSpec, load_config
@@ -88,7 +89,11 @@ from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.models import AttemptOutcome, Request, new_uuid, utc_now
 from vaultkeep.trigger.preflight import validate_jobs, runtime_preflight
 from vaultkeep.trigger.state import StateStore
-from vaultkeep.trigger.status import print_instance
+from vaultkeep.backup.records import read_history
+from vaultkeep.backup.paths import WorkflowPaths
+from vaultkeep.backup.status import backup_status
+from vaultkeep.cli.status import print_status
+from vaultkeep.schedule import TimerManager
 
 base, job, binary = map(Path, sys.argv[1:])
 runtime = base / 'runtime'
@@ -97,6 +102,10 @@ env = {'HOME': str(base), 'XDG_RUNTIME_DIR': str(runtime),
        'XDG_STATE_HOME': str(base / 'core-state'), 'XDG_CACHE_HOME': str(base / 'cache'),
        'PATH': '/usr/local/bin:/usr/bin:/bin'}
 params = {'NETWORK': 'testnet'}
+identity = job_identity_hash(job, 'app', runtime_params=params)
+paths = WorkflowPaths(base / 'core-state/vaultkeep/jobs',
+    base / 'cache/vaultkeep/tmp', runtime / 'vaultkeep/locks')
+execution_dir = paths.state_root / ('app-' + identity)
 argv = [str(binary), *JobSpec(config=job, params=params).argv()]
 runner = RealChildRunner()
 core_version = version('vaultkeep')
@@ -140,8 +149,12 @@ def attempt(expected):
     receipt = store.read_receipt(current.attempt_id)
     assert result.outcome == expected, (result, receipt)
     assert receipt.vaultkeep_version == core_version
-    progress = read_progress(store.progress_path(current.attempt_id), current.attempt_id)
-    assert progress is not None and progress.state == 'finished'
+    if expected in (AttemptOutcome.CREATED, AttemptOutcome.UNCHANGED):
+        evidence = read_history(execution_dir / 'execution.json', 'app', identity)
+        progress = read_progress(execution_dir / 'progress.json', evidence.previous.execution_id)
+        assert progress is not None and progress.state == 'finished'
+        assert backup_status(paths, 'app', identity)['previous']['result'] == (
+            'SUCCESS' if expected is AttemptOutcome.CREATED else 'UNCHANGED')
     return current, receipt
 
 # Pause after a real workflow phase is published. The wrapper only makes the
@@ -151,7 +164,7 @@ wrapper = base / 'slow-vaultkeep'
 wrapper.write_text(f'''#!{sys.executable}
 import time
 from pathlib import Path
-from vaultkeep.progress import ProgressReporter
+from vaultkeep.backup.progress import ProgressReporter
 from vaultkeep.cli import main
 original = ProgressReporter.report
 ready, release = Path({str(ready)!r}), Path({str(release)!r})
@@ -164,6 +177,27 @@ def report(self, message):
             time.sleep(0.01)
         assert release.exists(), 'test did not release archive phase'
 ProgressReporter.report = report
+from vaultkeep.destination import finalize
+from vaultkeep.backup import workflow
+failure = Path({str(base / 'force-failure')!r})
+rename, build, cleanup = finalize._rename_noreplace, workflow.build_archive, workflow.shutil.rmtree
+def checked_rename(source, target):
+    if (failure.exists() and failure.read_text() == 'finalize'
+        and source.name.startswith('~$.partial')):
+        raise PermissionError(13, 'Permission denied', str(target))
+    return rename(source, target)
+def checked_build(*args, **kwargs):
+    if failure.exists() and failure.read_text() == 'cleanup':
+        raise OSError('Archive failed')
+    return build(*args, **kwargs)
+def checked_cleanup(path, *args, **kwargs):
+    if (failure.exists() and failure.read_text() == 'cleanup'
+        and Path(path).name.startswith('~$.partial')):
+        raise PermissionError('cleanup denied')
+    return cleanup(path, *args, **kwargs)
+finalize._rename_noreplace = checked_rename
+workflow.build_archive = checked_build
+workflow.shutil.rmtree = checked_cleanup
 raise SystemExit(main())
 ''')
 wrapper.chmod(0o700)
@@ -178,15 +212,14 @@ with ThreadPoolExecutor(max_workers=1) as pool:
             future.result()
         assert ready.exists(), 'backup did not reach its archive phase'
         attempt_id, = store.list_attempt_ids()
-        progress = read_progress(store.progress_path(attempt_id), attempt_id)
+        evidence = read_history(execution_dir / 'execution.json', 'app', identity)
+        progress = read_progress(execution_dir / 'progress.json', evidence.current.execution_id)
         assert progress is not None and progress.state == 'running'
         assert progress.phase == 'Creating and compressing archive'
         report = StringIO()
         with redirect_stdout(report):
-            print_instance(Console(no_color=True), None, None,
-                instance_id='test-instance', activity='active', active_attempt_id=attempt_id,
-                scope=None, store=store, verbose=False, monitor='STOPPED', enabled=True,
-                poll_seconds=2)
+            print_status({'job_id': 'app', 'backup': backup_status(paths, 'app', identity)},
+                Console(no_color=True))
         assert 'RUNNING: Creating and compressing archive (' in report.getvalue(), report.getvalue()
         assert ' / ' in report.getvalue() and ' elapsed)' in report.getvalue()
     finally:
@@ -205,6 +238,38 @@ with lock.open('rb') as held:
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
     _, receipt = attempt(AttemptOutcome.DEFERRED)
     assert receipt.exit_code == 10
+# A rendered timer service and a manual command use the same engine and history.
+service = TimerManager(user_mode=True)._service_content(job, 'app', params)
+scheduled = shlex.split(next(line[10:] for line in service.splitlines()
+    if line.startswith('ExecStart=')))
+assert scheduled[1:] == argv[1:] + ['run']
+for mode in ('manual', 'schedule', 'trigger'):
+    for expected in ('SUCCESS', 'UNCHANGED', 'FAILED', 'CLEANUP_FAILED'):
+        failure = base / 'force-failure'
+        if expected in ('FAILED', 'CLEANUP_FAILED'):
+            failure.write_text('finalize' if expected == 'FAILED' else 'cleanup')
+        elif failure.exists():
+            failure.unlink()
+        if expected != 'UNCHANGED':
+            (base / 'source/payload.txt').write_text(mode + expected)
+        if mode == 'trigger':
+            outcome = (AttemptOutcome.CREATED if expected == 'SUCCESS'
+                else AttemptOutcome.UNCHANGED if expected == 'UNCHANGED'
+                else AttemptOutcome.BACKUP_FAILED)
+            _, receipt = attempt(outcome)
+            code = receipt.exit_code
+        else:
+            command = [str(wrapper), *(scheduled[1:] if mode == 'schedule' else [*argv[1:], 'run'])]
+            child = runner.run(command, env=env)
+            code = child.exit_code
+        observed = backup_status(paths, 'app', identity)['previous']
+        assert observed['result'] == ('FAILED' if 'FAILED' in expected else expected), observed
+        assert observed['exit_code'] == code
+        if expected == 'FAILED':
+            assert observed['reason'] == 'Permission denied during finalization', observed
+        if expected == 'CLEANUP_FAILED':
+            assert observed['reason'] == 'Archive failed', observed
+            assert 'cleanup denied' in Path(observed['log_path']).read_text()
 # Errors from real core preserve its error code in a failed receipt.
 job.unlink()
 _, receipt = attempt(AttemptOutcome.BACKUP_FAILED)

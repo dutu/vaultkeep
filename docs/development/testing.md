@@ -49,7 +49,7 @@ optional system Python `dbus`/`gi` bindings (`python3-dbus` and `python3-gi` on 
 It skips when those tools are unavailable or the sandbox blocks Unix sockets. It
 does not contact a real desktop or change systemd services or manager environments.
 
-Root pytest runs backup, Trigger, installer, and installed-worker contract tests in
+Root pytest runs backup, unified status, Trigger, Schedule, installer, and installed-worker contract tests in
 one process. Trigger fixtures live under `tests/trigger/` with explicit package
 imports, so test modules do not collide.
 
@@ -59,7 +59,12 @@ and entry-point relocation. Ownership tools are faked so tests need no root. The
 install/enable no live units and touch no home data. Installed-worker tests use wheel
 installs, disposable source/destination/runtime/state paths and fake absent wallet
 processes, exercising a real core invocation from Trigger workers. No production
-wallets, jobs or archives are used. Real archive tests use disposable files.
+wallets, jobs or archives are used. The installed contract checks matching created,
+unchanged, finalization-failure, and cleanup-failure results through manual commands,
+rendered timer commands, and Trigger workers in both backup modes. Process tests
+check SIGTERM completion evidence and SIGKILL uncertainty. Status tests inspect
+missing, corrupt, inaccessible, stale, and contradictory evidence without mutation.
+Real archive tests use disposable files.
 
 `check_packages.py` builds the unified wheel and source archive, independently
 rebuilds the extracted archive, checks the single entry point and bundled Trigger

@@ -5,46 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from vaultkeep.trigger.models import AttemptOutcome
-from vaultkeep.trigger.results import classify_exit, parse_marker_line
 from vaultkeep.trigger.systemd import (
     RealSystemdController,
     SubmissionClass,
     UnitState,
     classify_submission,
 )
-
-
-def test_success_created() -> None:
-    assert classify_exit(0, "run: created") is AttemptOutcome.CREATED
-
-
-def test_success_unchanged() -> None:
-    assert classify_exit(0, "run: unchanged") is AttemptOutcome.UNCHANGED
-
-
-def test_success_unknown_marker() -> None:
-    assert classify_exit(0, "some noise") is AttemptOutcome.RESULT_UNKNOWN
-    assert classify_exit(0, None) is AttemptOutcome.RESULT_UNKNOWN
-
-
-def test_stderr_marker_ignored() -> None:
-    # stdout_tail is stdout only; an unrecognized tail yields result_unknown.
-    assert parse_marker_line("run: created") == "run: created"
-    assert parse_marker_line("junk") is None
-
-
-def test_lock_is_deferred() -> None:
-    assert classify_exit(10, None) is AttemptOutcome.DEFERRED
-
-
-def test_invalid_argument_is_integration() -> None:
-    assert classify_exit(2, None) is AttemptOutcome.INTEGRATION_ERROR
-
-
-def test_other_failures() -> None:
-    for code in (1, 3, 5, 7, 11, 14, 15, 99):
-        assert classify_exit(code, None) is AttemptOutcome.BACKUP_FAILED
 
 
 def test_submission_accepted() -> None:
