@@ -23,6 +23,7 @@ def collect_status(
     *,
     user_mode: bool,
     runtime_params: Mapping[str, str],
+    verbose: bool = False,
 ) -> dict[str, Any]:
     raw = load_config(config_path)
     parameters = dict(raw.trigger.params) if raw.trigger.enabled else {}
@@ -36,12 +37,14 @@ def collect_status(
             user_workflow_paths() if user_mode else WorkflowPaths(),
             config.job.id,
             identity,
-            verbose=config.logging.level == "debug",
+            verbose=verbose or config.logging.level == "debug",
         ),
     }
     if "trigger" in raw.model_fields_set:
         if user_mode:
-            trigger = trigger_status(load_trigger_config(config_path, runtime_params=parameters))
+            trigger = trigger_status(
+                load_trigger_config(config_path, runtime_params=parameters), verbose=verbose
+            )
             if trigger is not None:
                 result["trigger"] = trigger
         elif config.trigger.enabled or config.trigger.app is not None:
@@ -61,7 +64,7 @@ def collect_status(
     return result
 
 
-def print_status(data: dict[str, Any], output: Console) -> None:
+def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False) -> None:
     output.heading("Job status")
     output.fields([("Job", data["job_id"])])
     backup = data["backup"]
@@ -92,10 +95,12 @@ def print_status(data: dict[str, Any], output: Console) -> None:
         if previous.get("log_path") and previous["result"] not in ("SUCCESS", "UNCHANGED"):
             rows.append(("Log", previous["log_path"]))
     output.fields(rows, section="Previous backup")
-    if backup.get("diagnostic_tail"):
-        output.fields(
-            [("Tail", line) for line in backup["diagnostic_tail"]], section="Backup diagnostics"
-        )
+    rows = []
+    if backup.get("details"):
+        rows.append(("Execution record", backup["details"]["execution_record"]))
+    rows.extend(("Tail", line) for line in backup.get("diagnostic_tail", []))
+    if rows:
+        output.fields(rows, section="Backup diagnostics")
     if "trigger" in data:
         trigger = data["trigger"]
         monitor = output.status(trigger["monitor"])
@@ -121,12 +126,26 @@ def print_status(data: dict[str, Any], output: Console) -> None:
             )
         if trigger.get("worker"):
             rows.append(("Worker", trigger["worker"]))
+        historical = [item for item in trigger.get("safety", []) if not item["current"]]
+        if historical:
+            count = len(historical)
+            description = (
+                f"{count} previous {'attempt' if count == 1 else 'attempts'}"
+                if all(item.get("attempt_id") for item in historical)
+                else "previous executions"
+            )
+            rows.append(("Safety", f"REVIEW REQUIRED ({description})"))
         for safety in trigger.get("safety", []):
-            rows.append(("Safety", safety["reason"]))
-            if safety.get("attempt_id"):
-                rows.append(("Attempt", safety["attempt_id"]))
-            if safety.get("execution_period"):
-                rows.append(("Period", safety["execution_period"]))
+            if safety["current"] or verbose:
+                rows.append(("Safety", safety["reason"]))
+                if safety.get("attempt_id"):
+                    rows.append(("Attempt", safety["attempt_id"]))
+                if safety.get("execution_period"):
+                    rows.append(("Period", safety["execution_period"]))
+        if trigger.get("safety"):
+            rows.append(
+                ("Action", trigger["safety_guidance"] if verbose else trigger["safety_action"])
+            )
         rows.extend(("Detail", concise(item)) for item in trigger["diagnostics"])
         if trigger.get("log_path"):
             rows.append(("Log", trigger["log_path"]))
@@ -162,12 +181,15 @@ def status_command(
     runtime_params: Mapping[str, str],
     json_output: bool,
     output: Console,
+    verbose: bool = False,
 ) -> int:
-    data = collect_status(config_path, user_mode=user_mode, runtime_params=runtime_params)
+    data = collect_status(
+        config_path, user_mode=user_mode, runtime_params=runtime_params, verbose=verbose
+    )
     if json_output:
         print(json.dumps(data, sort_keys=True))
     else:
-        print_status(data, output)
+        print_status(data, output, verbose=verbose)
     return (
         15
         if any(

@@ -1467,7 +1467,7 @@ Timer commands:
 ```bash
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule install
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule update
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json] [--verbose]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule next
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule disable
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule remove
@@ -1518,7 +1518,8 @@ completion time, duration, exit code/signal and concise reason after cleanup and
 remaining workflow work. Archive state still retains the last successfully created
 backup and credential/change-detection facts; it cannot establish execution completion.
 
-A killed process leaves an unfinished start. Readers report UNKNOWN; the next owning
+A killed process leaves an unfinished start. Readers report its outcome as UNKNOWN;
+current activity is independently IDLE when the lock is reliably free. The next owning
 execution retains that uncertain attempt as its previous result. Caught SIGTERM and
 interruptions record INTERRUPTED after normal cleanup. Failures before archive-state
 persistence and after commit use the same result path. A post-commit failure preserves
@@ -1527,10 +1528,11 @@ its archive. The private execution log rotates at 64 KiB with one retained segme
 The engine atomically publishes `progress.json` on phases and a ten-second heartbeat.
 Live activity requires matching execution/lock ownership, PID and creation time, and
 valid ordered timestamps no more than thirty seconds old. Linux `/proc/locks` supplies
-lock ownership without acquiring any lock. Unavailable ownership or telemetry means
-UNKNOWN. A released lock alone never proves completion; a reliable completion record
-wins over stale progress. The lock's execution stamp detects a new attempt whose
-telemetry writes failed, including on filesystems with coarse timestamps. Progress,
+lock ownership without acquiring any lock. A reliably free lock establishes IDLE even
+without execution history. Unavailable ownership, or a held lock without verified live
+telemetry, means UNKNOWN activity. A released lock alone never proves completion;
+a reliable completion record wins over stale progress. The lock's execution stamp detects
+a new attempt whose telemetry writes failed, including on filesystems with coarse timestamps. Progress,
 logging, and completion-record I/O remain best-effort and never fail archive work.
 
 Trigger retains requests, launch records, receipts and recovery summaries because

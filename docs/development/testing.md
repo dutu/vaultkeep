@@ -61,9 +61,12 @@ installs, disposable source/destination/runtime/state paths and fake absent wall
 processes, exercising a real core invocation from Trigger workers. No production
 wallets, jobs or archives are used. The installed contract checks matching created,
 unchanged, finalization-failure, and cleanup-failure results through manual commands,
-rendered timer commands, and Trigger workers in both backup modes. Process tests
-check SIGTERM completion evidence and SIGKILL uncertainty. Status tests inspect
-missing, corrupt, inaccessible, stale, and contradictory evidence without mutation.
+rendered timer commands, and Trigger workers in both backup modes, including results
+read back through the installed `status --json` command with matching mode, parameters,
+and state environment. Process tests check SIGTERM completion evidence and SIGKILL
+uncertainty. Status tests separate lock activity from missing, corrupt, inaccessible,
+stale, and contradictory history and verify compact historical safety warnings,
+verbose details, and JSON without mutation.
 Real archive tests use disposable files.
 
 `check_packages.py` builds the unified wheel and source archive, independently

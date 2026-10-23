@@ -88,6 +88,7 @@ def _dispatch(
                 runtime_params=runtime_params,
                 json_output=namespace.json,
                 output=output,
+                verbose=namespace.verbose,
             )
         if namespace.command == "validate":
             if not namespace.backup_only:

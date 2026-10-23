@@ -51,6 +51,9 @@ def create_parser() -> argparse.ArgumentParser:
     validate.add_argument("--backup-only", action="store_true", help=argparse.SUPPRESS)
     status = commands.add_parser("status", help="report backup, Trigger, and Schedule status")
     status.add_argument("--json", action="store_true", help="report job status as JSON")
+    status.add_argument(
+        "--verbose", action="store_true", help="include detailed safety and execution diagnostics"
+    )
     commands.add_parser("run", help="run this job's backup now")
     commands.add_parser("list", help="list this job's stored backups")
     commands.add_parser("verify", help="verify this job's stored backups")

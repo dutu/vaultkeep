@@ -75,7 +75,7 @@ raise SystemExit(main(['--user', '--config', sys.argv[1], 'run']))
         process.send_signal(signum)
         process.communicate(timeout=10)
         final = backup_status(paths, "app", identity)
-        assert final["activity"] != "RUNNING"
+        assert final["activity"] == "IDLE"
         assert final["previous"]["result"] == outcome
         if outcome == "INTERRUPTED":
             assert process.returncode == 143

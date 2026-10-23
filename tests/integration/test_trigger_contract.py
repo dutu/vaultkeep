@@ -51,6 +51,7 @@ def test_installed_worker_core_contract(
         "name_template": "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%S%fZ}",
     }
     config["hooks"] = {}
+    config["schedule"] = {"enabled": False}
     job = tmp_path / "app.yaml"
     # JSON is a subset of the supported YAML 1.2 syntax.
     job.write_text(json.dumps(config))
@@ -70,6 +71,7 @@ import fcntl
 import json
 import os
 import shlex
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -84,6 +86,7 @@ from vaultkeep.backup.progress import read_progress
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.childproc import RealChildRunner
 from vaultkeep.trigger.config import JobSpec, load_config
+from vaultkeep.trigger.environment import build_child_environment
 from vaultkeep.trigger.errors import ConfigurationError
 from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.models import AttemptOutcome, Request, new_uuid, utc_now
@@ -101,6 +104,7 @@ runtime.mkdir(mode=0o700)
 env = {'HOME': str(base), 'XDG_RUNTIME_DIR': str(runtime),
        'XDG_STATE_HOME': str(base / 'core-state'), 'XDG_CACHE_HOME': str(base / 'cache'),
        'PATH': '/usr/local/bin:/usr/bin:/bin'}
+assert build_child_environment(home=base, environ=env) == env
 params = {'NETWORK': 'testnet'}
 identity = job_identity_hash(job, 'app', runtime_params=params)
 paths = WorkflowPaths(base / 'core-state/vaultkeep/jobs',
@@ -265,6 +269,16 @@ for mode in ('manual', 'schedule', 'trigger'):
         observed = backup_status(paths, 'app', identity)['previous']
         assert observed['result'] == ('FAILED' if 'FAILED' in expected else expected), observed
         assert observed['exit_code'] == code
+        # Check the installed user-facing command with exactly the child's mode,
+        # YAML path, parameters, and XDG state namespace, not just in-process reads.
+        inspection = subprocess.run([*argv, 'status', '--json'], env=env,
+            capture_output=True, text=True, timeout=10)
+        assert inspection.returncode == 0, inspection.stdout + inspection.stderr
+        visible = json.loads(inspection.stdout)['backup']
+        assert visible['activity'] == 'IDLE', visible
+        assert visible['previous'] == observed, visible
+        assert visible['previous']['completed_at'] is not None
+        assert visible['previous']['duration_seconds'] >= 0
         if expected == 'FAILED':
             assert observed['reason'] == 'Permission denied during finalization', observed
         if expected == 'CLEANUP_FAILED':

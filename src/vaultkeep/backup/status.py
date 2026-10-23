@@ -14,6 +14,20 @@ from vaultkeep.errors import StateError
 from vaultkeep.locking import job_lock_execution, job_lock_owner, job_lock_path
 
 
+def _unknown_previous(execution_id: str | None, reason: str) -> dict[str, Any]:
+    """Report missing outcome evidence without inventing execution times or results."""
+    return {
+        "execution_id": execution_id or None,
+        "result": "UNKNOWN",
+        "started_at": None,
+        "completed_at": None,
+        "duration_seconds": None,
+        "exit_code": None,
+        "signal": None,
+        "reason": reason,
+    }
+
+
 def process_alive(pid: int, create_time: float | None) -> bool | None:
     if create_time is None:
         return None
@@ -41,11 +55,17 @@ def backup_status(
         "previous": None,
         "diagnostics": diagnostics,
     }
+    if verbose:
+        result["details"] = {"execution_record": str(directory / "execution.json")}
     try:
         # Retry a changing snapshot once; a status reader never synchronizes writers.
         for _ in range(2):
             before = job_lock_execution(lock)
-            history = read_history(directory / "execution.json", job_id, identity)
+            history_error = None
+            try:
+                history = read_history(directory / "execution.json", job_id, identity)
+            except (OSError, StateError) as error:
+                history, history_error = None, str(error)
             owner = job_lock_owner(lock)
             after = job_lock_execution(lock)
             if before == after:
@@ -53,8 +73,22 @@ def backup_status(
         else:
             diagnostics.append("Execution changed during inspection; retry status")
             return result
+        # Current activity is independent of the availability of execution history.
+        # A free lock proves inactivity, but never proves how an execution ended.
+        if owner == 0:
+            result["activity"] = "IDLE"
+        if history_error is not None:
+            diagnostics.append(history_error)
+            result["read_error"] = True
+            result["previous"] = _unknown_previous(after, "Backup execution history unavailable")
+            return result
         if history is None:
-            diagnostics.append("No execution evidence recorded")
+            if owner == 0 and after != "":
+                result["previous"] = _unknown_previous(
+                    after, "Backup completion could not be verified"
+                )
+            if owner != 0:
+                diagnostics.append("Job ownership or current execution evidence is unavailable")
             return result
         previous = history.previous
         if previous:
@@ -63,16 +97,26 @@ def backup_status(
         if current is None:
             # Completion evidence wins over stale progress. A different lock stamp
             # means another attempt could not publish evidence; never reuse its result.
-            if owner == 0 and previous and after in ("", previous.execution_id):
-                result["activity"] = "IDLE"
+            if owner == 0:
+                if after not in ("", previous.execution_id if previous else ""):
+                    result["previous"] = _unknown_previous(
+                        after, "Latest backup completion could not be verified"
+                    )
             else:
                 diagnostics.append("Job ownership or current execution evidence is unavailable")
             return result
         if owner == 0:
-            result["previous"] = current.model_copy(
-                update={"result": "UNKNOWN", "reason": "Backup completion could not be verified"}
-            ).model_dump(exclude={"pid", "create_time"})
-            diagnostics.append("Execution ended without reliable completion evidence")
+            if after in ("", current.execution_id):
+                result["previous"] = current.model_copy(
+                    update={
+                        "result": "UNKNOWN",
+                        "reason": "Backup completion could not be verified",
+                    }
+                ).model_dump(exclude={"pid", "create_time"})
+            else:
+                result["previous"] = _unknown_previous(
+                    after, "Latest backup completion could not be verified"
+                )
             return result
         if (
             after != current.execution_id

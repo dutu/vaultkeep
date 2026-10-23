@@ -77,7 +77,7 @@ def application_status(
             stopped_age = elapsed_seconds(request.confirmed_at)
             if confirmed and started <= confirmed <= observed and stopped_age is not None:
                 return "HAS STOPPED", f" ({duration(stopped_age)} ago)"
-        return "UNKNOWN", " (current session shutdown evidence unavailable)"
+        return "UNKNOWN", " (current session observation unavailable)"
     if (
         state.latest_request_id is None
         and not state.attempt_summaries

@@ -159,10 +159,11 @@ itself explain a monitoring gap.
 Run `vaultkeep --user --config /absolute/path/job.yaml status`. The Backup section
 reports the execution phase and both elapsed times. It applies equally to manual,
 scheduled, and triggered runs. Monitor health and application detection are separate
-fields under Trigger. `UNKNOWN` requires investigation; stale progress, a released
+fields under Trigger. A reliably free job lock means `IDLE`, even without execution
+history. `UNKNOWN` activity requires investigation; stale progress, a released
 lock, or a systemd service state alone cannot establish completion.
 
-See the [status reference](../status.md). Set `logging.level: debug` to include exact
+See the [status reference](../status.md). Use `status --verbose` to include exact
 monitor units and state paths. Backup failures name the engine's private execution
 log. Trigger worker diagnostics remain in the attempt's `log.txt` for dispatch and
 recovery investigation. Preserve both when investigating uncertain dispatches.
@@ -174,20 +175,20 @@ recovery investigation. Preserve both when investigating uncertain dispatches.
    existing `Log` path when available. A failed finalization does not establish
    corruption. Current work and the previous result are reported separately.
 
-2. For full context, set the job's `logging.level: debug` and rerun `status`.
+2. For full context, rerun `status --verbose`.
    Read `Backup diagnostics`, then use the displayed `Log` path:
 
    ```sh
    tail -n 40 '<diagnostics-path>'
    ```
 
-   Debug output includes at most ten nonblank lines, each capped at 500 characters.
+   Verbose output includes at most ten nonblank log lines, each capped at 500 characters.
    The backup log rotates at 64 KiB with one retained segment. Trigger additionally
-   retains up to 256 KiB of combined child output per dispatch attempt. Restore the desired
-   logging level after diagnosis; review and redact output before sharing.
+   retains up to 256 KiB of combined child output per dispatch attempt. Review and
+   redact output before sharing.
 
 3. If diagnostics were not recorded or are no longer retained, use the reported attempt
-   ID and job identity from debug diagnostics to inspect the worker journal:
+   ID and job identity from verbose diagnostics to inspect the worker journal:
 
    ```sh
    journalctl --user -u 'vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service' --no-pager

@@ -597,7 +597,7 @@ vaultkeep --version
 
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] run
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json]
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json] [--verbose]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
@@ -712,11 +712,15 @@ and results, with separate Trigger and Schedule information when configured.
    `SUCCESS` means an archive was created; `UNCHANGED` means no new archive was needed.
    Failures and interruptions include a concise reason and a diagnostic log when
    available. `UNKNOWN` means the evidence cannot establish activity or completion.
+   A reliably free job lock means `IDLE`, including before the first execution;
+   uncertainty about a previous outcome does not make current activity unknown.
 
 2. Check the configured automation section: Trigger shows monitor freshness,
    application detection, pending requests, dispatch blocks, and safety warnings.
    Schedule shows timer installation, health, enablement, and the next execution.
    Manual-only jobs omit these sections.
+   Historical Trigger safety warnings show a review count; use `status --verbose`
+   for affected attempt IDs, periods, reasons, and diagnostic paths.
 
 3. For scripts, request the same report as JSON:
 
@@ -1431,8 +1435,8 @@ vaultkeep --user --config "$job_config" status
 ```
 
 `install` creates and enables a service named
-`vaultkeep-trigger@<job-id>-<identity>.service`. With `logging.level: debug`,
-`status` prints its exact name and state path in diagnostics. Repeat these steps for each job; monitors operate independently.
+`vaultkeep-trigger@<job-id>-<identity>.service`. `status --verbose` prints its exact
+name and state path in diagnostics. Repeat these steps for each job; monitors operate independently.
 Installing Vaultkeep itself starts no monitor, enables no service, and does not
 configure lingering. Optional notifications use `notify-send` and a usable desktop
 session. To enable them:
@@ -1503,7 +1507,7 @@ a failed backup. Receipts and launch records remain available for recovery; stat
 never reconciles them. See [status meanings](docs/status.md) and
 [recovery](docs/trigger/recovery.md).
 
-Set `logging.level: debug` and rerun `status` for monitor unit names, state paths,
+Run `status --verbose` for monitor unit names, state paths,
 observations, and bounded backup diagnostic tails. Use the displayed `Log` path for
 full retained failure details. Review logs before sharing them.
 

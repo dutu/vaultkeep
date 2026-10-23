@@ -72,7 +72,7 @@ def test_schedule_reporting_does_not_require_managed_config_path(
     )
     result = collect_status(path, user_mode=True, runtime_params={})
     assert result["schedule"]["health"] == "NOT INSTALLED"
-    assert result["backup"]["activity"] == "UNKNOWN"
+    assert result["backup"]["activity"] == "IDLE"
     assert "trigger" not in result
 
 

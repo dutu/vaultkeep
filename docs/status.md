@@ -4,6 +4,7 @@ Use the same mode, YAML path, and runtime parameters as the backup invocation:
 
 ```sh
 vaultkeep --user --config JOB.yaml status
+vaultkeep --user --config JOB.yaml status --verbose
 vaultkeep --user --config JOB.yaml --param repo=nas-a status --json
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml status
 ```
@@ -27,8 +28,8 @@ the same execution lifecycle, lock, progress stream, and completion evidence.
 | --- | --- |
 | `RUNNING: <phase>` | The job lock, execution identity, live process identity, and fresh progress agree. |
 | `FINISHING` | The owning process finished its phase stream and is recording its outcome. |
-| `IDLE` | No execution holds the lock and reliable completion evidence matches the latest execution stamp. |
-| `UNKNOWN` | Activity cannot be established: evidence is missing, stale, damaged, inaccessible, inconsistent, or process/lock ownership cannot be verified. |
+| `IDLE` | The job lock is reliably free, independently of execution history. A job that has never executed is idle. |
+| `UNKNOWN` | Lock ownership cannot be established, the execution changes during inspection, or a held lock lacks verified process identity and fresh, consistent progress. |
 
 The first elapsed time is time in the current phase; the second is total execution
 time. Phases include preparation, source discovery and hashing, archive creation,
@@ -48,8 +49,10 @@ current phase. It is not a claim that a new backup archive was created on every 
 | `UNKNOWN` | Completion cannot be established; for example, the process was killed or completion persistence failed. |
 | `NONE` | No previous execution evidence is available. |
 
-Completion time and duration are shown when known. Failures include an exit code or
-signal, a concise reason, and an existing log path when available. Atomic-rename
+Completion time and duration are shown when known. Failed, interrupted, and unknown
+previous executions show `Log` in normal output whenever the log is available;
+`--verbose` adds log excerpts and detailed diagnostics. Failures also include an exit
+code or signal and a concise reason. Atomic-rename
 errors are finalization failures. A post-commit failure preserves the committed
 archive; check it rather than assuming it is absent or corrupt. Archive manifests
 and archive state remain the source of facts about the last successfully created
@@ -59,12 +62,20 @@ Stale progress cannot override a completion record. A released lock or a finishe
 progress stream alone does not establish success or failure. Missing completion
 evidence remains unknown, with no invented completion timestamp. Status never
 reconstructs results from destination contents or Trigger receipts.
+An idle job can therefore have a previous result of `UNKNOWN`. If history is missing
+but the lock stamp identifies a prior execution, its outcome is `UNKNOWN`, not `NONE`.
 
 The engine keeps private `execution.json`, `progress.json`, and `execution.log` in
 the selected job's local state directory. The log rotates at 64 KiB with one retained
-segment. Set `logging.level: debug` for up to ten diagnostic lines, each bounded to
-500 characters, and inspect the displayed log for full retained context. Logs can
+segment. Use `status --verbose` to show the selected execution-record path and up to
+ten diagnostic log lines, each bounded to 500 characters. `logging.level: debug` also
+enables these diagnostics. Inspect the displayed log for full retained context. Logs can
 contain sensitive operational details; review before sharing.
+Older Trigger receipts can exist without common execution records, for example if
+those attempts preceded common execution reporting. `NONE` reports the absence of
+execution evidence, not proof that no backup ever ran. For unexpected missing results,
+use `--verbose` to check the execution-record path and retained logs. Check that the
+mode, YAML path, runtime parameters, and XDG state environment match the execution.
 
 ## Trigger
 
@@ -84,10 +95,12 @@ Inspect this section as the non-root application owner with `--user`.
   remain separate from actual backup activity.
 - Diagnostics retain rejected submissions, final-recheck blocks, uncertain
   dispatches, and unresolved safety warnings. A blocked final recheck did not run a
-  backup. An unresolved warning remains visible with its attempt and execution
-  interval when available, even after a later successful execution.
+  backup. Historical safety warnings are summarized as `REVIEW REQUIRED (N previous
+  attempts)` with an action to review affected executions, even after a later
+  successful execution. Current safety warnings remain explicit. Use `status --verbose`
+  for historical attempt IDs, execution intervals, reasons, and recovery guidance.
 
-Debug details include monitor service and state paths, observations, and arming
+Verbose and debug details include monitor service and state paths, observations, and arming
 state. Request, launch, receipt, and capped child logs remain Trigger recovery
 evidence. Status reads them without adopting attempts or releasing active slots.
 See [Trigger recovery](trigger/recovery.md) and [troubleshooting](trigger/troubleshooting.md).
@@ -124,13 +137,19 @@ and `elapsed_seconds`. Durations are numbers in seconds.
 `execution_id`, `started_at`, `result`, `completed_at`, `duration_seconds`,
 `exit_code`, `signal`, and `reason`, plus `log_path` when available. Unknown facts
 are null; an uncertain execution has result `UNKNOWN`, never an assumed success.
-Debug reports can add `backup.diagnostic_tail` and `trigger.details`.
+Verbose and debug reports can add `backup.details`, `backup.diagnostic_tail`, and
+`trigger.details`.
 
 Trigger fields include `enabled`, `monitor`, `monitor_updated_seconds_ago`,
 `application`, `application_detail`, `dispatch`, `pending_request_id`,
 `active_attempt_id`, `diagnostics`, and `safety`. A root-mode inspection reports
 Trigger as unknown with an instruction to inspect the owner's user-mode job.
 Worker and dispatch-age fields are included when observed.
+The `safety` array always retains detailed warnings, including attempt IDs and
+execution periods when available. Each warning's `current` flag separates current
+safety concerns from historical review requirements. `safety_action` and
+`safety_guidance` provide review instructions when warnings exist. `--verbose` can be
+combined with `--json`; normal JSON already includes historical safety details.
 
 Missing/unavailable next-execution information is null. A subsystem inspection error
 sets its `read_error` field to true and retains diagnostics. Exit 0 means collection

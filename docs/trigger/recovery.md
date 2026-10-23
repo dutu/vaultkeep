@@ -137,8 +137,9 @@ New warnings identify their attempt in the existing reason fields. This requires
 schema change, migration, or new persistence structure.
 
 Current and unresolved historical safety warnings remain visible in the Trigger
-section of `vaultkeep status`, with affected attempts and execution periods when
-known. They are separate from the latest backup execution result.
+section of `vaultkeep status`. Historical warnings show a review count; `status --verbose`
+includes affected attempts, execution periods when known, and reasons. Current safety
+warnings remain explicit. They are separate from the latest backup execution result.
 
 Resolved final-check events remain available in retained history and debug status,
 rather than appearing as outstanding execution risks. There is no time-based expiry,

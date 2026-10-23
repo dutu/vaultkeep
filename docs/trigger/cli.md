@@ -74,8 +74,8 @@ transitions can occur during or immediately after a report.
 manager, and explicitly enables/starts its monitor. `update` requires an existing
 managed service, refreshes its command and restarts the monitor. Both require
 `trigger.enabled: true`. Monitor units are named
-`vaultkeep-trigger@<job-id>-<identity>.service`; `status` includes the exact unit
-name in diagnostics at `logging.level: debug`.
+`vaultkeep-trigger@<job-id>-<identity>.service`; `status --verbose` includes the exact
+unit name in diagnostics.
 
 `disable` stops and disables this monitor. `remove` also removes its generated unit.
 Both preserve recovery state and leave workers running. Drain workers and review
@@ -93,6 +93,7 @@ Use `vaultkeep --user --config JOB.yaml status` or `status --json` to inspect ba
 execution, monitor freshness, application detection, and dispatch recovery. Backup
 results come from the common backup engine. Trigger contributes its own monitoring,
 requests, blocks, and source-consistency warnings. See the [status reference](../status.md).
+Use `status --verbose` for historical safety-warning details and diagnostic paths.
 
 ## Exit codes
 

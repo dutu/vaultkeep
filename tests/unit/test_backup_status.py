@@ -204,13 +204,42 @@ def test_sigterm_records_interruption_and_restores_the_previous_signal_handler(l
     assert previous["exit_code"] == 143 and previous["signal"] == signal.SIGTERM
 
 
-def test_no_completion_record_after_process_exit_is_unknown(local_job):
+@pytest.mark.parametrize("outcome", ["FAILED", "INTERRUPTED", "UNKNOWN"])
+def test_unsuccessful_previous_backup_shows_log_without_verbose(local_job, capsys, outcome):
+    if outcome == "UNKNOWN":
+        with execution(local_job) as active:
+            started = (active.directory / "execution.json").read_bytes()
+            active.complete("created")
+        (active.directory / "execution.json").write_bytes(started)
+    else:
+        error = (
+            DestinationError("Destination unavailable")
+            if outcome == "FAILED"
+            else BackupInterrupted(signal.SIGTERM)
+        )
+        with pytest.raises(type(error)), execution(local_job):
+            raise error
+    expected_log = status(local_job)["previous"]["log_path"]
+    assert Path(expected_log).is_file()
+    args = ["--user", "--config", str(local_job), "status"]
+    assert main(args) == 0
+    human = " ".join(capsys.readouterr().out.split())
+    assert f"Previous backup Result {outcome}" in human
+    assert f"Log {expected_log}" in human
+    assert "Backup diagnostics" not in human
+    assert main([*args, "--json"]) == 0
+    previous = json.loads(capsys.readouterr().out)["backup"]["previous"]
+    assert previous["result"] == outcome
+    assert previous["log_path"] == expected_log
+
+
+def test_no_completion_record_after_process_exit_is_idle_with_unknown_outcome(local_job):
     with execution(local_job) as active:
         saved = (active.directory / "execution.json").read_bytes()
         active.complete("created")
     (active.directory / "execution.json").write_bytes(saved)
     observed = status(local_job)
-    assert observed["activity"] == "UNKNOWN"
+    assert observed["activity"] == "IDLE"
     assert observed["previous"]["result"] == "UNKNOWN"
     assert observed["previous"]["completed_at"] is None
     with execution(local_job) as active:
@@ -238,7 +267,11 @@ def test_all_telemetry_writes_failing_cannot_reuse_an_old_success(local_job, mon
     monkeypatch.setattr("vaultkeep.backup.execution.write_json", fail)
     with execution(local_job) as active:
         active.complete("created")
-    assert status(local_job)["activity"] == "UNKNOWN"
+    observed = status(local_job)
+    assert observed["activity"] == "IDLE"
+    assert observed["previous"]["result"] == "UNKNOWN"
+    assert observed["previous"]["execution_id"] == active.execution_id
+    assert observed["previous"]["completed_at"] is None
 
 
 def test_heartbeat_runs_without_a_terminal_and_is_joined(local_job, monkeypatch):
@@ -267,13 +300,15 @@ def test_progress_failure_and_broken_presentation_do_not_fail_backup(local_job, 
 
 
 @pytest.mark.parametrize("payload", ["{", "{}", "[]", "x" * 16385])
-def test_corrupt_execution_state_is_unknown_and_is_never_repaired_by_status(local_job, payload):
+def test_corrupt_history_does_not_obscure_idle_activity_and_is_never_repaired(local_job, payload):
     with execution(local_job) as active:
         active.complete("created")
     path = active.directory / "execution.json"
     path.write_text(payload)
-    assert status(local_job)["activity"] == "UNKNOWN"
-    assert status(local_job)["read_error"]
+    observed = status(local_job)
+    assert observed["activity"] == "IDLE"
+    assert observed["previous"]["result"] == "UNKNOWN"
+    assert observed["read_error"]
     assert path.read_text() == payload
 
 
@@ -318,9 +353,15 @@ def test_status_needs_no_sources_destination_or_execution_lock(local_job, monkey
     } == before
 
 
-def test_missing_state_does_not_create_files_or_claim_idle(local_job):
+def test_never_executed_job_is_idle_without_creating_files(local_job, capsys):
     data = collect_status(local_job, user_mode=True, runtime_params={})
-    assert data["backup"]["activity"] == "UNKNOWN"
+    assert data["backup"]["activity"] == "IDLE"
+    assert data["backup"]["previous"] is None
+    assert not data["backup"]["diagnostics"]
+    assert main(["--user", "--config", str(local_job), "status"]) == 0
+    human = " ".join(capsys.readouterr().out.split())
+    assert "Activity IDLE" in human and "Result NONE" in human
+    assert "No execution evidence" not in human
     assert not user_workflow_paths().state_root.exists()
     assert not user_workflow_paths().lock_root.exists()
 
@@ -334,8 +375,44 @@ def test_root_and_parameter_namespaces_are_independent(local_job, monkeypatch):
         other = backup_status(
             paths, "app", job_identity_hash(local_job, "app", runtime_params={"repo": "other"})
         )
-        assert other["activity"] == "UNKNOWN" and other["previous"] is None
+        assert other["activity"] == "IDLE" and other["previous"] is None
         active.complete("created")
+
+
+@pytest.mark.parametrize("history", ["missing", "completed", "corrupt"])
+def test_unavailable_lock_ownership_cannot_claim_idle(local_job, monkeypatch, history):
+    if history != "missing":
+        workflow.run_backup(local_job, user_mode=True)
+    if history == "corrupt":
+        next(user_workflow_paths().state_root.rglob("execution.json")).write_text("{")
+    monkeypatch.setattr("vaultkeep.backup.status.job_lock_owner", lambda _path: None)
+    assert status(local_job)["activity"] == "UNKNOWN"
+
+
+def test_held_lock_without_execution_history_is_unknown(local_job):
+    active = execution(local_job)
+    active.lock.acquire()
+    try:
+        assert status(local_job)["activity"] == "UNKNOWN"
+    finally:
+        active.lock.release()
+
+
+def test_lost_execution_history_retains_unknown_previous_outcome(local_job):
+    with execution(local_job) as active:
+        active.complete("created")
+    (active.directory / "execution.json").unlink()
+    observed = status(local_job)
+    assert observed["activity"] == "IDLE"
+    assert observed["previous"]["result"] == "UNKNOWN"
+    assert observed["previous"]["execution_id"] == active.execution_id
+    assert observed["previous"]["completed_at"] is None
+
+
+def test_changing_execution_during_inspection_is_unknown(local_job, monkeypatch):
+    stamps = iter(char * 32 for char in "abcd")
+    monkeypatch.setattr("vaultkeep.backup.status.job_lock_execution", lambda _path: next(stamps))
+    assert status(local_job)["activity"] == "UNKNOWN"
 
 
 def test_per_file_job_has_one_progress_owner_and_one_aggregate_result(local_job):
@@ -410,10 +487,10 @@ def test_contradictory_completion_cannot_establish_success(local_job, change):
             data[key] = value
     path.write_text(json.dumps(data))
     result = status(local_job)
-    assert result["activity"] == "UNKNOWN" and result["previous"] is None
+    assert result["activity"] == "IDLE" and result["previous"]["result"] == "UNKNOWN"
 
 
-def test_unreadable_completion_cannot_claim_idle(local_job, monkeypatch):
+def test_unreadable_completion_does_not_obscure_idle_activity(local_job, monkeypatch):
     workflow.run_backup(local_job, user_mode=True)
     original = Path.open
 
@@ -424,7 +501,8 @@ def test_unreadable_completion_cannot_claim_idle(local_job, monkeypatch):
 
     monkeypatch.setattr(Path, "open", read)
     result = status(local_job)
-    assert result["activity"] == "UNKNOWN" and result["read_error"]
+    assert result["activity"] == "IDLE" and result["read_error"]
+    assert result["previous"]["result"] == "UNKNOWN"
 
 
 @pytest.mark.parametrize("field", ["schema_version", "current", "previous"])
@@ -435,7 +513,8 @@ def test_incomplete_execution_document_is_not_treated_as_completion(local_job, f
     del data[field]
     path.write_text(json.dumps(data))
     result = status(local_job)
-    assert result["activity"] == "UNKNOWN" and result["read_error"]
+    assert result["activity"] == "IDLE" and result["read_error"]
+    assert result["previous"]["result"] == "UNKNOWN"
 
 
 @pytest.mark.parametrize("failure", ["heartbeat", "process_identity"])
