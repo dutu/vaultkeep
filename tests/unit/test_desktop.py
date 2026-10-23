@@ -12,7 +12,23 @@ from unittest.mock import Mock
 import psutil
 import pytest
 
-from vaultkeep.trigger import desktop
+from vaultkeep.notifications import desktop
+
+
+@pytest.mark.parametrize("value", [None, "relative", "/missing/vaultkeep-runtime"])
+def test_unusable_runtime_directories_are_ignored(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    else:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", value)
+    assert desktop._runtime_dir() is None
+
+
+def test_runtime_directory_must_belong_to_current_account(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert desktop._runtime_dir() == tmp_path
+    monkeypatch.setattr(desktop.os, "geteuid", lambda: tmp_path.stat().st_uid + 1)
+    assert desktop._runtime_dir() is None
 
 
 def process(*, address="unix:path=/tmp/desktop", display=":1", uid=None):
@@ -29,7 +45,7 @@ def process(*, address="unix:path=/tmp/desktop", display=":1", uid=None):
 @pytest.fixture
 def no_inherited_bus(monkeypatch):
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
-    monkeypatch.setattr(desktop, "runtime_dir", lambda: None)
+    monkeypatch.setattr(desktop, "_runtime_dir", lambda: None)
 
 
 @pytest.mark.parametrize(
@@ -68,7 +84,7 @@ def test_inherited_working_bus_requires_no_process_scan(monkeypatch):
 def test_standard_user_bus_is_used_before_process_discovery(
     no_inherited_bus, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(desktop, "runtime_dir", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_runtime_dir", lambda: tmp_path)
     monkeypatch.setattr(desktop, "_notification_service", lambda address, deadline: "running")
     assert desktop.notification_bus(monotonic() + 2) == f"unix:path={tmp_path}/bus"
 
@@ -78,7 +94,7 @@ def test_running_private_desktop_precedes_a_generic_activatable_user_bus(
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.setattr(desktop, "runtime_dir", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_runtime_dir", lambda: tmp_path)
     monkeypatch.setattr(desktop, "_desktop_addresses", lambda deadline: {"unix:path=/tmp/private"})
     monkeypatch.setattr(
         desktop,
@@ -95,7 +111,7 @@ def test_configured_bus_can_activate_notifications_without_process_discovery(
     monkeypatch, candidates
 ):
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/desktop")
-    monkeypatch.setattr(desktop, "runtime_dir", lambda: None)
+    monkeypatch.setattr(desktop, "_runtime_dir", lambda: None)
     monkeypatch.setattr(desktop, "_desktop_addresses", lambda deadline: candidates)
     monkeypatch.setattr(desktop, "_notification_service", lambda address, deadline: "activatable")
     assert desktop.notification_bus(monotonic() + 2) == "unix:path=/tmp/desktop"
@@ -103,7 +119,7 @@ def test_configured_bus_can_activate_notifications_without_process_discovery(
 
 def test_nomachine_bus_is_discovered_despite_a_stale_inherited_address(monkeypatch):
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/stale")
-    monkeypatch.setattr(desktop, "runtime_dir", lambda: None)
+    monkeypatch.setattr(desktop, "_runtime_dir", lambda: None)
     gui = process(address="unix:path=/tmp/dbus-NoMachine,guid=abc")
     monkeypatch.setattr(desktop.psutil, "process_iter", lambda attrs: [gui, gui])
     checked = []

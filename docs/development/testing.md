@@ -49,6 +49,13 @@ optional system Python `dbus`/`gi` bindings (`python3-dbus` and `python3-gi` on 
 It skips when those tools are unavailable or the sandbox blocks Unix sockets. It
 does not contact a real desktop or change systemd services or manager environments.
 
+Notification unit tests cover independent category settings, lock-gated execution
+start, lifecycle phase throttling, per-file job streams, failure diagnostics, and
+bounded final delivery. Subprocess tests exercise manual, rendered Schedule, and
+Trigger worker initiation, plus handled SIGTERM and unavailable SIGKILL completion
+evidence. Trigger tests verify receipt recovery and orchestration deduplication
+without ordinary backup result alerts or backup-progress polling.
+
 Root pytest runs backup, unified status, Trigger, Schedule, installer, and installed-worker contract tests in
 one process. Trigger fixtures live under `tests/trigger/` with explicit package
 imports, so test modules do not collide.

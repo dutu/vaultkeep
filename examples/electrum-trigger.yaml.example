@@ -49,10 +49,14 @@ trigger:
   confirm_seconds: 5
   # Optional advisory deadline; never terminates a backup.
   # deadline_seconds: 3600
-  notifications:
+# Optional desktop alerts; each category is independent of automatic execution.
+notifications:
+  command: notify-send
+  timeout_ms: 5000
+  backup:
     enabled: false
-    command: notify-send
-    timeout_ms: 5000
+  trigger:
+    enabled: false
 logging:
   level: info
   include_command_output: false

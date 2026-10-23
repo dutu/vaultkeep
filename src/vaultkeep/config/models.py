@@ -162,12 +162,19 @@ class TriggerMatcherConfig(StrictConfigModel):
         return self
 
 
-class TriggerNotificationsConfig(StrictConfigModel):
-    """Best-effort desktop notifications for one triggered job."""
+class NotificationCategoryConfig(StrictConfigModel):
+    """Independently enable one component's notifications."""
 
     enabled: bool = False
+
+
+class NotificationsConfig(StrictConfigModel):
+    """Shared delivery settings and component-specific notification switches."""
+
     command: NonEmptyString = "notify-send"
     timeout_ms: Annotated[int, Field(gt=0)] = 5000
+    backup: NotificationCategoryConfig = Field(default_factory=NotificationCategoryConfig)
+    trigger: NotificationCategoryConfig = Field(default_factory=NotificationCategoryConfig)
 
 
 class TriggerConfig(StrictConfigModel):
@@ -181,7 +188,6 @@ class TriggerConfig(StrictConfigModel):
     confirm_seconds: TriggerSeconds = 5.0
     deadline_seconds: TriggerSeconds | None = None
     params: dict[str, str] = Field(default_factory=dict)
-    notifications: TriggerNotificationsConfig = Field(default_factory=TriggerNotificationsConfig)
 
     @field_validator("data_dir")
     @classmethod
@@ -256,6 +262,7 @@ class JobConfig(StrictConfigModel):
     retention: RetentionConfig
     schedule: ScheduleConfig
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)
     logging: LoggingConfig
 

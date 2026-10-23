@@ -1536,11 +1536,15 @@ a new attempt whose telemetry writes failed, including on filesystems with coars
 logging, and completion-record I/O remain best-effort and never fail archive work.
 
 Trigger retains requests, launch records, receipts and recovery summaries because
-child completion and submission uncertainty govern safe orchestration. It obtains
-live phases for desktop notifications through Backup's status interpretation; it
-never writes progress or presents a parallel backup history. Blocked or rejected
-dispatches and unresolved application-safety warnings belong to Trigger. Schedule
-owns timer rendering and health, without execution state or result classification.
+child completion and submission uncertainty govern safe orchestration. Its notifications
+cover application monitoring, dispatch, and recovery; it does not poll backup progress
+or duplicate execution result alerts. Backup generates execution notifications directly
+from the common lock-owning lifecycle, including heartbeat phase updates and authoritative
+results. Shared desktop discovery and asynchronous delivery live in `vaultkeep.notifications`.
+Job YAML `notifications.backup.enabled` and `notifications.trigger.enabled` independently
+control the categories, with shared command and timeout settings. Notification delivery
+never changes operational state. Schedule owns timer rendering and health, without
+execution state or result classification; scheduled jobs use the same Backup notifications.
 
 ## 17.2 Logging
 

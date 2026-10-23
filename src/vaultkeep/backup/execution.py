@@ -17,6 +17,7 @@ from typing import Any
 
 import psutil  # type: ignore[import-untyped]
 
+from vaultkeep.backup.notifications import BackupNotifications
 from vaultkeep.backup.paths import WorkflowPaths
 from vaultkeep.backup.progress import HEARTBEAT_SECONDS, ProgressReporter
 from vaultkeep.backup.records import Attempt, ExecutionHistory, read_history
@@ -24,6 +25,7 @@ from vaultkeep.backup.results import BackupInterrupted, failure_exit_code, failu
 from vaultkeep.diagnostics import concise, utc_now
 from vaultkeep.errors import StateError
 from vaultkeep.locking import JobLock, job_lock_path
+from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.state.atomic import write_json
 
 _LOG = logging.getLogger(__name__)
@@ -51,6 +53,8 @@ class Execution:
         identity: str,
         *,
         progress: Callable[[str], None] | None = None,
+        notifications: NotificationConfig | None = None,
+        per_file: bool = False,
     ) -> None:
         self.directory = paths.state_root / f"{job_id}-{identity}"
         self.lock = JobLock(
@@ -72,6 +76,9 @@ class Execution:
         )
         self._result: str | None = None
         self._reason: str | None = None
+        self._notifications = BackupNotifications(
+            notifications or NotificationConfig(), job_id, self.execution_id, per_file=per_file
+        )
 
     def __enter__(self) -> Execution:
         self.lock.acquire()
@@ -83,6 +90,7 @@ class Execution:
             except OSError as error:
                 _LOG.warning("Execution lock stamp unavailable: %s", error)
             previous = None
+            existing = None
             try:
                 existing = read_history(
                     self.directory / "execution.json",
@@ -128,6 +136,9 @@ class Execution:
             self._save()
             if current_thread() is main_thread():
                 self._old_term = signal.signal(signal.SIGTERM, self._terminate)
+            if previous is not None and existing is not None and existing.current is not None:
+                self._notifications.completed(previous)
+            self._notifications.started()
             self.report("Preparing backup")
             self._thread = Thread(target=self._heartbeat, name="vaultkeep-execution", daemon=True)
             try:
@@ -143,6 +154,7 @@ class Execution:
     def report(self, phase: str) -> None:
         with self._mutex:
             self._reporter.report(phase)
+            self._notifications.report(phase)
         if self._progress is not None:
             # Presentation callbacks are optional telemetry too.
             try:
@@ -154,6 +166,7 @@ class Execution:
         while not self._stopped.wait(HEARTBEAT_SECONDS):
             with self._mutex:
                 self._reporter.heartbeat()
+                self._notifications.heartbeat()
 
     def complete(self, result: str, *, errors: Sequence[str] = ()) -> None:
         self._result = {"created": "SUCCESS", "unchanged": "UNCHANGED", "failed": "FAILED"}[result]
@@ -198,6 +211,7 @@ class Execution:
             )
             self.history = self.history.model_copy(update={"current": None, "previous": completed})
             self._save()
+            self._notifications.completed(completed)
         finally:
             self._close()
 
@@ -215,3 +229,4 @@ class Execution:
             with suppress(OSError):
                 self._handler.close()
         self.lock.release()
+        self._notifications.close()

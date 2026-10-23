@@ -23,6 +23,7 @@ and [user mode guide](docs/user-mode.md).
   - [Destination name templates](#destination-name-templates)
   - [Runtime template parameters](#runtime-template-parameters)
   - [Destination mount checks](#destination-mount-checks)
+  - [Desktop notifications](#desktop-notifications)
   - [CLI reference](#cli-reference)
   - [Terminal output](#terminal-output)
   - [Check job status](#check-job-status)
@@ -583,6 +584,70 @@ skips these runtime checks. Full validation also probes writing, renaming, and
 removal; a registered mount alone does not establish that a NAS is reachable.
 These checks confirm conditions at the time of inspection; they do not prevent
 mount changes or network failures during an operation.
+
+### Desktop notifications
+
+Backup notifications apply to manual, scheduled, and triggered executions. Trigger
+notifications cover application monitoring, dispatch, and recovery. Each category
+is optional and defaults to disabled.
+
+1. Install the desktop notification command if needed:
+
+   ```bash
+   sudo apt-get install libnotify-bin
+   ```
+
+   From the backup owner's graphical session, test delivery:
+
+   ```bash
+   notify-send "Vaultkeep" "Desktop notifications are available"
+   ```
+
+   Expect a desktop notification unless desktop settings suppress it. The desktop
+   must run as the backup owner in the same host or container. Session discovery
+   uses `busctl`, supplied by systemd, and also supports NoMachine sessions in LXC.
+
+2. Add this top-level section to the job YAML, enabling the categories you want:
+
+   ```yaml
+   notifications:
+     command: notify-send
+     timeout_ms: 5000
+     backup:
+       enabled: true
+     trigger:
+       enabled: true
+   ```
+
+   `backup.enabled` works with manual-only jobs and scheduled jobs as well as Trigger.
+   `trigger.enabled` here controls Trigger alerts; enabling application monitoring
+   still requires the job's separate `trigger.enabled` setting and an installed monitor.
+   The delivery command and timeout apply to both notification categories.
+
+3. Validate the edited job using your chosen mode. For a user-mode job:
+
+   ```bash
+   vaultkeep --user --config "$job_config" validate
+   ```
+
+   Future backups read these settings automatically. If this job has an installed
+   Trigger monitor, also apply the change to it:
+
+   ```bash
+   vaultkeep --user --config "$job_config" trigger update
+   ```
+
+Backup alerts begin after the job lock is acquired. They update the execution phase,
+refresh long phases with elapsed time every ten seconds, and end with the actual
+result, local completion time, and a concise failure reason when applicable. Per-file
+jobs share one notification lifecycle for the whole job. With `notify-send`, the final
+result replaces progress and requests that it remain until dismissed. Trigger sends
+separate monitoring and dispatch alerts, without repeating backup execution results.
+
+Delivery is best-effort; unavailable desktops and notification failures do not affect
+backups. Visibility and expiration depend on desktop settings. See the
+[notification reference](docs/notifications.md) for session selection, custom commands,
+bounded final delivery, and troubleshooting.
 
 ### CLI reference
 
@@ -1438,53 +1503,8 @@ vaultkeep --user --config "$job_config" status
 `vaultkeep-trigger@<job-id>-<identity>.service`. `status --verbose` prints its exact
 name and state path in diagnostics. Repeat these steps for each job; monitors operate independently.
 Installing Vaultkeep itself starts no monitor, enables no service, and does not
-configure lingering. Optional notifications use `notify-send` and a usable desktop
-session. To enable them:
-
-1. If `notify-send` is missing, have an administrator install it:
-
-   ```bash
-   sudo apt-get install libnotify-bin
-   ```
-
-   Test delivery from the backup owner's graphical session:
-
-   ```bash
-   notify-send "Vaultkeep" "Desktop notifications are available"
-   ```
-
-   Expect a desktop notification unless desktop settings suppress it.
-
-2. Add this setting under the job's existing `trigger` section:
-
-   ```yaml
-   trigger:
-     notifications:
-       enabled: true
-   ```
-
-3. For an installed monitor, validate the edited job and apply it:
-
-   ```bash
-   vaultkeep --user --config "$job_config" validate
-   vaultkeep --user --config "$job_config" trigger update
-   ```
-
-The backup notification updates when the observed phase changes, for example from
-“Creating and compressing archive” to “Verifying archive”, and refreshes every ten
-seconds with the current phase's elapsed time, such as `Checking existing backups (20s)`.
-The first notification for each phase omits elapsed time.
-After the worker ends, the final result includes the local completion time and remains
-until you dismiss it. Changes to the Trigger `Application` state also
-produce separate notifications after the first observation establishes a baseline.
-Delivery uses the backup owner's desktop session; popup
-visibility and expiration depend on desktop settings. The monitor automatically
-finds a usable notification bus for that account, including session-specific buses
-used by NoMachine desktops inside LXC. Manual environment imports are not required
-for a single accessible desktop session. Discovery uses `busctl`, supplied by systemd.
-See [notifications and session
-setup](docs/trigger/notifications.md) and
-[service lifetime](docs/trigger/service-operation.md#lifecycle-limits).
+configure lingering. Enable optional [desktop notifications](#desktop-notifications)
+separately. See [service lifetime](docs/trigger/service-operation.md#lifecycle-limits).
 
 ### Trigger operation and health
 

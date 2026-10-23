@@ -8,17 +8,29 @@ import shlex
 import socket
 import struct
 import subprocess
+from pathlib import Path
 from time import monotonic
 from typing import Literal
 from urllib.parse import quote, unquote
 
 import psutil  # type: ignore[import-untyped]
 
-from vaultkeep.trigger.paths import runtime_dir
-
-_LOG = logging.getLogger("vaultkeep.trigger.notifications")
+_LOG = logging.getLogger("vaultkeep.notifications")
 _BUS_ENV = "DBUS_SESSION_BUS_ADDRESS"
 _NOTIFICATIONS = "org.freedesktop.Notifications"
+
+
+def _runtime_dir() -> Path | None:
+    value = os.environ.get("XDG_RUNTIME_DIR")
+    if not value:
+        return None
+    path = Path(value)
+    try:
+        if path.is_absolute() and path.is_dir() and path.stat().st_uid == os.geteuid():
+            return path
+    except OSError:
+        pass
+    return None
 
 
 def _local_address(address: str) -> tuple[str, str] | None:
@@ -142,7 +154,7 @@ def notification_bus(deadline: float) -> str | None:
     inherited = _local_address(os.environ.get(_BUS_ENV, ""))
     if inherited:
         preferred.append(inherited[0])
-    runtime = runtime_dir()
+    runtime = _runtime_dir()
     if runtime is not None:
         preferred.append(f"unix:path={quote(str(runtime / 'bus'), safe='/')}")
     checked: set[str] = set()

@@ -51,7 +51,6 @@ Application-specific setup and multiple-instance guidance:
 | `confirm_seconds` | `5` | Continuous reliable absence required to confirm shutdown. |
 | `deadline_seconds` | absent | Advisory overdue threshold; never terminates a backup. |
 | `params` | `{}` | String runtime parameters passed to this same backup job. |
-| `notifications` | disabled | Best-effort desktop notification settings. |
 
 Unknown keys are rejected. Booleans must be booleans; timing values must be finite
 positive numbers. While disabled, `app`, `data_dir`, and `matcher` are optional; a
@@ -109,15 +108,12 @@ disable/drain the old service and review its recovery evidence first.
 
 ## Notifications
 
-`trigger.notifications` accepts `enabled` (default `false`), `command` (default
-`notify-send`), and positive integer `timeout_ms` (default `5000`). The command is
-invoked directly without a shell. Notifications are optional; delivery failure never
-changes the backup outcome. Enabling them includes observed backup phase updates.
-With `notify-send`, start, activity, and final result replace one notification per
-instance. Custom commands continue to receive title and body as two arguments and
-deliver separate messages. Native `notify-send` delivery automatically resolves the
-desktop bus using systemd's `busctl`; discovery and delivery share `timeout_ms`.
-See [notifications and session setup](notifications.md).
+The job's top-level `notifications` section independently enables `backup.enabled`
+and `trigger.enabled` (both default `false`). Shared `command` (default `notify-send`)
+and positive integer `timeout_ms` (default `5000`) apply to both. Trigger alerts cover
+application-state changes, dispatch, and recovery. Backup owns execution start, phases,
+and results for every initiation method. Neither category requires the other.
+See [notifications and session setup](../notifications.md).
 
 Requests freeze matcher settings, job paths, parameters and environment, rather than
 job contents or executable bytes. Review live file replacements with the same care as

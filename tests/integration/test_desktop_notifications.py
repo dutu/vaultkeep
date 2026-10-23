@@ -13,9 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from vaultkeep.trigger import desktop
-from vaultkeep.trigger.config import NotificationConfig
-from vaultkeep.trigger.notify import NotifySendNotifier
+from vaultkeep.notifications import desktop
+from vaultkeep.notifications.notifier import NotificationConfig, NotifySendNotifier
 
 SERVER = r"""
 import json, os, sys

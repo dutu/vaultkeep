@@ -167,6 +167,14 @@ hooks:
   #       "Backup failed for {job} on $HOSTNAME (IPv4: $IP): $VAULTKEEP_ERROR"
   #   timeout_seconds: 60
 
+# Optional desktop alerts; each category is independent of automatic execution.
+notifications:
+  command: notify-send
+  timeout_ms: 5000
+  backup:
+    enabled: false
+  trigger:
+    enabled: false
 logging:
   # Log level. Values: error, warning, info, debug.
   level: info

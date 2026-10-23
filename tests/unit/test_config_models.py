@@ -21,6 +21,35 @@ def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> Non
     assert config.config_version == 1
     assert config.job.id == "app"
     assert config.archive.compression_level == 6
+    assert not config.notifications.backup.enabled
+    assert not config.notifications.trigger.enabled
+    assert config.notifications.command == "notify-send"
+    assert config.notifications.timeout_ms == 5000
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"backup": {"enabled": "yes"}},
+        {"trigger": {"enabled": 1}},
+        {"timeout_ms": 0},
+        {"timeout_ms": True},
+        {"timeout_ms": "5000"},
+        {"command": ""},
+        {"backup": {"unknown": True}},
+        {"enabled": True},
+    ],
+)
+def test_invalid_notification_settings_are_rejected(valid_config, settings):
+    valid_config["notifications"] = settings
+    with pytest.raises(ValidationError):
+        JobConfig.model_validate(valid_config)
+
+
+def test_trigger_does_not_accept_nested_notifications(valid_config):
+    valid_config["trigger"] = {"notifications": {"enabled": True}}
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        JobConfig.model_validate(valid_config)
 
 
 def test_disabled_schedule_fields_are_optional(valid_config: dict[str, Any]) -> None:

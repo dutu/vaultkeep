@@ -11,6 +11,7 @@ from types import FrameType
 from vaultkeep.cli.output import Console, configure_logging
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
+from vaultkeep.notifications.notifier import build_notifier
 from vaultkeep.trigger.config import (
     TriggerConfig,
     load_config,
@@ -24,7 +25,6 @@ from vaultkeep.trigger.errors import (
 )
 from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.monitor import Monitor
-from vaultkeep.trigger.notify import build_notifier
 from vaultkeep.trigger.paths import (
     state_root,
     validate_scope,

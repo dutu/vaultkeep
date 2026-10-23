@@ -35,9 +35,10 @@ evidence or an unavailable manager leaves the attempt unresolved. A receipt may 
 summarized while its worker is still exiting, but its active slot and recovery records
 remain protected until both the worker and any queued job have ended.
 
-Terminal notifications also wait for worker/job termination. Reading a receipt can
-record a child result while its supervisor is still active; it does not announce that
-the whole attempt has finished.
+Trigger's blocked-dispatch, integration-error, and uncertain-result notifications
+wait for worker/job termination. Reading a receipt can record a child result while its
+supervisor is still active. Backup sends its own execution result when the common
+execution lifecycle ends; Trigger sends any separate recovery warning after reconciliation.
 
 The probe requests empty properties explicitly (`show --all`): systemd prints an empty
 `Job=` when no job is associated, while a queued job has a numeric ID. An omitted

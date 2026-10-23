@@ -330,7 +330,7 @@ def test_receipt_adoption_preserves_monitor_gap_evidence(store: StateStore) -> N
     monitor._startup_reconcile()
     state = store.read_instance(instance.id)
     assert state is not None and state.review_required
-    assert any("review required" in body for title, body in notifier.calls if "finished" in title)
+    assert any("Review required" in title for title, _body in notifier.calls)
 
 
 def test_notification_markers_follow_retention_without_rearming_delivery(store: StateStore) -> None:
@@ -369,10 +369,10 @@ def test_notification_markers_follow_retention_without_rearming_delivery(store: 
         monitor.run_once()
     state = store.read_instance(instance.id)
     assert state is not None
-    assert len(store.list_attempt_ids()) == 50 and len(state.notification_markers) == 100
+    assert len(store.list_attempt_ids()) == 50 and len(state.notification_markers) == 50
     assert not any(
         marker.partition(":")[0] in expired_scopes for marker in state.notification_markers
     )
-    assert len(notifier.calls) == 160
+    assert len([title for title, _body in notifier.calls if "requested" in title]) == 80
     monitor._startup_reconcile()
-    assert len(notifier.calls) == 160
+    assert len([title for title, _body in notifier.calls if "requested" in title]) == 80

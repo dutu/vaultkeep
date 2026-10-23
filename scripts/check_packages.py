@@ -38,6 +38,11 @@ def check_wheel(wheel: Path, version: str) -> None:
             wheel.name.removesuffix("-py3-none-any.whl") + ".dist-info",
         }
         assert "vaultkeep/trigger/monitor.py" in names
+        assert "vaultkeep/notifications/notifier.py" in names
+        assert "vaultkeep/notifications/desktop.py" in names
+        assert "vaultkeep/backup/notifications.py" in names
+        assert "vaultkeep/trigger/notify.py" not in names
+        assert "vaultkeep/trigger/desktop.py" not in names
         assert "vaultkeep/maintenance.py" in names
         metadata_path = next(n for n in names if n.endswith(".dist-info/METADATA"))
         metadata = email.message_from_bytes(archive.read(metadata_path))
@@ -84,6 +89,10 @@ def check() -> None:
         extracted = next((output / "extracted").iterdir())
         for required in (
             "src/vaultkeep/trigger/cli.py",
+            "src/vaultkeep/notifications/notifier.py",
+            "src/vaultkeep/notifications/desktop.py",
+            "src/vaultkeep/backup/notifications.py",
+            "docs/notifications.md",
             "requirements.lock",
             "scripts/install_support.py",
             "scripts/install_maintenance.py",
@@ -132,6 +141,8 @@ def check() -> None:
         run(
             python,
             "-c",
+            "import sys, vaultkeep.notifications.notifier; "
+            "assert 'vaultkeep.trigger' not in sys.modules; "
             "import vaultkeep.trigger.monitor; import importlib.util; "
             "assert importlib.util.find_spec('vaultkeep_trigger') is None",
         )

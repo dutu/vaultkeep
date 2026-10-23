@@ -14,6 +14,7 @@ from typing import Any
 
 from vaultkeep.config import load_config as load_job_config
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
+from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.errors import ConfigurationError
 from vaultkeep.trigger.paths import resolve_absolute_path
@@ -95,13 +96,6 @@ class InstanceConfig:
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()
-
-
-@dataclass(frozen=True, slots=True)
-class NotificationConfig:
-    enabled: bool = False
-    command: str = "notify-send"
-    timeout_ms: int = 5000
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +200,11 @@ def load_config(
         deadline_seconds=trigger.deadline_seconds,
         log_level=job.logging.level.upper(),
         vaultkeep=executable,
-        notifications=NotificationConfig(**trigger.notifications.model_dump()),
+        notifications=NotificationConfig(
+            enabled=job.notifications.trigger.enabled,
+            command=job.notifications.command,
+            timeout_ms=job.notifications.timeout_ms,
+        ),
         instances=instances,
         source_path=source,
         scope=scope,

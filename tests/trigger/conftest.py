@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.trigger.childproc import ChildResult
 from vaultkeep.trigger.config import (
     Entrypoint,
     InstanceConfig,
     JobSpec,
     MatcherSpec,
-    NotificationConfig,
     TriggerConfig,
 )
 from vaultkeep.trigger.matcher import ProcessInfo
@@ -129,10 +129,19 @@ class RecordingNotifier:
         self.options: list[tuple[str | None, bool]] = []
 
     def notify(
-        self, title: str, body: str, *, key: str | None = None, finished: bool = False
+        self,
+        title: str,
+        body: str,
+        *,
+        key: str | None = None,
+        finished: bool = False,
+        replace_pending: bool = False,
     ) -> None:
         self.calls.append((title, body))
         self.options.append((key, finished))
+
+    def close(self) -> None:
+        pass
 
 
 def make_matcher(
@@ -180,7 +189,7 @@ def make_config(*instances: InstanceConfig) -> TriggerConfig:
         deadline_seconds=None,
         log_level="INFO",
         vaultkeep=Path("/usr/local/bin/vaultkeep"),
-        notifications=NotificationConfig(),
+        notifications=NotificationConfig(enabled=True),
         instances=tuple(instances),
         source_path=Path("/tmp/job.yaml"),
     )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,11 +15,7 @@ from tests.trigger.conftest import (
     make_instance,
     make_request,
 )
-from vaultkeep.backup.execution import Execution
-from vaultkeep.backup.paths import WorkflowPaths
-from vaultkeep.state.identity import job_identity_hash
-from vaultkeep.trigger import monitor as monitor_module
-from vaultkeep.trigger.config import NotificationConfig
+from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.trigger.errors import BlockedError
 from vaultkeep.trigger.matcher import ProcessInfo
 from vaultkeep.trigger.models import (
@@ -107,7 +102,55 @@ def test_full_lifecycle_dispatch_and_receipt(store: StateStore) -> None:
     assert reconciled is not None
     assert reconciled.active_attempt_id is None
     assert reconciled.attempt_summaries[-1]["outcome"] == "created"
-    assert notifier.options == [("electrum-main", False), ("electrum-main", True)]
+    requested = [(title, body) for title, body in notifier.calls if "requested" in title]
+    assert len(requested) == 1
+    assert "dispatch requested" in requested[0][1]
+    assert "starting" not in requested[0][1]
+    assert not any(
+        "Backup completed" in title or "backup finished" in title for title, _ in notifier.calls
+    )
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_notification_failure_does_not_change_dispatch_or_receipt_recovery(
+    store, monkeypatch, enabled
+):
+    provider = FakeProvider([_running_proc()])
+    monitor, controller, notifier = _make(store, provider)
+    monitor.config = replace(monitor.config, notifications=NotificationConfig(enabled=enabled))
+
+    def fail(*_args, **_kwargs):
+        raise OSError("desktop unavailable")
+
+    monkeypatch.setattr(notifier, "notify", fail)
+    monitor.run_once()
+    provider.processes = []
+    monitor.run_once()
+    monitor.run_once()
+    state = store.read_instance("electrum-main")
+    assert state.active_attempt_id is not None
+    assert controller.started == [unit_name_for(state.active_attempt_id)]
+    store.write_receipt(
+        Receipt(
+            state.active_attempt_id,
+            state.active_request_id,
+            state.instance_id,
+            AttemptOutcome.CREATED,
+            utc_now(),
+            utc_now(),
+            1,
+            exit_code=0,
+        )
+    )
+    controller.states[unit_name_for(state.active_attempt_id)] = UnitState(
+        "loaded", "inactive", "dead"
+    )
+    monitor.run_once()
+    monitor.run_once()
+    reconciled = store.read_instance("electrum-main")
+    assert reconciled.active_attempt_id is None
+    assert reconciled.attempt_summaries[-1]["outcome"] == "created"
+    assert not reconciled.review_required
 
 
 def test_rejected_submission_requeues(store: StateStore) -> None:
@@ -192,6 +235,11 @@ def test_outcome_unknown_when_worker_absent(store: StateStore) -> None:
     assert state.pending_request is None
     assert state.review_required is True
     assert state.attempt_summaries[-1]["outcome"] == "outcome_unknown"
+    assert notifier.calls[-1][0] == "VaultKeep Trigger: Outcome unknown"
+    assert notifier.options[-1] == ("trigger:electrum-main", True)
+    count = len(notifier.calls)
+    monitor.run_once()
+    assert len(notifier.calls) == count
 
 
 def test_overdue_notification_sent_once(store: StateStore) -> None:
@@ -285,223 +333,6 @@ def _saved_attempt(store: StateStore, *, instance=None, outcome=None, pending=No
     return instance, request
 
 
-@pytest.fixture
-def live_activity(store, monkeypatch):
-    instance, request = _saved_attempt(store)
-    provider = FakeProvider([])
-    monkeypatch.setattr(provider, "alive", lambda _pid, _created: True)
-    monitor, controller, notifier = _make(store, provider, instance=instance)
-    monitor.config = replace(monitor.config, notifications=NotificationConfig(enabled=True))
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "active", "running")
-    paths = WorkflowPaths(store.root / "backup", store.root / "cache", store.root / "locks")
-    identity = job_identity_hash(
-        Path(request.job_config), request.instance_id, runtime_params=request.job_params
-    )
-    monkeypatch.setattr("vaultkeep.trigger.monitor.user_workflow_paths", lambda **_kwargs: paths)
-    monkeypatch.setattr(
-        "vaultkeep.diagnostics.utc_now", lambda: monitor_module._now_dt().isoformat()
-    )
-    with Execution(paths, request.instance_id, identity) as execution:
-        reporter = execution._reporter
-        reporter._path.unlink()  # No live phase has been observed by the monitor yet.
-        yield monitor, controller, notifier, request, reporter
-        execution.complete("created")
-
-
-def test_phase_notifications_deduplicate_polls_and_finish_after_worker_ends(live_activity, store):
-    monitor, controller, notifier, request, reporter = live_activity
-    reporter.report("Creating and compressing archive")
-    monitor.run_once()
-    monitor.run_once()
-    reporter.heartbeat()
-    monitor.run_once()
-    assert notifier.calls == [
-        (
-            "VaultKeep Trigger: backup running",
-            "instance electrum-main: Creating and compressing archive",
-        )
-    ]
-    reporter.report("Verifying archive")
-    monitor.run_once()
-    assert notifier.calls[-1][1] == "instance electrum-main: Verifying archive"
-    assert len(notifier.calls) == 2
-
-    # Finishing telemetry does not authorize a successful result notification.
-    reporter.finish()
-    monitor.run_once()
-    assert notifier.calls[-1] == (
-        "VaultKeep Trigger: backup finishing",
-        "instance electrum-main: Finishing backup; awaiting result",
-    )
-    store.write_receipt(
-        Receipt(
-            request.attempt_id,
-            request.request_id,
-            request.instance_id,
-            AttemptOutcome.CREATED,
-            utc_now(),
-            utc_now(),
-            1,
-            exit_code=0,
-        )
-    )
-    monitor.run_once()
-    assert len(notifier.calls) == 3
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
-    monitor.run_once()
-    monitor.run_once()
-    assert (notifier.calls[-1][0], notifier.calls[-1][1].splitlines()[0]) == (
-        "VaultKeep Trigger: backup finished",
-        "instance electrum-main: new archive created",
-    )
-    assert notifier.options == [(request.instance_id, False)] * 3 + [(request.instance_id, True)]
-    assert not monitor._last_activity
-
-
-def test_phase_notification_refreshes_every_ten_seconds_and_resets_on_change(
-    live_activity, monkeypatch
-):
-    monitor, _controller, notifier, _request, reporter = live_activity
-    start = datetime.now(UTC)
-    seconds = [0.0]
-    monitor._clock = lambda: seconds[0]
-    monkeypatch.setattr(
-        "vaultkeep.trigger.monitor._now_dt", lambda: start + timedelta(seconds=seconds[0])
-    )
-    monkeypatch.setattr(
-        "vaultkeep.backup.progress._now",
-        lambda: (start + timedelta(seconds=seconds[0])).isoformat(),
-    )
-    reporter.report("Checking existing backups")
-    for elapsed in (0, 9, 10, 19, 20):
-        seconds[0] = elapsed
-        reporter.heartbeat()
-        monitor.run_once()
-    assert [body for _title, body in notifier.calls] == [
-        "instance electrum-main: Checking existing backups",
-        "instance electrum-main: Checking existing backups (10s)",
-        "instance electrum-main: Checking existing backups (20s)",
-    ]
-    seconds[0] = 25
-    reporter.report("Verifying archive")
-    monitor.run_once()
-    assert notifier.calls[-1][1] == "instance electrum-main: Verifying archive"
-    seconds[0] = 34
-    reporter.heartbeat()
-    monitor.run_once()
-    assert len(notifier.calls) == 4
-    seconds[0] = 35
-    reporter.heartbeat()
-    monitor.run_once()
-    assert notifier.calls[-1][1] == "instance electrum-main: Verifying archive (10s)"
-
-
-def test_first_phase_notification_omits_elapsed_but_refresh_preserves_actual_phase_age(
-    live_activity, monkeypatch
-):
-    monitor, _controller, notifier, _request, reporter = live_activity
-    start = datetime.now(UTC)
-    monkeypatch.setattr("vaultkeep.backup.progress._now", lambda: start.isoformat())
-    reporter.report("Checking existing backups")
-    monkeypatch.setattr("vaultkeep.trigger.monitor._now_dt", lambda: start + timedelta(seconds=20))
-    monitor.run_once()
-    assert notifier.calls[-1][1] == "instance electrum-main: Checking existing backups"
-    monitor._clock = lambda: 10.0
-    monkeypatch.setattr("vaultkeep.trigger.monitor._now_dt", lambda: start + timedelta(seconds=30))
-    monkeypatch.setattr(
-        "vaultkeep.backup.progress._now", lambda: (start + timedelta(seconds=30)).isoformat()
-    )
-    reporter.heartbeat()
-    monitor.run_once()
-    assert notifier.calls[-1][1] == "instance electrum-main: Checking existing backups (30s)"
-
-
-@pytest.mark.parametrize("lost_progress", [False, True])
-def test_waiting_notifications_refresh_and_stop_after_completion(
-    live_activity, store, lost_progress
-):
-    monitor, controller, notifier, request, reporter = live_activity
-    seconds = [0.0]
-    monitor._clock = lambda: seconds[0]
-    reporter.report("Verifying archive")
-    monitor.run_once()
-    if lost_progress:
-        reporter._path.unlink()
-    else:
-        reporter.finish()
-    monitor.run_once()
-    for elapsed in range(1, 11):
-        seconds[0] = elapsed
-        monitor.run_once()
-    phase = (
-        "Backup progress unavailable; awaiting result"
-        if lost_progress
-        else "Finishing backup; awaiting result"
-    )
-    assert notifier.calls[-1][1] == f"instance electrum-main: {phase} (10s)"
-    store.write_receipt(
-        Receipt(
-            request.attempt_id,
-            request.request_id,
-            request.instance_id,
-            AttemptOutcome.CREATED,
-            utc_now(),
-            utc_now(),
-            1,
-            exit_code=0,
-        )
-    )
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
-    monitor.run_once()
-    count = len(notifier.calls)
-    for elapsed in range(11, 21):
-        seconds[0] = elapsed
-        monitor.run_once()
-    assert len(notifier.calls) == count
-    assert notifier.calls[-1][0] == "VaultKeep Trigger: backup finished"
-    assert not monitor._last_activity
-
-
-@pytest.mark.parametrize(
-    "outcome",
-    [
-        AttemptOutcome.CREATED,
-        AttemptOutcome.UNCHANGED,
-        AttemptOutcome.BACKUP_FAILED,
-        AttemptOutcome.BLOCKED,
-        AttemptOutcome.RESULT_UNKNOWN,
-        AttemptOutcome.INTEGRATION_ERROR,
-    ],
-)
-def test_terminal_notification_has_actual_completion_time_in_local_timezone(
-    live_activity, monkeypatch, outcome
-):
-    monitor, _controller, notifier, request, _reporter = live_activity
-    # Use a deterministic non-UTC local timezone and restore the process timezone afterward.
-    with monkeypatch.context() as context:
-        context.setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4")
-        time.tzset()
-        try:
-            monitor._notify_terminal(
-                monitor._load_state(request.instance_id),
-                Receipt(
-                    request.attempt_id,
-                    request.request_id,
-                    request.instance_id,
-                    outcome,
-                    "2026-10-22T09:00:00Z",
-                    "2026-10-22T10:00:00Z",
-                    3600,
-                    exit_code=0,
-                ),
-            )
-            assert notifier.calls[-1][1].endswith("\n2026-10-22 13:00:00 EEST (local time)")
-            assert notifier.options[-1] == (request.instance_id, True)
-        finally:
-            context.undo()
-            time.tzset()
-
-
 def test_application_notifications_follow_status_states_without_repeating_polls(store):
     provider = FakeProvider([])
     monitor, _controller, notifier = _make(store, provider)
@@ -521,7 +352,7 @@ def test_application_notifications_follow_status_states_without_repeating_polls(
     changes = [
         (body, options)
         for (title, body), options in zip(notifier.calls, notifier.options, strict=True)
-        if "application state changed" in title
+        if "Application state changed" in title
     ]
     assert changes == [
         (f"instance electrum-main: Application {before} → {after}", (None, False))
@@ -561,24 +392,20 @@ def test_application_notification_reports_unknown_and_recovery(store, monkeypatc
 
 
 @pytest.mark.parametrize(
-    ("outcome", "body"),
+    "outcome",
     [
-        (AttemptOutcome.CREATED, "new archive created"),
-        (AttemptOutcome.UNCHANGED, "no change; no new archive"),
-        (AttemptOutcome.BACKUP_FAILED, "failed (exit 1, signal None)"),
+        AttemptOutcome.CREATED,
+        AttemptOutcome.UNCHANGED,
+        AttemptOutcome.BACKUP_FAILED,
     ],
 )
 @pytest.mark.parametrize("historical_review", [False, True])
-def test_receipt_takes_precedence_over_phase_notifications(
-    live_activity, store, outcome, body, historical_review
-):
-    monitor, controller, notifier, request, reporter = live_activity
+def test_receipts_reconcile_without_backup_result_notifications(store, outcome, historical_review):
+    instance, request = _saved_attempt(store, outcome=outcome)
     if historical_review:
-        state = store.read_instance(request.instance_id)
+        state = store.read_instance(instance.id)
         state.review_required = True
-        state.review_reason = (
-            "attempt earlier-attempt: monitoring gap overlapped possible execution"
-        )
+        state.review_reason = "attempt earlier-attempt: monitoring gap overlapped execution"
         state.attempt_summaries.append(
             {
                 "attempt_id": "earlier-attempt",
@@ -588,130 +415,58 @@ def test_receipt_takes_precedence_over_phase_notifications(
             }
         )
         store.write_instance(state)
-    reporter.report("Verifying archive")
-    store.write_receipt(
-        Receipt(
-            request.attempt_id,
-            request.request_id,
-            request.instance_id,
-            outcome,
-            utc_now(),
-            utc_now(),
-            1,
-            exit_code=1 if outcome is AttemptOutcome.BACKUP_FAILED else 0,
-        )
-    )
+    monitor, controller, notifier = _make(store, FakeProvider([]), instance=instance)
+    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "active", "running")
     monitor.run_once()
-    assert notifier.calls == [
-        (
-            "VaultKeep Trigger: backup finishing",
-            "instance electrum-main: Finishing backup; awaiting result",
-        )
-    ]
+    assert not notifier.calls
+    assert store.read_instance(instance.id).active_outcome_pending
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
     monitor.run_once()
-    assert (notifier.calls[-1][0], notifier.calls[-1][1].splitlines()[0]) == (
-        "VaultKeep Trigger: backup finished",
-        f"instance electrum-main: {body}",
-    )
-    assert notifier.options[-1] == (request.instance_id, True)
-    state = store.read_instance(request.instance_id)
+    monitor.run_once()
+    assert not notifier.calls
+    state = store.read_instance(instance.id)
     assert state.active_attempt_id is None
     assert not state.attempt_summaries[-1]["review_required"]
     assert state.review_required is historical_review
-    if historical_review:
-        assert state.attempt_summaries[0]["review_required"]
-        assert state.review_reason.startswith("attempt earlier-attempt:")
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_trigger_never_reads_backup_status_for_notifications(store, monkeypatch, enabled):
+    instance, request = _saved_attempt(store)
+    monitor, controller, notifier = _make(store, FakeProvider([]), instance=instance)
+    monitor.config = replace(monitor.config, notifications=NotificationConfig(enabled=enabled))
+    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "active", "running")
+
+    def fail(*_args, **_kwargs):
+        pytest.fail("Trigger must not read backup status for notifications")
+
+    monkeypatch.setattr("vaultkeep.backup.status.backup_status", fail)
+    monitor.run_once()
+    monitor.run_once()
+    assert not notifier.calls
 
 
 @pytest.mark.parametrize(
-    "change",
+    "outcome, title",
     [
-        {"execution_id": "another-execution"},
-        {"started_at": "invalid"},
-        {"phase_started_at": "2000-01-01T00:00:00Z"},
-        {"updated_at": "2000-01-01T00:00:00Z"},
-        {"updated_at": "2999-01-01T00:00:00Z"},
-        {"schema_version": 2},
-        {"phase": "\x1b[31mspoofed phase"},
+        (AttemptOutcome.BLOCKED, "Dispatch blocked"),
+        (AttemptOutcome.INTEGRATION_ERROR, "Dispatch failed"),
+        (AttemptOutcome.RESULT_UNKNOWN, "Dispatch result unknown"),
     ],
 )
-def test_invalid_progress_never_announces_a_phase(live_activity, store, change):
-    monitor, _controller, notifier, request, reporter = live_activity
-    reporter.report("Verifying archive")
-    path = reporter._path
-    data = json.loads(path.read_text())
-    path.write_text(json.dumps(data | change))
+def test_dispatch_outcome_notifications_wait_for_worker_and_deduplicate(store, outcome, title):
+    instance, request = _saved_attempt(store, outcome=outcome)
+    monitor, controller, notifier = _make(store, FakeProvider([]), instance=instance)
+    unit = unit_name_for(request.attempt_id)
+    controller.states[unit] = UnitState("loaded", "inactive", "dead", job_pending=True)
     monitor.run_once()
     assert not notifier.calls
-
-
-@pytest.mark.parametrize("alive", [False, None])
-def test_missing_or_dead_progress_never_announces_a_phase(live_activity, monkeypatch, alive):
-    monitor, _controller, notifier, _request, reporter = live_activity
-    monitor.run_once()
-    reporter.report("Verifying archive")
-    monkeypatch.setattr("vaultkeep.backup.status.process_alive", lambda *_args: alive)
-    monitor.run_once()
-    assert not notifier.calls
-
-
-def test_lost_progress_updates_to_unknown_once_and_recovers(live_activity, store):
-    monitor, _controller, notifier, request, reporter = live_activity
-    reporter.report("Verifying archive")
-    monitor.run_once()
-    reporter._path.unlink()
+    controller.states[unit] = UnitState("loaded", "inactive", "dead")
     monitor.run_once()
     monitor.run_once()
-    assert notifier.calls[-1] == (
-        "VaultKeep Trigger: backup unknown",
-        "instance electrum-main: Backup progress unavailable; awaiting result",
-    )
-    assert len(notifier.calls) == 2
-    reporter.heartbeat()
-    monitor.run_once()
-    assert notifier.calls[-1][1] == "instance electrum-main: Verifying archive"
-
-
-def test_no_receipt_and_absent_worker_replace_activity_with_unknown_outcome(live_activity):
-    monitor, controller, notifier, request, reporter = live_activity
-    reporter.report("Verifying archive")
-    monitor.run_once()
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
-    monitor.run_once()
-    assert notifier.calls[-1][0] == "VaultKeep Trigger: outcome unknown"
-    assert notifier.options[-1] == (request.instance_id, True)
-    assert not monitor._last_activity
-
-
-def test_disabled_notifications_do_not_read_live_progress(live_activity, monkeypatch):
-    monitor, _controller, notifier, _request, _reporter = live_activity
-    monitor.config = replace(monitor.config, notifications=NotificationConfig(enabled=False))
-
-    def fail(*_args):
-        pytest.fail("disabled progress notifications must not read telemetry")
-
-    monkeypatch.setattr("vaultkeep.trigger.monitor.backup_status", fail)
-    monitor.run_once()
-    assert not notifier.calls
-
-
-def test_restarted_monitor_displays_current_phase_without_repeating_start(live_activity, store):
-    monitor, controller, _notifier, _request, reporter = live_activity
-    reporter.report("Verifying archive")
-    monitor.run_once()
-    notifier = RecordingNotifier()
-    restarted = Monitor(
-        monitor.config,
-        store=store,
-        provider=monitor.provider,
-        controller=controller,
-        notifier=notifier,
-    )
-    restarted._startup_reconcile()
-    restarted.run_once()
     assert len(notifier.calls) == 1
-    assert notifier.calls[0][1] == "instance electrum-main: Verifying archive"
+    assert notifier.calls[0][0] == f"VaultKeep Trigger: {title}"
+    assert notifier.options == [(f"trigger:{instance.id}", True)]
 
 
 @pytest.mark.parametrize("receipt_present", [False, True])
@@ -737,7 +492,7 @@ def test_queued_job_holds_active_slot_even_with_receipt(
     state = store.read_instance(instance.id)
     assert state is not None and state.active_attempt_id is None
     if receipt_present:
-        assert len([title for title, _body in notifier.calls if "finished" in title]) == 1
+        assert not [title for title, _body in notifier.calls if "finished" in title]
 
 
 def test_receipt_preserves_slot_while_manager_is_unavailable(store: StateStore) -> None:
@@ -749,7 +504,7 @@ def test_receipt_preserves_slot_while_manager_is_unavailable(store: StateStore) 
     assert state.active_outcome_pending
 
 
-def test_receipt_during_monitor_gap_is_annotated_before_success_notice(store: StateStore) -> None:
+def test_receipt_during_monitor_gap_is_annotated_before_recovery_notice(store: StateStore) -> None:
     instance, request = _saved_attempt(store, outcome=AttemptOutcome.CREATED)
     monitor, controller, notifier = _make(store, FakeProvider([]), instance=instance)
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
@@ -757,10 +512,10 @@ def test_receipt_during_monitor_gap_is_annotated_before_success_notice(store: St
     state = store.read_instance(instance.id)
     assert state is not None and state.review_required
     assert state.attempt_summaries[0]["review_required"]
-    finished = [body for title, body in notifier.calls if "finished" in title]
-    assert len(finished) == 1 and "review required" in finished[0]
+    review = [body for title, body in notifier.calls if "Review required" in title]
+    assert len(review) == 1
     monitor._startup_reconcile()
-    assert len([title for title, _body in notifier.calls if "finished" in title]) == 1
+    assert not [title for title, _body in notifier.calls if "finished" in title]
 
 
 def test_newer_pending_survives_old_deferred_receipt(store: StateStore) -> None:
@@ -857,7 +612,7 @@ def test_repeated_proven_rejections_remain_retryable_with_bounded_history(
     assert state.rejection is not None and state.rejection.consecutive == 80
     assert len(state.rejection.processed_attempts) == 80
     assert len([title for title, _body in notifier.calls if "requested" in title]) == 1
-    assert len([title for title, _body in notifier.calls if "repeated submission" in title]) == 1
+    assert len([title for title, _body in notifier.calls if "Repeated submission" in title]) == 1
 
 
 def test_rejection_recovered_after_crash_is_counted_exactly_once(store: StateStore) -> None:
@@ -947,7 +702,7 @@ def test_delayed_poll_marks_execution_for_review_before_applying_receipt(store: 
         and state.review_required
         and state.attempt_summaries[0]["review_required"]
     )
-    assert any("review required" in body for title, body in notifier.calls if "finished" in title)
+    assert any("Review required" in title for title, _body in notifier.calls)
 
 
 def test_positive_worker_evidence_resets_rejection_count_without_rearming_alerts(

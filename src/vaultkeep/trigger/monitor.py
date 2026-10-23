@@ -12,9 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 
-from vaultkeep.backup.paths import user_workflow_paths
-from vaultkeep.backup.status import backup_status
-from vaultkeep.state.identity import job_identity_hash
+from vaultkeep.notifications.notifier import Notifier
 from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.config import INSTANCE_ID_PATTERN, InstanceConfig, TriggerConfig
 from vaultkeep.trigger.detection import DetectionResult, detect
@@ -34,7 +32,6 @@ from vaultkeep.trigger.models import (
     parse_utc,
     utc_now,
 )
-from vaultkeep.trigger.notify import Notifier
 from vaultkeep.trigger.paths import monitor_lock_path
 from vaultkeep.trigger.process import ProcessProvider, boot_id
 from vaultkeep.trigger.state import StateStore
@@ -53,7 +50,6 @@ from vaultkeep.trigger.version import (
 from vaultkeep.version import installed_version
 
 _LOG = logging.getLogger("vaultkeep.trigger.monitor")
-_ACTIVITY_UPDATE_SECONDS = 10
 
 
 def unit_name_for(attempt_id: str, scope: str | None = None) -> str:
@@ -130,13 +126,6 @@ class _Budget:
     next_due: dict[str, float]
 
 
-@dataclass(slots=True)
-class _Activity:
-    identity: tuple[str, str, str, str | None]
-    started_at: float
-    notified_at: float
-
-
 class Monitor:
     """Own instance lifecycle state and dispatch workers."""
 
@@ -162,7 +151,6 @@ class Monitor:
         self._states: dict[str, InstanceState] = {}
         self._preflight_version: str | None = None
         self._last_poll: dict[str, float] = {}
-        self._last_activity: dict[str, _Activity] = {}
         self._last_application: dict[str, str] = {}
         self._started_at = utc_now()
         self._blocked_instances: dict[str, str] = {}
@@ -207,7 +195,6 @@ class Monitor:
             self._annotate_monitor_gap(state)
             self._reconcile_attempt(state, instance, state.active_attempt_id)
         self._maybe_notify_overdue(state)
-        self._notify_activity(state)
         if instance is None or not instance.enabled:
             if state.active_attempt_id is not None or state.pending_request is not None:
                 state.latest_request_id = ""
@@ -324,7 +311,6 @@ class Monitor:
             )
             self._reconcile_attempt(state, instance, state.active_attempt_id)
         self._maybe_notify_overdue(state)
-        self._notify_activity(state)
         self._update_blocked_wait(state)
         self._persist(state)
         self._cleanup(state)
@@ -344,7 +330,6 @@ class Monitor:
         self._maybe_notify_overdue(state)
         self._update_blocked_wait(state)
         self._dispatch(state, instance)
-        self._notify_activity(state)
         self._persist(state)
         self._cleanup(state)
 
@@ -398,10 +383,18 @@ class Monitor:
         # The first fresh observation establishes the baseline after startup.
         if previous is None or previous == application:
             return
-        self.notifier.notify(
-            "VaultKeep Trigger: application state changed",
+        self._send_notification(
+            "VaultKeep Trigger: Application state changed",
             f"instance {instance.id}: Application {previous} → {application}",
         )
+
+    def _send_notification(
+        self, title: str, body: str, *, key: str | None = None, finished: bool = False
+    ) -> None:
+        try:
+            self.notifier.notify(title, body, key=key, finished=finished)
+        except Exception as error:
+            _LOG.warning("Trigger notification unavailable: %s", error)
 
     @staticmethod
     def _log_event(instance_id: str, event: LifecycleEvent) -> None:
@@ -481,7 +474,7 @@ class Monitor:
         self.store.write_launch(launch)
 
         self._ensure_rejection_state(state, request.request_id)
-        self._notify_start_once(state, instance, request.request_id)
+        self._notify_request_once(state, instance, request.request_id)
 
         result = self.controller.start_unit(unit)
         self._handle_submission(state, instance, request, attempt_id, launch, result)
@@ -554,7 +547,7 @@ class Monitor:
             self._notify_once(
                 state,
                 f"{request.request_id}:rejection-escalated",
-                "VaultKeep Trigger: repeated submission rejection",
+                "VaultKeep Trigger: Repeated submission rejection",
                 f"instance {state.instance_id}: {rejection.consecutive} consecutive rejections",
             )
         elif rejection.consecutive >= REJECTION_ESCALATION_THRESHOLD:
@@ -590,7 +583,6 @@ class Monitor:
         state.retry_not_before = _retry_timestamp()
 
     def _clear_active(self, state: InstanceState) -> None:
-        self._last_activity.pop(state.instance_id, None)
         state.active_attempt_id = None
         state.active_request_id = None
         state.active_outcome_pending = False
@@ -604,7 +596,7 @@ class Monitor:
         title: str,
         body: str,
         *,
-        activity: bool = False,
+        dispatch: bool = False,
         finished: bool = False,
         ended_at: str | None = None,
     ) -> None:
@@ -615,64 +607,13 @@ class Monitor:
         if finished:
             local_time = (parse_utc(ended_at) or _now_dt()).astimezone()
             body += f"\n{local_time:%Y-%m-%d %H:%M:%S %Z} (local time)"
-        self.notifier.notify(
-            title, body, key=state.instance_id if activity else None, finished=finished
-        )
-
-    def _notify_activity(self, state: InstanceState) -> None:
-        """Publish observed phases, never treating optional telemetry as a result."""
-        attempt_id = state.active_attempt_id
-        if not self.config.notifications.enabled or attempt_id is None:
-            return
-        activity = "finishing"
-        phase = "Finishing backup; awaiting result"
-        phase_started_at = None
-        phase_elapsed = 0.0
-        if not state.active_outcome_pending:
-            request = self.store.read_request(attempt_id)
-            if request is None:
-                return
-            status = backup_status(
-                user_workflow_paths(environ=request.environment),
-                request.instance_id,
-                job_identity_hash(
-                    Path(request.job_config), request.instance_id, runtime_params=request.job_params
-                ),
+        if self.config.notifications.enabled:
+            self._send_notification(
+                title,
+                body,
+                key=f"trigger:{state.instance_id}" if dispatch else None,
+                finished=finished,
             )
-            current = status["current"]
-            if current is None or status["activity"] not in ("RUNNING", "FINISHING"):
-                if state.instance_id not in self._last_activity:
-                    return
-                activity, phase = "unknown", "Backup progress unavailable; awaiting result"
-            elif status["activity"] != "FINISHING":
-                # Report only current job activity begun after this confirmed request.
-                # This is informational; receipts remain the dispatch recovery evidence.
-                started, confirmed = (
-                    parse_utc(current["started_at"]),
-                    parse_utc(request.confirmed_at),
-                )
-                if started is None or confirmed is None or started < confirmed:
-                    return
-                activity, phase = "running", current["phase"]
-                phase_elapsed = current["phase_elapsed_seconds"] or 0.0
-                phase_started_at = current["phase_started_at"]
-        current = (attempt_id, activity, phase, phase_started_at)
-        monotonic_now = self._clock()
-        previous = self._last_activity.get(state.instance_id)
-        if previous is None or previous.identity != current:
-            previous = _Activity(current, monotonic_now - phase_elapsed, monotonic_now)
-            self._last_activity[state.instance_id] = previous
-        elif monotonic_now - previous.notified_at < _ACTIVITY_UPDATE_SECONDS:
-            return
-        else:
-            elapsed = max(0, int(monotonic_now - previous.started_at))
-            phase += f" ({elapsed}s)"
-        previous.notified_at = monotonic_now
-        self.notifier.notify(
-            f"VaultKeep Trigger: backup {activity}",
-            f"instance {state.instance_id}: {phase}",
-            key=state.instance_id,
-        )
 
     @staticmethod
     def _ensure_rejection_state(state: InstanceState, request_id: str) -> RejectionState:
@@ -682,7 +623,7 @@ class Monitor:
             state.rejection = rejection
         return rejection
 
-    def _notify_start_once(
+    def _notify_request_once(
         self, state: InstanceState, instance: InstanceConfig, request_id: str
     ) -> None:
         marker = f"{request_id}:start-notified"
@@ -696,9 +637,8 @@ class Monitor:
         self._notify_once(
             state,
             marker,
-            "VaultKeep Trigger: backup requested",
-            f"instance {instance.id}: confirmed shutdown, starting backup",
-            activity=True,
+            "VaultKeep Trigger: Dispatch requested",
+            f"instance {instance.id}: confirmed shutdown; backup dispatch requested",
         )
 
     # -- reconciliation -------------------------------------------------------
@@ -792,9 +732,9 @@ class Monitor:
         self._notify_once(
             state,
             f"{attempt_id}:unknown-notified",
-            "VaultKeep Trigger: outcome unknown",
+            "VaultKeep Trigger: Outcome unknown",
             f"instance {state.instance_id}: attempt {attempt_id} requires review",
-            activity=True,
+            dispatch=True,
             finished=True,
         )
 
@@ -869,43 +809,37 @@ class Monitor:
             state.review_reason = None
 
     def _complete_receipt(self, state: InstanceState, receipt: Receipt) -> None:
-        """Announce completion only after systemd confirms the entire attempt ended."""
+        """Report dispatch and recovery concerns after the entire attempt ends."""
         if receipt.outcome is AttemptOutcome.DEFERRED:
             return
         review = state.active_review_required
-        self._notify_terminal(state, receipt)
+        self._notify_dispatch_outcome(state, receipt)
         if review:
             self._notify_once(
                 state,
                 f"{receipt.attempt_id}:review-notified",
-                "VaultKeep Trigger: review required",
+                "VaultKeep Trigger: Review required",
                 f"instance {state.instance_id}: {state.active_review_reason}",
             )
 
-    def _notify_terminal(self, state: InstanceState, receipt: Receipt) -> None:
-        marker = f"{receipt.attempt_id}:terminal-notified"
-        if marker in state.notification_markers:
-            return
-        if receipt.outcome is AttemptOutcome.CREATED:
-            body = "new archive created"
-        elif receipt.outcome is AttemptOutcome.UNCHANGED:
-            body = "no change; no new archive"
-        elif receipt.outcome is AttemptOutcome.RESULT_UNKNOWN:
-            body = "completed with an unknown result"
-        elif receipt.outcome is AttemptOutcome.BLOCKED:
+    def _notify_dispatch_outcome(self, state: InstanceState, receipt: Receipt) -> None:
+        if receipt.outcome is AttemptOutcome.BLOCKED:
+            title = "Dispatch blocked"
             body = f"blocked: {receipt.blocked_reason}"
         elif receipt.outcome is AttemptOutcome.INTEGRATION_ERROR:
+            title = "Dispatch failed"
             body = f"integration error: {receipt.integration_error}"
+        elif receipt.outcome is AttemptOutcome.RESULT_UNKNOWN:
+            title = "Dispatch result unknown"
+            body = "child completed without a recognized result; review required"
         else:
-            body = f"failed (exit {receipt.exit_code}, signal {receipt.signal})"
-        if state.active_review_required:
-            body += "; review required"
+            return
         self._notify_once(
             state,
-            marker,
-            "VaultKeep Trigger: backup finished",
+            f"{receipt.attempt_id}:terminal-notified",
+            f"VaultKeep Trigger: {title}",
             f"instance {state.instance_id}: {body}",
-            activity=True,
+            dispatch=True,
             finished=True,
             ended_at=receipt.ended_at,
         )
@@ -972,7 +906,7 @@ class Monitor:
         self._notify_once(
             state,
             f"{state.blocking_attempt_id}:wait-notified",
-            "VaultKeep Trigger: backup blocked",
+            "VaultKeep Trigger: Dispatch blocked",
             f"instance {state.instance_id}: pending request waiting behind "
             f"attempt {state.blocking_attempt_id}",
         )
@@ -998,7 +932,7 @@ class Monitor:
         self._notify_once(
             state,
             marker,
-            "VaultKeep Trigger: backup overdue",
+            "VaultKeep Trigger: Dispatch overdue",
             f"instance {state.instance_id}: attempt {state.active_attempt_id} exceeded its "
             "advisory deadline; the worker continues",
         )

@@ -227,8 +227,10 @@ dedicated status reason. See [retention](service-operation.md#internal-constants
 
 ## Notifications do not appear
 
-Check `trigger.notifications.enabled: true`, `notify-send`, and systemd's `busctl`.
-The desktop must run as the backup owner, in the same host/container as the monitor.
+Check `notifications.backup.enabled` for execution alerts or
+`notifications.trigger.enabled` for monitoring/dispatch alerts, plus `notify-send` and
+systemd's `busctl`.
+The desktop must run as the backup owner, in the same host/container as the backup or monitor.
 For NoMachine, test from a terminal opened inside that desktop:
 
 ```sh
@@ -237,11 +239,12 @@ printf 'Desktop bus: %s\n' "${DBUS_SESSION_BUS_ADDRESS:-unset}"
 notify-send "Vaultkeep" "Desktop notification test"
 ```
 
-The monitor discovers session-specific buses automatically; an absent
+Notification delivery discovers session-specific buses automatically; an absent
 `/run/user/<uid>/bus` does not by itself prevent delivery. After installing an updated
 Vaultkeep, validate the job and run `trigger update` to restart its installed monitor.
 
-Inspect warnings and confirm the monitor is running:
+Inspect the backup journal/execution log for Backup delivery warnings. For Trigger
+alerts, inspect warnings and confirm the monitor is running:
 
 ```sh
 systemctl --user list-units --all 'vaultkeep-trigger@*.service'
@@ -253,7 +256,7 @@ sessions, timeouts, and command failures. Fallback discovery needs readable
 same-account graphical process environments; container or `/proc` restrictions may
 prevent this. When several desktop buses exist, a working inherited
 `DBUS_SESSION_BUS_ADDRESS` can select the intended session explicitly. Popup visibility
-still follows the desktop's notification settings. See [session selection](notifications.md#session-bus).
+still follows the desktop's notification settings. See [session selection](../notifications.md#session-bus).
 
 ## A result is `result_unknown`
 

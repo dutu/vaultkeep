@@ -56,7 +56,7 @@ The source-review baseline is 2026-10-13, with the CLI/validation/locking behavi
 | Contention | Held job lock returns exit code 10 | Record contention as deferred execution, not successful completion |
 | Lock identity | Canonical configuration path, YAML job ID, and runtime parameters contribute to the lock identity | Preserve VaultKeep locks; different configurations can still conflict over shared resources |
 | Concurrency | Per-job advisory locks; no general destination/shared-resource lock was found | Allow parallel independent instances; require reviewed distinct destination roots and serialize each instance |
-| Results | Backup owns execution evidence; `vaultkeep status --json` exposes unified job status | Parse the child command result for the immutable dispatch receipt; use Backup status for live notification phases |
+| Results | Backup owns execution evidence; `vaultkeep status --json` exposes unified job status | Parse the child command result for the immutable dispatch receipt; Backup sends its own execution notifications |
 | Configuration | YAML jobs own sources, destinations, archive/encryption settings, retention, and hooks | Trigger does not copy or reinterpret backup configuration or credentials |
 | Validation | `validate --schema-only` loads YAML schema; full `validate` checks backup paths and destination writability plus enabled automation prerequisites, installation, and health | Pass configured parameters; internal backup preflight uses `validate --backup-only` to avoid requiring an installed/healthy monitor before installation or startup |
 | Version | `--version` prints the installed distribution version | Record preflight and execution versions; warn on a reviewed-contract mismatch |
@@ -162,12 +162,13 @@ Resolve account home from the effective UID's operating system account record. A
 - The launch marker records the attempt/unit name and dispatch-intent timestamp. It means the start may have been submitted, not that VaultKeep began or completed. The monitor durably adds submission-rejection classification and diagnostics to this record before requeueing a request classified as not accepted; deployed code semantics still require verification.
 - Receipts carry IDs/schema version, start/end UTC timestamps and duration, attempt outcome, VaultKeep exit code or signal, actual execution version, classified outcome, raw trailing result/marker fields (null if absent), diagnostic reference/truncation flag, and blocked/integration-error details when applicable.
 - Backup-owned progress, completion evidence and diagnostics live under the core job
-  identity, independent of Trigger attempts. The monitor consumes
-  `vaultkeep.backup.status.backup_status` for notification phases. It never supplies
-  a progress path, writes execution progress, or classifies progress independently.
-  Missing or stale telemetry affects notifications only and never authorizes dispatch,
-  replay, recovery, or successful completion. Receipts remain authoritative for worker
-  orchestration; unified job status gets backup outcomes directly from Backup.
+  identity, independent of Trigger attempts. Backup generates execution notifications
+  directly from its lock-owning lifecycle and heartbeat; the monitor does not poll
+  Backup status for notifications. Shared desktop delivery lives in
+  `vaultkeep.notifications`, independent of Backup and Trigger. Notification delivery
+  never authorizes dispatch, replay, recovery, or successful completion. Receipts remain
+  authoritative for worker orchestration; unified job status gets backup outcomes
+  directly from Backup.
 - Persist UTC timestamps; use monotonic timing only within the current process. Never reuse a saved monotonic timestamp after restart. Unknown schema versions block dispatch and preserve evidence; migrations must be explicit and tested.
 - Corrupt or contradictory state preserves diagnosis material and blocks uncertain replay for its owning instance. Persist a separate versioned `blocked/<instance-id>.json` diagnostic without rewriting the original state, and continue monitoring healthy instances. The block survives restart until the operator reviews and repairs the evidence and removes the diagnostic. Failure to persist a block prevents further dispatch. The current loader validates schema/types and association checks. A request-file size cap was part of the design requirements but is not currently implemented; it must not be advertised as an enforced bound.
 - Retain the 50 most recent cleanup-eligible completed attempts per instance, excluding active, pending, unreconciled, or otherwise recovery-referenced records. Preserve necessary safety/uncertainty summaries in instance state beyond diagnostic retention.
@@ -274,7 +275,7 @@ Surviving monitor restart differs from surviving logout, user-manager terminatio
 The unified package uses a `src/` layout and the `vaultkeep --user trigger` subcommand. The
 [CLI reference](../trigger/cli.md) specifies public/internal commands, read-only validation,
 preflight limits, actual exit behavior, and persisted status. No manual submission
-protocol exists. The [notification reference](../trigger/notifications.md) specifies delivery,
+protocol exists. The [notification reference](../notifications.md) specifies delivery,
 deduplication, rejection escalation, session environment, and failure behavior.
 
 Monitor transitions and warnings go to stderr/journald. Raw capped child diagnostics

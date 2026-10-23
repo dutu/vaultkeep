@@ -39,6 +39,7 @@ from vaultkeep.file_backups import (
     select_files,
 )
 from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_shell
+from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.sources import (
     SourceEntryType,
     calculate_config_fingerprint,
@@ -204,7 +205,18 @@ def run_backup(
     config = load_config(config_path)
     paths = paths or (user_workflow_paths() if user_mode else WorkflowPaths())
     identity = job_identity_hash(config_path, config.job.id, runtime_params=parameters)
-    with Execution(paths, config.job.id, identity, progress=progress) as execution:
+    with Execution(
+        paths,
+        config.job.id,
+        identity,
+        progress=progress,
+        notifications=NotificationConfig(
+            enabled=config.notifications.backup.enabled,
+            command=config.notifications.command,
+            timeout_ms=config.notifications.timeout_ms,
+        ),
+        per_file=config.backup_mode == "per_file",
+    ) as execution:
         execution.report("Loading and validating configuration")
         config = resolve_runtime_config(config, parameters)
         validate_semantics(config, config_path=config_path, runtime_params=parameters)

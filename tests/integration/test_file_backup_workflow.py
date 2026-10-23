@@ -63,6 +63,33 @@ def _run(job: Path) -> workflow.CommandResult:
     return workflow.run_backup(job, user_mode=True)
 
 
+def test_per_file_notifications_report_one_job_result_with_partial_failure(file_job, monkeypatch):
+    from tests.trigger.conftest import RecordingNotifier
+
+    document = json.loads(file_job.read_text())
+    document["notifications"] = {"backup": {"enabled": True}}
+    file_job.write_text(json.dumps(document))
+    notifier = RecordingNotifier()
+    monkeypatch.setattr("vaultkeep.backup.notifications.build_notifier", lambda _config: notifier)
+    assert _run(file_job).result == "created"
+    assert _run(file_job).result == "unchanged"
+    original = workflow.build_archive
+
+    def fail_one(request, **kwargs):
+        if "personal wallet" in str(request.snapshot.entries):
+            raise ArchiveCreationError("archive tool failed for personal wallet")
+        return original(request, **kwargs)
+
+    monkeypatch.setattr(workflow, "build_archive", fail_one)
+    (file_job.parent / "wallets" / "personal wallet").write_text("changed")
+    assert _run(file_job).result == "failed"
+    titles = [title for title, _ in notifier.calls]
+    assert titles.count("VaultKeep: Backup started") == 3
+    assert titles.count("VaultKeep: Backup completed") == 3
+    assert "failed: archive tool failed for personal wallet" in notifier.calls[-1][1]
+    assert len({key for key, _ in notifier.options}) == 3
+
+
 def test_individual_archives_restore_and_only_changed_wallets_are_backed_up(file_job: Path) -> None:
     source = file_job.parent / "wallets"
     (source / "temporary.tmp").touch()

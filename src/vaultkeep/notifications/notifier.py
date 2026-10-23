@@ -7,31 +7,65 @@ import os
 import subprocess
 import threading
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import Protocol
 
-from vaultkeep.trigger.config import NotificationConfig
-from vaultkeep.trigger.desktop import notification_bus
+from vaultkeep.notifications.desktop import notification_bus
 
-_LOG = logging.getLogger("vaultkeep.trigger.notifications")
+_LOG = logging.getLogger("vaultkeep.notifications")
+
+
+@dataclass(frozen=True, slots=True)
+class NotificationConfig:
+    enabled: bool = False
+    command: str = "notify-send"
+    timeout_ms: int = 5000
+
+
+@dataclass(frozen=True, slots=True)
+class _Notification:
+    title: str
+    body: str
+    key: str | None
+    finished: bool
+    replace_pending: bool
 
 
 class Notifier(Protocol):
     """Interface for best-effort notifications."""
 
     def notify(
-        self, title: str, body: str, *, key: str | None = None, finished: bool = False
+        self,
+        title: str,
+        body: str,
+        *,
+        key: str | None = None,
+        finished: bool = False,
+        replace_pending: bool = False,
     ) -> None:
         """Deliver a notification without raising on failure."""
+
+    def close(self) -> None:
+        """Drain delivery within a bounded shutdown budget."""
 
 
 class NullNotifier:
     """Notifier that does nothing (notifications disabled)."""
 
     def notify(
-        self, title: str, body: str, *, key: str | None = None, finished: bool = False
+        self,
+        title: str,
+        body: str,
+        *,
+        key: str | None = None,
+        finished: bool = False,
+        replace_pending: bool = False,
     ) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
 
@@ -43,26 +77,56 @@ class NotifySendNotifier:
         self._replace_supported = Path(config.command).name == "notify-send"
         self._notification_ids: dict[str, int] = {}
         self._bus_address: str | None = None
-        self._pending: deque[tuple[str, str, str | None, bool]] = deque()
+        self._pending: deque[_Notification] = deque()
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._closed = False
+        self._deadline: float | None = None
 
     def notify(
-        self, title: str, body: str, *, key: str | None = None, finished: bool = False
+        self,
+        title: str,
+        body: str,
+        *,
+        key: str | None = None,
+        finished: bool = False,
+        replace_pending: bool = False,
     ) -> None:
         if not self._config.enabled:
             return
         # One worker preserves ordering: a slow phase update cannot overwrite the
         # terminal result. Idle notifiers retain no waiting thread.
         with self._lock:
-            self._pending.append((title, body, key, finished))
+            if self._closed:
+                return
+            if key is not None and (replace_pending or finished):
+                self._pending = deque(
+                    item for item in self._pending if item.key != key or not item.replace_pending
+                )
+            self._pending.append(_Notification(title, body, key, finished, replace_pending))
             if self._worker is None:
                 self._worker = threading.Thread(target=self._drain, daemon=True)
                 try:
                     self._worker.start()
-                except RuntimeError:
+                except RuntimeError as error:
                     self._worker = None
                     self._pending.clear()
+                    _LOG.warning("Desktop notification worker unavailable: %s", error)
+
+    def close(self) -> None:
+        # Allow one in-flight command and the latest update their normal budgets.
+        # Superseded progress was already removed when queuing the final update.
+        budget = 2 * self._config.timeout_ms / 1000.0
+        with self._lock:
+            self._closed = True
+            self._deadline = monotonic() + budget
+            worker = self._worker
+        if worker is not None:
+            worker.join(timeout=budget)
+            if worker.is_alive():
+                with self._lock:
+                    self._pending.clear()
+                _LOG.warning("Desktop notification shutdown deadline exceeded")
 
     def _drain(self) -> None:
         while True:
@@ -71,14 +135,22 @@ class NotifySendNotifier:
                     self._worker = None
                     return
                 notification = self._pending.popleft()
-            self._deliver(*notification)
+            try:
+                self._deliver(
+                    notification.title, notification.body, notification.key, notification.finished
+                )
+            except Exception as error:
+                _LOG.warning("Desktop notification delivery failed: %s", error)
 
     def _deliver(self, title: str, body: str, key: str | None, finished: bool) -> None:
         timeout = self._config.timeout_ms / 1000.0
         deadline = monotonic() + timeout
+        with self._lock:
+            if self._deadline is not None:
+                deadline = min(deadline, self._deadline)
         environment: dict[str, str] | None = None
         if self._replace_supported:
-            address = notification_bus(monotonic() + min(2.0, timeout / 2))
+            address = notification_bus(min(deadline, monotonic() + min(2.0, timeout / 2)))
             if address != self._bus_address:
                 self._notification_ids.clear()
                 self._bus_address = address
