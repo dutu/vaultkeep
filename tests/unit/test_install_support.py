@@ -83,6 +83,58 @@ def test_failed_command_preserves_diagnostic(monkeypatch, stdout, stderr, expect
     assert str(error.value) == message + (f"\n{expected}" if expected else "")
 
 
+def test_failed_user_manager_command_reports_operation_and_patterns(monkeypatch):
+    monkeypatch.setattr(
+        support.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", ""),
+    )
+
+    with pytest.raises(ValueError) as error:
+        support.execute(
+            [
+                *support.manager_command("alice", 1000),
+                "list-unit-files",
+                "--no-legend",
+                "--no-pager",
+                "vaultkeep@*.timer",
+            ]
+        )
+
+    message = str(error.value)
+    assert "runuser -u alice -- env XDG_RUNTIME_DIR=/run/user/1000" in message
+    assert "systemctl --user list-unit-files --no-legend --no-pager 'vaultkeep@*.timer'" in message
+
+
+@pytest.mark.parametrize(
+    "returncode,stdout,stderr,accepted",
+    [
+        (0, "vaultkeep@app.timer enabled\n", "", True),
+        (0, "", "", True),
+        (1, "", "", True),
+        (1, "", "Failed to connect to bus\n", False),
+        (1, "vaultkeep@app.timer enabled\n", "", False),
+        (2, "", "", False),
+        (-15, "", "", False),
+    ],
+)
+def test_empty_command_status_requires_silent_empty_output(
+    monkeypatch, returncode, stdout, stderr, accepted
+):
+    monkeypatch.setattr(
+        support.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, returncode, stdout, stderr),
+    )
+    argv = ["systemctl", "list-unit-files", "--no-legend", "--no-pager", "vaultkeep@*.timer"]
+
+    if accepted:
+        assert support.execute(argv, empty_status=1) == stdout
+    else:
+        with pytest.raises(ValueError, match="command failed"):
+            support.execute(argv, empty_status=1)
+
+
 @pytest.mark.parametrize(
     "value",
     [None, {}, "core", [], ["trigger"], ["core", "core"], ["trigger", "core"], ["core", "unknown"]],
@@ -289,9 +341,15 @@ def test_user_reload_attempts_every_manager_and_reports_each_failure(monkeypatch
 
 
 @pytest.mark.parametrize("uninstall", [False, True])
-def test_user_manager_with_no_trigger_template_is_valid(monkeypatch, uninstall: bool) -> None:
+@pytest.mark.parametrize("command", [["systemctl"], support.manager_command("alice", 1000)])
+def test_manager_with_no_trigger_template_is_valid(monkeypatch, uninstall: bool, command) -> None:
     calls = []
-    monkeypatch.setattr(support, "execute", lambda argv: calls.append(argv) or "")
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1 if "list-unit-files" in argv else 0, "", "")
+
+    monkeypatch.setattr(support.subprocess, "run", run)
 
     def properties(argv, unit):
         assert "@.service" not in unit
@@ -307,7 +365,7 @@ def test_user_manager_with_no_trigger_template_is_valid(monkeypatch, uninstall: 
 
     monkeypatch.setattr(support, "properties", properties)
     support.check_manager(
-        ["systemctl", "--user"],
+        command,
         "alice",
         uninstall=uninstall,
         trigger_bin=Path("/usr/local/bin/vaultkeep"),

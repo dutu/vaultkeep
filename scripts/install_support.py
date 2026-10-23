@@ -345,10 +345,14 @@ def write_manifest(
     os.replace(temporary, layout.manifest)
 
 
-def execute(argv: list[str]) -> str:
+def execute(argv: list[str], *, empty_status: int | None = None) -> str:
     result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
-    if result.returncode:
-        message = f"command failed ({result.returncode}): {' '.join(argv[:6])}"
+    if result.returncode and not (
+        result.returncode == empty_status
+        and not result.stdout.strip()
+        and not result.stderr.strip()
+    ):
+        message = f"command failed ({result.returncode}): {shlex.join(argv)}"
         detail = result.stderr.strip() or result.stdout.strip()
         if detail:
             message += f"\n{detail}"
@@ -637,7 +641,10 @@ def check_manager(
         if relevant_unit(fields[1]):
             fail(f"{label}: queued job for {fields[1]}; drain work before maintenance")
     if uninstall:
-        files = execute([*command, "list-unit-files", "--no-legend", "--no-pager", *patterns])
+        files = execute(
+            [*command, "list-unit-files", "--no-legend", "--no-pager", *patterns],
+            empty_status=1,
+        )
         for line in files.splitlines():
             fields = line.split()
             if len(fields) < 2 or fields[1] not in ("disabled", "static", "generated"):

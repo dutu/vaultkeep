@@ -684,6 +684,7 @@ seconds. Completed stages stay in order. `--no-color` disables colors while reta
 interactive line updates. Routine apt/pip output goes into the complete diagnostic
 transcript, whose path is printed at the start and end. A failed installation names
 the stage, shows recent diagnostic context, and retains the transcript after rollback.
+Command failures include the full command and available diagnostic output.
 The transcript is a private file in the temporary directory (normally
 `/tmp/vaultkeep-install.*.log`); inspect it before temporary-file cleanup or reboot,
 and remove it when no longer needed. `--dry-run` continues to show detailed planned

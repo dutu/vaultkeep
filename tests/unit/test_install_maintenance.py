@@ -26,6 +26,44 @@ def helper(monkeypatch):
     return module
 
 
+def test_empty_system_and_user_launcher_inventories_can_pause_and_resume(
+    helper, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(helper, "user_managers", lambda: [("alice", 1000)])
+    monkeypatch.setattr(helper.pwd, "getpwall", lambda: [])
+    monkeypatch.setattr(
+        helper.pwd, "getpwnam", lambda account: SimpleNamespace(pw_dir=str(tmp_path / account))
+    )
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "list-unit-files" in argv:
+            # systemd 257 exits 1 without diagnostics when no unit files match.
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        assert "show-environment" in argv or "list-units" in argv
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(helper.subprocess, "run", run)
+    layout = SimpleNamespace(
+        service=tmp_path / "system/vaultkeep@.service",
+        config=tmp_path / "etc",
+        registry=tmp_path / "registry",
+    )
+    journal = tmp_path / "journal.json"
+
+    helper.pause(journal, layout)
+    helper.resume(journal)
+
+    specs = json.loads(journal.read_text())["accounts"]
+    assert [spec["account"] for spec in specs] == [None, "alice"]
+    assert all(spec["active"] == [] and spec["states"] == {} for spec in specs)
+    listings = [argv for argv in calls if "list-unit-files" in argv]
+    assert len(listings) == 2
+    assert listings[0][0] == "systemctl"
+    assert listings[1][:3] == ["runuser", "-u", "alice"]
+
+
 def test_user_launchers_preserve_all_activity_enablement_combinations(
     helper, monkeypatch, tmp_path
 ):
@@ -62,7 +100,7 @@ def test_user_launchers_preserve_all_activity_enablement_combinations(
     journal = tmp_path / "journal.json"
     actions = []
 
-    def execute(argv):
+    def execute(argv, **kwargs):
         if argv[1] in ("list-units", "list-unit-files"):
             return "\n".join(f"{unit} loaded" for unit in units) if argv[0] == "user" else ""
         action, unit = argv[1:]
@@ -136,7 +174,7 @@ def test_offline_accounts_are_discovered_without_starting_a_manager(helper, monk
     monkeypatch.setattr(helper.pwd, "getpwnam", lambda account: entry)
     monkeypatch.setattr(helper, "user_managers", lambda: [])
     calls = []
-    monkeypatch.setattr(helper, "execute", lambda argv: calls.append(argv) or "")
+    monkeypatch.setattr(helper, "execute", lambda argv, **kwargs: calls.append(argv) or "")
     layout = SimpleNamespace(
         service=tmp_path / "system/vaultkeep@.service",
         config=tmp_path / "etc",

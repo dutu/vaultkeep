@@ -126,7 +126,11 @@ def inventory(layout: Layout) -> dict:
         loaded = execute(
             [*command, "list-units", "--all", "--plain", "--no-legend", "--no-pager", *PATTERNS]
         )
-        files = execute([*command, "list-unit-files", "--no-legend", "--no-pager", *PATTERNS])
+        # systemd 257 returns 1 without output when no unit files match.
+        files = execute(
+            [*command, "list-unit-files", "--no-legend", "--no-pager", *PATTERNS],
+            empty_status=1,
+        )
         names = set()
         for line in (loaded + "\n" + files).splitlines():
             fields = line.split()

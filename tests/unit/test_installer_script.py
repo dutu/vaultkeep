@@ -99,7 +99,9 @@ if args[0] == 'list-units':
 elif args[0] == 'list-jobs':
     print(control.get('jobs', ''), end='')
 elif args[0] == 'list-unit-files':
-    print(control.get('unit_files', ''), end='')
+    output = control.get('unit_files', '')
+    print(output, end='')
+    raise SystemExit(0 if output else 1)
 elif args[0] == 'show':
     unit = args[1]
     default = 'LoadState=loaded\\nActiveState=active\\nSubState=waiting'
