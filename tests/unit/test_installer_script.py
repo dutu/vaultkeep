@@ -84,7 +84,13 @@ if args and args[0] == '--user':
     args = args[1:]
 control = json.loads(Path(os.environ['HOST_CONTROL']).read_text())
 if any(arg in args for arg in ('start', 'stop', 'enable', 'disable', 'preset')):
-    raise SystemExit('installer attempted service activation or enablement change')
+    if args[0] not in ('start', 'stop') or args[1] not in control.get('launcher_states', {}):
+        raise SystemExit('installer attempted unexpected service or enablement change')
+    if args[0] == 'start' and control.get('resume_fail') == args[1]:
+        raise SystemExit('simulated resume failure')
+    control['launcher_states'][args[1]] = 'active' if args[0] == 'start' else 'inactive'
+    Path(os.environ['HOST_CONTROL']).write_text(json.dumps(control))
+    raise SystemExit(0)
 if args[0] == 'list-units':
     if 'user@*.service' in args:
         print(control.get('managers', ''), end='')
@@ -95,7 +101,22 @@ elif args[0] == 'list-jobs':
 elif args[0] == 'list-unit-files':
     print(control.get('unit_files', ''), end='')
 elif args[0] == 'show':
-    print(control.get('properties', 'LoadState=loaded\\nActiveState=active\\nSubState=waiting'))
+    unit = args[1]
+    default = 'LoadState=loaded\\nActiveState=active\\nSubState=waiting'
+    output = control.get('properties_by_unit', {}).get(unit, control.get('properties', default))
+    if unit in control.get('launcher_states', {}):
+        state = control['launcher_states'][unit]
+        substate = 'running' if unit.endswith('.service') else 'waiting'
+        if state != 'active':
+            substate = 'dead'
+        output = '\\n'.join(
+            'ActiveState=' + state if line.startswith('ActiveState=')
+            else 'SubState=' + substate if line.startswith('SubState=')
+            else line for line in output.splitlines()
+        )
+    print(output)
+elif args[0] == 'show-environment':
+    print(control.get('environment', ''))
 elif args[0] == 'daemon-reload':
     if control.get('reload_fail_once'):
         control['reload_fail_once'] = False
@@ -134,6 +155,13 @@ def frozen_source(tmp_path_factory: pytest.TempPathFactory):
     )
     global CANDIDATE_SOURCE
     CANDIDATE_SOURCE = source
+    # Offline account discovery must not inspect or refresh the developer's jobs.
+    helper = source / "scripts/install_maintenance.py"
+    helper.write_text(
+        helper.read_text()
+        .replace("for entry in pwd.getpwall():", "for entry in ():")
+        .replace("home = Path(entry.pw_dir)", 'home = Path(os.environ["HOST_USER_HOME"])')
+    )
     return source
 
 
@@ -453,8 +481,16 @@ def test_refresh_with_running_user_manager_and_absent_units(
         fake / "runuser",
         """#!/usr/bin/python3
 import os, sys
-args = sys.argv[sys.argv.index('systemctl'):]
-os.execvp('systemctl', args)
+args = sys.argv[sys.argv.index('--') + 1:]
+if args[0] == 'env':
+    args.pop(0)
+    if args and args[0] == '-i':
+        args.pop(0)
+    while args and '=' in args[0]:
+        key, value = args.pop(0).split('=', 1)
+        if key != 'PATH':
+            os.environ[key] = value
+os.execvp(args[0], args)
 """,
     )
     control(
@@ -610,8 +646,8 @@ def test_reload_failure_rolls_back_refresh_or_fresh_install(
     assert result.returncode != 0
     assert "ERROR: install.sh: installer transaction failed (exit 1);" in result.stderr
     after = snapshot(host)
-    # The inactive packaged example and empty install lock may remain on first failure.
-    ignored = ("install.lock", ".example")
+    # Inactive examples and stable deployment/installer locks may remain on first failure.
+    ignored = ("install.lock", "maintenance.lock", ".example")
     assert {k: v for k, v in after.items() if not k.endswith(ignored)} == {
         k: v for k, v in before.items() if not k.endswith(ignored)
     }
@@ -793,7 +829,10 @@ def test_later_version_retains_previous(host: dict[str, str], tmp_path: Path) ->
     assert Path(before["active_release"]).is_dir()
 
 
-def test_paused_enabled_timer_keeps_enablement_and_timestamp(installed: dict[str, str]) -> None:
+def test_paused_enabled_timer_keeps_enablement_and_timestamp(
+    installed: dict[str, str], valid_config: dict, monkeypatch
+) -> None:
+    managed_timer(installed, valid_config, monkeypatch, active=False)
     system = Path(installed["VAULTKEEP_SYSTEMD_ROOT"])
     wants = system / "timers.target.wants"
     wants.mkdir()
@@ -813,6 +852,114 @@ def test_paused_enabled_timer_keeps_enablement_and_timestamp(installed: dict[str
     result = run_installer(installed, "uninstall", check=False)
     assert result.returncode != 0
     assert "disable" in result.stderr
+
+
+def managed_timer(host, valid_config, monkeypatch, *, active=True):
+    from vaultkeep.scheduling import TimerManager, TimerPaths
+
+    jobs = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "jobs"
+    source = jobs.parent / "source"
+    destination = jobs.parent / "destination"
+    source.mkdir()
+    destination.mkdir()
+    valid_config["sources"][0]["path"] = str(source)
+    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["schedule"]["enabled"] = True
+    config = jobs / "app.yaml"
+    config.write_text(json.dumps(valid_config))
+    paths = TimerPaths(
+        jobs,
+        Path(host["VAULTKEEP_SYSTEMD_ROOT"]),
+        Path(host["VAULTKEEP_VAR_ROOT"]) / "systemd-instances.json",
+    )
+    manager = TimerManager(paths)
+    monkeypatch.setattr(manager, "_systemctl", lambda *args, **kwargs: "")
+    manager.install(config)
+    control(
+        host,
+        units="vaultkeep@app.timer loaded active waiting timer\n",
+        launcher_states={"vaultkeep@app.timer": "active" if active else "inactive"},
+        properties=f"LoadState=loaded\nActiveState=active\nSubState=waiting\nFragmentPath={paths.units_root}/vaultkeep@.timer\nDropInPaths=\nExecStart=\nUnitFileState=enabled-runtime\n",
+    )
+    return config, paths.units_root / "vaultkeep@app.timer.d/schedule.conf"
+
+
+@pytest.mark.parametrize("mode", ["install", "update"])
+def test_installer_pauses_refreshes_validates_and_resumes_existing_jobs(
+    installed, valid_config, monkeypatch, mode
+):
+    config, timer = managed_timer(installed, valid_config, monkeypatch)
+    valid_config["schedule"]["window"] = "02:00-04:00"
+    config.write_text(json.dumps(valid_config))
+    before = manifest(installed)
+    Path(installed["HOST_LOG"]).write_text("")
+    result = run_installer(installed, mode)
+    assert "previously active schedules resumed" in result.stdout
+    assert "02:00:00" in timer.read_text()
+    assert manifest(installed) == before
+    calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
+    assert ["stop", "vaultkeep@app.timer"] in calls
+    assert ["start", "vaultkeep@app.timer"] in calls
+    assert (
+        calls.index(["stop", "vaultkeep@app.timer"])
+        < calls.index(["daemon-reload"])
+        < calls.index(["start", "vaultkeep@app.timer"])
+    )
+    assert not list(Path(installed["VAULTKEEP_INSTALL_PREFIX"]).glob(".maintenance.*"))
+
+
+def test_activity_refusal_resumes_launchers_without_stopping_workers(
+    installed, valid_config, monkeypatch
+):
+    managed_timer(installed, valid_config, monkeypatch)
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    worker = "vaultkeep-trigger-exec@busy.service"
+    settings["units"] += f"{worker} loaded active running worker\n"
+    control(installed, **settings)
+    before = snapshot(installed)
+    result = run_installer(installed, "update", check=False)
+    assert result.returncode != 0
+    assert snapshot(installed) == before
+    calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
+    assert ["stop", "worker"] not in calls
+    assert ["stop", worker] not in calls
+    assert ["start", "vaultkeep@app.timer"] in calls
+
+
+def test_job_runtime_validation_failure_restores_units_then_resumes_original_schedule(
+    installed, valid_config, monkeypatch
+):
+    config, timer = managed_timer(installed, valid_config, monkeypatch)
+    valid_config["schedule"]["window"] = "02:00-04:00"
+    valid_config["sources"][0]["path"] += "/missing"
+    config.write_text(json.dumps(valid_config))
+    before = snapshot(installed)
+    result = run_installer(installed, "install", check=False)
+    assert result.returncode != 0
+    assert snapshot(installed) == before
+    assert "01:00:00" in timer.read_text()
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    assert settings["launcher_states"]["vaultkeep@app.timer"] == "active"
+
+
+def test_resume_failure_keeps_committed_job_updates_and_resume_journal(
+    installed, valid_config, monkeypatch
+):
+    config, timer = managed_timer(installed, valid_config, monkeypatch)
+    valid_config["schedule"]["window"] = "02:00-04:00"
+    config.write_text(json.dumps(valid_config))
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    settings["resume_fail"] = "vaultkeep@app.timer"
+    control(installed, **settings)
+    result = run_installer(installed, "install", check=False)
+    assert result.returncode != 0
+    assert "02:00:00" in timer.read_text()
+    assert "deployment is retained; resume list:" in result.stderr
+    prefix = Path(installed["VAULTKEEP_INSTALL_PREFIX"])
+    assert list(prefix.glob(".maintenance.*/journal.json"))
+    retry = run_installer(installed, "install", check=False)
+    assert retry.returncode != 0
+    assert "incomplete transaction requires inspection" in retry.stderr
 
 
 def component_fixture(host: dict[str, str], combined: bool) -> dict:
@@ -892,7 +1039,7 @@ def test_failed_legacy_combined_upgrade_restores_old_links_and_units(host: dict[
     result = run_installer(host, "update", check=False)
     assert result.returncode != 0
     after = snapshot(host)
-    ignored = ("install.lock", ".example")
+    ignored = ("install.lock", "maintenance.lock", ".example")
     assert {key: value for key, value in after.items() if not key.endswith(ignored)} == {
         key: value for key, value in before.items() if not key.endswith(ignored)
     }

@@ -342,6 +342,9 @@ class TimerManager:
     def _write_timer_drop_in(self, instance: str, rendered: RenderedSchedule) -> None:
         destination = self._timer_drop_in_path(instance)
         destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        _atomic_write(destination, self._timer_content(instance, rendered), mode=0o644)
+
+    def _timer_content(self, instance: str, rendered: RenderedSchedule) -> str:
         if self.user_mode:
             content = (
                 "[Unit]\n"
@@ -358,12 +361,24 @@ class TimerManager:
             )
         else:
             content = rendered.drop_in()
-        _atomic_write(destination, content, mode=0o644)
+        return content
 
     def _write_service_drop_in(
         self, config_path: Path, instance: str, runtime_params: Mapping[str, str]
     ) -> None:
         destination = self._service_drop_in_path(instance)
+        content = self._service_content(config_path, instance, runtime_params)
+        if content is None:
+            if destination.exists():
+                destination.unlink()
+                destination.parent.rmdir()
+            return
+        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        _atomic_write(destination, content, mode=0o644)
+
+    def _service_content(
+        self, config_path: Path, instance: str, runtime_params: Mapping[str, str]
+    ) -> str | None:
         resolved = config_path.resolve()
         arguments = ["/usr/local/bin/vaultkeep"]
         if self.user_mode:
@@ -387,14 +402,9 @@ class TimerManager:
                 "KillMode=control-group\n"
                 "TimeoutStopSec=5min\n"
             )
-            destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-            _atomic_write(destination, content, mode=0o644)
-            return
+            return content
         if not runtime_params:
-            if destination.exists():
-                destination.unlink()
-                destination.parent.rmdir()
-            return
+            return None
         content = (
             "[Unit]\n"
             "ConditionPathExists=\n"
@@ -403,14 +413,15 @@ class TimerManager:
             "ExecStart=\n"
             f"ExecStart={command}\n"
         )
-        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        _atomic_write(destination, content, mode=0o644)
+        return content
 
     def _registry(self) -> dict[str, str]:
         if not self.paths.registry_path.exists():
             return {}
         try:
             document = json.loads(self.paths.registry_path.read_text(encoding="utf-8"))
+            if document == {}:  # Empty registry written by a fresh installer.
+                return {}
             return dict(document["instances"])
         except (OSError, KeyError, TypeError, ValueError) as error:
             raise TimerError(f"Invalid timer ownership registry: {error}") from error

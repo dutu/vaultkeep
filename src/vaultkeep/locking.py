@@ -3,10 +3,48 @@
 from __future__ import annotations
 
 import os
+import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from vaultkeep.errors import LockError
+
+
+def requires_deployment_lock(command: str | None, action: str | None) -> bool:
+    """Identify commands that must not overlap deployment maintenance."""
+    return command in ("run", "prune", "verify") or (
+        command in ("schedule", "schedules", "trigger")
+        and action not in ("status", "next", "list", "validate")
+    )
+
+
+@contextmanager
+def deployment_lock() -> Iterator[None]:
+    """Keep installed code in place while a command uses it; fail without waiting."""
+    path = Path(os.environ.get("VAULTKEEP_INSTALL_PREFIX", "/opt/vaultkeep")) / "maintenance.lock"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        # Source checkouts and installations predating automatic maintenance.
+        yield
+        return
+    except OSError as error:
+        raise LockError(f"Cannot open deployment maintenance lock: {error}") from error
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise LockError(f"Invalid deployment maintenance lock: {path}")
+        try:
+            fcntl = __import__("fcntl")
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError as error:
+            raise LockError(
+                "Vaultkeep installation/update is in progress; retry afterward"
+            ) from error
+        yield
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(slots=True)

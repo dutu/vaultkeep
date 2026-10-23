@@ -15,6 +15,9 @@ RELEASE_ID=""
 STAGED_RELEASE=""
 RESTORE_FAILED=0
 UNIT_VALIDATION_DIR=""
+MAINTENANCE_DIR=""
+MAINTENANCE_LOCKED=0
+JOBS_REFRESH_STARTED=0
 
 VK_PREFIX=${VAULTKEEP_INSTALL_PREFIX:-/opt/vaultkeep}
 VK_CONFIG_ROOT=${VAULTKEEP_CONFIG_ROOT:-/etc/vaultkeep}
@@ -212,7 +215,7 @@ installation_result() {
     report_field Version "$version"
     report_field Executable "$VK_BIN_LINK"
     report_field 'Previous release' "$([[ -n "$previous" ]] && echo retained || echo none)"
-    printf '\nNext: Validate jobs and explicitly resume previously active schedules.\n' >&3
+    printf '\nExisting managed jobs refreshed and validated; previously active schedules resumed.\n' >&3
     printf 'Diagnostics: %s\n' "$INSTALL_LOG" >&3
 }
 
@@ -432,9 +435,9 @@ plan_install_or_update() {
     report_field Python '3.13+'
     report_field 'Trigger support' 'included (opt-in)'
     report_field 'Existing data' preserved
-    report_field Schedules 'manual resume required'
+    report_field Schedules 'automatic pause and resume'
     printf '\n' >&3
-    warning 'Pause schedules and drain running backups/monitors before maintenance; resume schedules explicitly afterward. Enablement and timer timestamps are preserved.'
+    log 'Active backups are never stopped. Existing schedules are paused, refreshed and resumed automatically; enablement and timer timestamps are preserved.'
     log "Vaultkeep $MODE plan"
     log "  source: $SOURCE_DIR"
     log "  version: $version"
@@ -451,7 +454,7 @@ plan_install_or_update() {
     fi
     log "  preserve config/state: $VK_CONFIG_ROOT $VK_VAR_ROOT and all user homes, wallet data and archives"
     log "  activity checks: system schedules/jobs, running user managers, runtime locks and foreground processes"
-    log "  schedules must be paused/drained manually; enablement and timer timestamps are preserved"
+    log "  refresh existing managed jobs; resume only previously active timers/monitors"
     if [[ "$DRY_RUN" == 1 ]]; then
         log "PLAN activity checks are not a live quiescence guarantee; apply repeats checks before staging and activation"
     fi
@@ -588,6 +591,52 @@ refuse_active_services() {
     support activity "$CHECK_USERS" "$([[ "$MODE" == uninstall ]] && echo 1 || echo 0)" "$COMPONENTS"
 }
 
+maintenance() {
+    python3 "$SOURCE_DIR/scripts/install_maintenance.py" "$1" "$MAINTENANCE_DIR/journal.json" "${@:2}"
+}
+
+pause_schedules() {
+    if [[ "$DRY_RUN" == 1 ]]; then
+        log "PLAN inventory existing root/user jobs and record launcher states; stop active Vaultkeep timers/monitors"
+        log "PLAN refuse active backups/workers, queued work or held locks after pausing launchers"
+        log "PLAN acquire exclusive deployment maintenance lock; refresh and validate existing jobs"
+        return
+    fi
+    MAINTENANCE_DIR=$(mktemp -d "$VK_PREFIX/.maintenance.XXXXXX")
+    maintenance pause
+    # This stable, world-readable lock is shared by installed CLI commands. Do
+    # not truncate or replace it: all processes must lock the same inode.
+    [[ ! -L "$VK_PREFIX/maintenance.lock" ]] || die "maintenance lock must not be a symlink"
+    if [[ ! -e "$VK_PREFIX/maintenance.lock" ]]; then
+        install -o root -g root -m 0644 /dev/null "$VK_PREFIX/maintenance.lock"
+    fi
+    [[ -f "$VK_PREFIX/maintenance.lock" ]] || die "maintenance lock must be a regular file"
+    exec 8<>"$VK_PREFIX/maintenance.lock"
+    flock -n 8 || die "a Vaultkeep command is running; retry after it finishes"
+    MAINTENANCE_LOCKED=1
+}
+
+release_maintenance_lock() {
+    if [[ "$MAINTENANCE_LOCKED" == 1 ]]; then
+        flock -u 8
+        exec 8>&-
+        MAINTENANCE_LOCKED=0
+    fi
+}
+
+resume_schedules() {
+    [[ "$DRY_RUN" == 0 ]] || return 0
+    release_maintenance_lock
+    if [[ -f "$MAINTENANCE_DIR/journal.json" ]]; then
+        maintenance resume || {
+            error "could not resume all schedules; deployment is retained; resume list: $MAINTENANCE_DIR/journal.json"
+            return 1
+        }
+    fi
+    [[ -z "$MAINTENANCE_DIR" ]] || rm -rf "$MAINTENANCE_DIR"
+    MAINTENANCE_DIR=""
+}
+
 install_units_and_links() {
     run install -d -o root -g root -m 0755 "$VK_SYSTEMD_ROOT" "$(dirname "$VK_BIN_LINK")"
     run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep@.service" "$VK_SERVICE_UNIT"
@@ -650,7 +699,12 @@ rollback_commit() {
     [[ "$status" != 0 ]] || status=1
     FAILED_STAGE=$CURRENT_STAGE
     stage_finish FAILED
-    error "installer transaction failed (exit $status); cleaning up; schedules remain paused"
+    error "installer transaction failed (exit $status); restoring deployment and job units"
+    if [[ -f "$MAINTENANCE_DIR/journal.json" ]]; then
+        # Restore account-owned units independently of candidate package health,
+        # before removing the candidate or reinstating a same-version release.
+        maintenance restore || rollback_failure "managed job units ($MAINTENANCE_DIR/journal.json)"
+    fi
     if [[ "$ROLLBACK_ACTIVE" == 1 ]]; then
         local index path
         for index in "${!SNAPSHOT_PATHS[@]}"; do
@@ -671,7 +725,7 @@ rollback_commit() {
         rm -rf "$UNIT_VALIDATION_DIR" || rollback_failure "$UNIT_VALIDATION_DIR"
     fi
     rm -f "$VK_PREFIX/.current.$$" "${VK_MANIFEST%.json}.tmp"
-    if [[ "$ROLLBACK_ACTIVE" == 1 ]]; then
+    if [[ "$ROLLBACK_ACTIVE" == 1 || "$JOBS_REFRESH_STARTED" == 1 ]]; then
         systemctl daemon-reload || rollback_failure "system manager daemon-reload"
         if [[ "$CHECK_USERS" == 1 && "$COMPONENTS" == core,trigger ]]; then
             support reload-users || rollback_failure "running user managers daemon-reload"
@@ -679,8 +733,10 @@ rollback_commit() {
     fi
     if [[ "$RESTORE_FAILED" == 0 ]]; then
         [[ -z "$ROLLBACK_TMP" ]] || rm -rf "$ROLLBACK_TMP"
+        resume_schedules || rollback_failure "previously active schedules"
     else
-        error "rollback incomplete; recovery snapshots retained at $ROLLBACK_TMP"
+        release_maintenance_lock
+        error "rollback incomplete; schedules remain paused; recovery snapshots: $ROLLBACK_TMP $MAINTENANCE_DIR"
     fi
     report_failure "$status"
     exit "$status"
@@ -799,6 +855,9 @@ install_or_update() {
     if command -v python3 >/dev/null 2>&1; then
         support ownership "$SOURCE_DIR" "$COMPONENTS"
     fi
+    start_transaction
+    stage_start "Pause schedules"
+    pause_schedules
     refuse_active_services
     if [[ "$mode_result" == 10 && "$PREVIOUS_SCHEMA" == 3 ]]; then
         if [[ "$DRY_RUN" == 1 ]]; then
@@ -816,16 +875,24 @@ install_or_update() {
     log "  retained release after success: $previous_release"
     if [[ "$rebuild" == 0 && "$DRY_RUN" == 0 && "$(support needs-reconciliation "$COMPONENTS")" == 0 ]]; then
         log "Vaultkeep $version verified; no deployment changes required"
+        stage_start "Refresh managed jobs"
+        JOBS_REFRESH_STARTED=1
+        maintenance refresh "$active_release/venv/bin/python"
+        daemon_reload
+        maintenance validate
+        refuse_active_services
+        finish_commit_transaction
+        stage_start "Resume schedules"
+        resume_schedules
         installation_result "$version" "$previous_release"
         return
     fi
-    start_transaction
     if [[ "$rebuild" == 1 ]]; then
         stage_start "System dependencies"
         install_dependencies
         if [[ "$DRY_RUN" == 0 ]]; then
             verify_python
-            support ownership "$SOURCE_DIR" "$COMPONENTS"
+            support ownership "$SOURCE_DIR" "$COMPONENTS" staging
         fi
         verify_executables
         check_7z_compatibility
@@ -851,13 +918,21 @@ install_or_update() {
     stage_start "Release activation"
     install_examples
     write_manifest "$version" "$digest" "$previous_release"
+    if [[ "$DRY_RUN" == 0 ]]; then
+        stage_start "Refresh managed jobs"
+        JOBS_REFRESH_STARTED=1
+        maintenance refresh "$VK_RELEASES/$RELEASE_ID/venv/bin/python"
+    fi
     daemon_reload
     if [[ "$DRY_RUN" == 0 ]]; then
         verify_release "$VK_RELEASES/$RELEASE_ID" "$version"
         support ownership "$SOURCE_DIR" "$COMPONENTS" staging
+        maintenance validate
         refuse_active_services
     fi
     finish_commit_transaction
+    stage_start "Resume schedules"
+    resume_schedules
     installation_result "$version" "$previous_release"
 }
 

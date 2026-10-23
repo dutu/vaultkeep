@@ -2240,7 +2240,11 @@ Future schema versions add fields only when their features are implemented. The 
 `install.sh` is the single root-run deployment transaction. Its stdlib-only
 `scripts/install_support.py` helper validates ownership metadata, installed package
 inventories, live managers, effective units, runtime locks, and recognizable foreground
-processes. The shell owns staging, switching, snapshots, restoration and removal.
+processes. The shell owns release staging, activation and rollback. The stdlib-only
+`scripts/install_maintenance.py` orchestrates launcher inventory, pause, job refresh
+and resume with a private transaction journal. Job rendering and file changes run
+as the owning account through `vaultkeep.maintenance`; restoration uses stdlib
+code independently of the candidate interpreter or package.
 
 The tested release platform is Debian 13 `trixie` on amd64/arm64. An existing Python
 below 3.13 fails before apt or deployment mutation. A clean supported host may install
@@ -2262,9 +2266,10 @@ settings, mutually exclusive with scheduling. See [Trigger design](trigger.md).
 ## 25.2 Installer responsibilities
 
 The installer validates the host, source, schema-specific manifest, version/source
-policy and artifact ownership. It locks installer
-transactions and checks that relevant schedules are paused and work is drained.
-It never starts/stops/enables/disables schedules during install/update.
+policy and artifact ownership. It serializes installer transactions, records active
+launchers and exact enablement, and stops active Vaultkeep timers and monitors. It
+never stops backup services/workers or changes schedule enablement. Active or
+inconclusive backup activity causes refusal and resumption of original launchers.
 
 The hash-locked dependencies install with `--require-hashes --only-binary=:all:`.
 The root project installs with `--no-deps --no-build-isolation`. Staged checks
@@ -2275,7 +2280,8 @@ After relocation, the root package is reinstalled to repair console scripts.
 Synchronizing source excludes Git/editor metadata, venvs, caches, build output and
 local environment/agent/credential directories. The input checkout is never changed.
 Production dependency resolution is never opportunistic. Packaged examples remain
-inactive; actual jobs and credentials require explicit operator validation.
+inactive. Existing managed jobs are refreshed and validated; adding jobs and
+configuring credentials remain explicit operator actions.
 
 ## 25.3 Installer command modes
 
@@ -2292,7 +2298,8 @@ refresh but refuses a different installed version. Downgrades are refused.
 
 Exact version/source matches verify the environment; damage triggers a
 protected complete rebuild. Missing owned links/templates reconcile after ownership
-and quiescence checks. A healthy match makes no deployment changes. Modified units,
+and activity checks. A healthy match makes no release changes but still refreshes
+existing jobs and resumes previously active launchers. Modified units,
 unrelated links, masks and conflicting overrides require explicit operator resolution.
 Inventory checks do not establish arbitrary installed-file integrity.
 
@@ -2315,17 +2322,36 @@ detect local ownership conflicts. The timer registry remains a separate managed 
 
 ## 25.5 Update and rollback safety
 
-Operators record active schedules and enablement, pause schedules, drain work and
-hold the maintenance window closed. The installer checks root and running/lingering
-user managers, relevant unit properties/jobs, known monitor/core locks and recognizable
-foreground commands, then repeats the live inventory immediately before replacement.
-An unreachable or inconclusive running manager blocks apply. No user manager is valid
-on a clean host. These checks cannot prove arbitrary custom execution is absent or
-prevent races with new work started by other accounts.
+The installer inventories system and running/lingering user managers, including
+unloaded/disabled launcher files. Accounts without running managers are scanned
+at their standard user unit location without starting sessions. Running managers'
+exported XDG config/state/cache roots are preserved for account-level operations;
+custom offline XDG roots need a running owning manager for discovery.
+
+The complete resume list is journaled before the first stop. Only active timers
+and monitors are stopped. After pausing, the installer takes an exclusive lock on
+`/opt/vaultkeep/maintenance.lock` and checks services/workers, queued jobs, known
+runtime/job locks and recognizable foreground processes. Normal backup, verification,
+pruning and service-management CLI commands hold a nonblocking shared lock for their
+lifetime. Read-only status/version/config validation remain available. The stable
+lock inode is never replaced. Older releases, source checkouts without that file,
+custom launchers and direct API calls may not participate; the first upgrade still
+requires control of these launchers. Live activity checks repeat before activation.
+Unreachable/inconclusive managers block apply.
+
+All existing jobs are rendered with the candidate package, preserving config paths,
+parameters and unit identities. Local unit overrides, unknown directives,
+missing registries and identity changes cause refusal. Every account's file snapshots
+are journaled before applying any changes. File changes and rollback run with that
+account's privileges, never by writing user paths as root. No refresh action starts,
+enables, or reloads services. All discovered jobs receive semantic validation; jobs
+being resumed also receive runtime validation, including Trigger preflight for active
+monitors. The system and running user managers reload before readiness validation.
 
 The transaction snapshots `current`, selected command links, core/Trigger templates,
-the manifest and core registry. An active directory replaced at the same version is
-saved until commit. A version/component transition retains the preceding active
+the manifest and core registry. Generated job files have separate account-level
+snapshots; runtime evidence is never snapshotted or restored. An active directory
+replaced at the same version is saved until commit. A version/component transition retains the preceding active
 release. Exact-match reconciliation does not rotate retention. There is no release
 garbage collector.
 
@@ -2333,10 +2359,15 @@ After relocation and command repair, install templates/links, switch `current`, 
 schema-3 metadata, reload the system and applicable running user managers, and
 perform read-only post-activation checks. Commit only after those checks succeed.
 ERR exits and handled INT/TERM/HUP clean staging or restore snapshots and the replaced
-release. Restoration attempts continue after individual errors; failed recovery
-snapshots remain with path/account diagnostics. Schedules stay paused through success
-and rollback. Runtime evidence is never restored from an older copy. SIGKILL/power
-loss is not an atomic rollback guarantee. Apt changes cannot be rolled back here.
+release. Generated units are restored using stdlib code before candidate cleanup,
+independently of candidate package health. Restoration attempts continue after
+individual errors; failed recovery snapshots remain with path/account diagnostics.
+After successful commit or completed rollback, release the maintenance lock and start
+only originally active launchers. Incomplete rollback leaves schedules paused. A
+post-commit resume failure retains the deployment and resume journal and attempts
+remaining launchers. Retained journals block further installs pending recovery.
+SIGKILL/power loss is not an atomic rollback guarantee. Apt changes cannot be rolled
+back here.
 
 ## 25.6 Config preservation
 
@@ -2344,8 +2375,8 @@ Existing YAML/TOML, secrets, user state and archives are never rewritten by the
 installer. Packaged `.example` files may be refreshed. Complete disabled YAML examples for scheduling and the three supported apps ship
 with the release; copying one into a user's configuration is explicit.
 Enablement links, user overrides and persistent timer timestamps remain in place.
-After validation, operators resume only previously active schedules; calendar timers
-may legitimately catch up. The installer directly replays no completed backup attempt.
+After validation, the installer resumes only previously active schedules; calendar
+timers may legitimately catch up. The installer directly replays no completed backup attempt.
 
 ## 25.7 Uninstallation
 

@@ -211,10 +211,10 @@ install, update, or uninstall commands to disable colors; see
 
 The first command previews dependencies and deployment changes. The second applies
 installation. Vaultkeep is one package with built-in scheduling and optional
-shutdown triggering, including its `psutil` process-inspection dependency. Installing
-software starts no backups or monitors, enables no jobs, and configures no lingering.
-Before replacing an existing installation, follow
-[maintenance](#pause-and-resume-for-maintenance).
+shutdown triggering, including its `psutil` process-inspection dependency.
+A fresh installation starts no backups or monitors, enables no jobs, and configures
+no lingering. Replacing an existing installation automatically pauses, refreshes,
+and resumes its existing launchers; see [maintenance](#pause-and-resume-for-maintenance).
 
 Verify the installed command:
 
@@ -1547,46 +1547,64 @@ can safely start or that another process will not start a backup. See the
 
 ### Pause and resume for maintenance
 
-Before update, reinstall, environment repair, or uninstall:
+`install.sh install` and `install.sh update` handle maintenance automatically:
 
-1. Inventory root and every user's timers/monitors, including lingering accounts.
-   Record active states and exact enablement, including runtime enablement:
+1. Inventory existing root and user Vaultkeep timers and Trigger monitors, recording
+   their active states and enablement, including runtime enablement.
+2. Stop active timers and monitors. Running backup services and workers are never
+   stopped. If backups, workers, queued work, held job locks, or inconclusive activity
+   remain, refuse the operation and resume the recorded launchers.
+3. Hold the deployment maintenance lock, install or repair the release, and refresh
+   existing managed job units using their original YAML paths and parameters.
+   Refreshing units does not enable or start them.
+4. Reload systemd, validate all discovered jobs and runtime readiness for jobs being
+   resumed, then resume only previously active timers and monitors. Previously
+   inactive schedules remain inactive. Enablement and persistent timer timestamps
+   are preserved; a persistent calendar timer may catch up a missed event.
 
-   ```bash
-   sudo systemctl list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'user@*.service'
-   sudo systemctl list-unit-files 'vaultkeep@*.timer'
-   systemctl --user list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'vaultkeep-trigger*'
-   systemctl --user list-unit-files 'vaultkeep@*.timer' 'vaultkeep-trigger*'
-   ```
+This includes running and lingering user managers and jobs in the standard unit
+locations of accounts without a running manager. Stopped user managers remain
+stopped. For custom XDG locations, keep the owning manager running with its XDG
+roots exported during maintenance. Unreachable managers, local unit overrides,
+changed job identities, and standalone Trigger installations require resolution
+before automatic maintenance can proceed. YAML jobs, secrets, recovery evidence,
+wallet applications, and backup archives are preserved. New jobs remain opt-in.
 
-2. Stop each active timer and monitor using `systemctl stop` in its owning manager.
-   For example, substitute the actual timer instance:
+Normal Vaultkeep backup, verification, pruning, and service-management commands
+refuse to start while the maintenance lock is held. Source checkouts, older
+versions, custom launchers, and direct Python API calls may not participate in that
+lock. During the first upgrade from an older release, keep manual/custom launchers
+and new user sessions paused; process and job-lock checks remain necessary.
 
-   ```bash
-   sudo systemctl stop vaultkeep@app.timer
-   systemctl --user stop vaultkeep@app.timer
-   systemctl --user stop 'vaultkeep-trigger@<job-id>-<identity>.service'
-   ```
+Ordinary failures and handled signals restore deployment artifacts and generated
+job units, then resume the original active launchers if restoration succeeds.
+Incomplete restoration leaves schedules paused and retains recovery snapshots.
+A resume failure after successful deployment keeps the installed release and
+reports the private resume journal path. Resolve the reported service problem,
+then retry resumption from the same checkout:
 
-   Do not use `vaultkeep schedule disable` for maintenance: it changes enablement and
-   clears persistent timestamps. Stop custom/foreground launchers too. Let services,
-   workers, queued jobs, and manual backups finish. Do not kill them to pass checks.
-   Inspect `systemctl list-jobs` and `systemctl --user list-jobs` in each manager.
+```bash
+sudo python3 scripts/install_maintenance.py resume '/opt/vaultkeep/.maintenance.<id>/journal.json'
+```
 
-3. Keep the maintenance window closed to new jobs, monitors, or user sessions. The
-   installer checks live managers, known locks and recognizable foreground commands
-   twice; these checks cannot prove arbitrary custom commands are absent or prevent
-   another account from starting work. Unreachable managers cause refusal. No running
-   user manager is a valid clean-host condition.
+After successful resumption, remove only that reported maintenance directory. A
+retained journal blocks another install/update until recovery is reviewed. Never
+resume from an incomplete rollback before resolving its restoration errors.
 
-4. After successful installation or rollback, validate actual core jobs and Trigger
-   config/runtime readiness. When upgrading older command syntax, first follow
-   [refresh existing monitor commands](#refresh-existing-monitor-commands).
-   Resume only the timers/monitors recorded as active,
-   using `systemctl start` in each owning manager. Previously inactive schedules stay
-   inactive; enablement remains unchanged. Persistent calendar timers can catch up a
-   missed event on resumption. The installer never explicitly replays a backup or
-   Trigger attempt. A later manual restart failure does not roll software back.
+For a deliberate manual maintenance pause, inventory actual unit names and stop
+only the relevant timers and monitors in their owning managers:
+
+```bash
+sudo systemctl list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'user@*.service'
+systemctl --user list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'vaultkeep-trigger*'
+sudo systemctl stop vaultkeep@app.timer
+systemctl --user stop 'vaultkeep-trigger@<job-id>-<identity>.service'
+```
+
+Record active states first and resume those units explicitly with `systemctl start`
+after maintenance. Do not use `schedule disable` for a temporary pause: it changes
+enablement and clears persistent timer timestamps. Let backups and workers finish.
+For removal, follow the additional [uninstall steps](#uninstall-the-application).
 
 ### Refresh existing monitor commands
 
@@ -1594,27 +1612,26 @@ Commands use `schedule` and `schedules` in place of `timer` and `timers`. Update
 saved shell commands or scripts. Put `--user`, `--config`, and `--param` before
 `trigger` or `schedule`; version inspection uses `vaultkeep --version`.
 
-For monitor services installed with the previous option order, refresh each job's
-unit after deploying this version and before resuming monitoring. Run this as the
-application owner, using the same YAML path and parameters as the installed monitor:
+Install and update automatically refresh existing managed per-job monitor commands,
+including monitors installed with the previous option order. Disabled and inactive
+monitors stay disabled or inactive. Standalone Trigger installations still require
+[migration](docs/trigger/migration.md).
+
+After editing a job outside an application update, refresh it explicitly as the
+application owner, using its original YAML path and parameters:
 
 ```bash
 vaultkeep --user --config "$job_config" trigger update
 vaultkeep --user --config "$job_config" validate
 ```
 
-`trigger update` enables and starts the monitor. Refresh only monitors you intend to
-run. For an old monitor that should remain disabled, remove its generated unit with
-`vaultkeep --user --config "$job_config" trigger remove`; this preserves recovery
-evidence and backups. Install it again explicitly when monitoring is wanted.
-
-Existing scheduled backup units still invoke `run`; the command rename does not
-require regenerating them. Their systemd unit names remain `vaultkeep@…timer` and
-`vaultkeep@…service`.
+`trigger update` enables and starts that monitor. Run it only when monitoring is
+wanted. Existing scheduled backup units continue to invoke `run`; their systemd
+unit names remain `vaultkeep@…timer` and `vaultkeep@…service`.
 
 ### Reinstall the same application version
 
-First [pause schedules and drain work](#pause-and-resume-for-maintenance). When rebuilding the same release version from a refreshed checkout, run `install` again:
+When rebuilding the same release version from a refreshed checkout, run `install` again. The script [pauses and resumes existing schedules automatically](#pause-and-resume-for-maintenance):
 
 ```bash
 cd /path/to/vaultkeep
@@ -1633,7 +1650,7 @@ Upgrade Debian 12 to Debian 13 first. The installer accepts earlier core-only an
 combined deployments. Existing standalone Trigger configurations and recovery
 evidence require the [migration procedure](docs/trigger/migration.md).
 
-[Pause schedules and drain work](#pause-and-resume-for-maintenance), then fetch and select the newer release in the source checkout:
+Fetch and select the newer release in the source checkout. The installer [pauses and resumes existing schedules automatically](#pause-and-resume-for-maintenance) and refuses active backup work:
 
 ```bash
 cd /path/to/vaultkeep
@@ -1660,8 +1677,9 @@ The update mode:
 - stages the source and virtual environment as a complete versioned release;
 - validates the executable, example configurations, and systemd units;
 - atomically switches `/opt/vaultkeep/current` to the new release;
-- reloads systemd;
-- preserves user jobs and secrets;
+- refreshes existing managed schedule and monitor units and reloads systemd;
+- validates jobs and resumes only previously active timers/monitors;
+- preserves user jobs, secrets, enablement, and persistent timer timestamps;
 - retains the complete preceding release for rollback.
 
 `install.sh update` does not download source code; it installs the checkout from which it is executed. The same version and source digest produces an idempotent verification with no release switch. The same version with different source content is not an update; use `install` to refresh the installed code or bump the project version before running `update`.
@@ -1677,11 +1695,11 @@ overrides require operator resolution. These checks do not prove arbitrary Pytho
 file integrity.
 
 Failed staging leaves the active release intact. Ordinary failures and handled INT,
-TERM, or HUP signals restore managed deployment artifacts. Schedules stay paused on
-success and rollback; resume them explicitly after validating the installed or
-restored deployment. Apt changes are outside rollback. After power loss or SIGKILL,
+TERM, or HUP signals restore managed deployment artifacts and generated job units,
+then resume original active schedules if restoration succeeds. Failed restoration
+leaves schedules paused for recovery. Apt changes are outside rollback. After power loss or SIGKILL,
 inspect `current`, `install-manifest.json`, retained releases, and `.staging` or
-`.transaction.*` directories before retrying. Preserve recovery snapshots if rollback
+`.transaction.*` or `.maintenance.*` directories before retrying. Preserve recovery snapshots if rollback
 reports a failure; never erase Trigger evidence to force an update.
 
 Confirm the installed version:
@@ -1697,7 +1715,8 @@ sudo vaultkeep schedules validate
 sudo vaultkeep schedules sync --dry-run
 ```
 
-The installer does not enable or start timers. Apply root-mode timer changes explicitly:
+Existing registered timers are refreshed automatically. To add or remove schedules
+after configuration changes, review the sync preview above, then apply it explicitly:
 
 ```bash
 sudo vaultkeep schedules sync

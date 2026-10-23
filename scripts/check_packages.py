@@ -38,6 +38,7 @@ def check_wheel(wheel: Path, version: str) -> None:
             wheel.name.removesuffix("-py3-none-any.whl") + ".dist-info",
         }
         assert "vaultkeep/trigger/monitor.py" in names
+        assert "vaultkeep/maintenance.py" in names
         metadata_path = next(n for n in names if n.endswith(".dist-info/METADATA"))
         metadata = email.message_from_bytes(archive.read(metadata_path))
         assert metadata["Version"] == version
@@ -85,6 +86,8 @@ def check() -> None:
             "src/vaultkeep/trigger/cli.py",
             "requirements.lock",
             "scripts/install_support.py",
+            "scripts/install_maintenance.py",
+            "src/vaultkeep/maintenance.py",
             "systemd/vaultkeep-trigger-exec@.service",
             "install.sh",
             "examples/vaultkeep-schedule.yaml.example",

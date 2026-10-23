@@ -23,8 +23,9 @@ git ls-files --error-unmatch src/vaultkeep/cli/output.py
 
 Both commands should succeed. If the file exists locally but is absent from Git,
 include it in the source commit before updating the target host. With a complete
-checkout, repeat `sudo ./install.sh install`. Keep schedules paused until
-installation and job validation succeed.
+checkout, repeat `sudo ./install.sh install`. The installer pauses existing
+launchers, refuses active backup work, refreshes managed units, validates jobs, and
+resumes only previously active launchers after success or completed rollback.
 
 ## Installer reports `inconclusive unit properties`
 

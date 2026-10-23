@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from collections.abc import Sequence
@@ -22,6 +23,7 @@ from vaultkeep.errors import (
     TimerError,
     VaultkeepError,
 )
+from vaultkeep.locking import deployment_lock, requires_deployment_lock
 from vaultkeep.progress import PROGRESS_PATH_ENV
 from vaultkeep.scheduling import TimerManager
 from vaultkeep.version import installed_version
@@ -50,6 +52,21 @@ def _main(argv: Sequence[str] | None) -> int:
     if namespace.show_version:
         print(installed_version())
         return 0
+
+    guarded = requires_deployment_lock(namespace.command, getattr(namespace, "action", None))
+    try:
+        if guarded:
+            with deployment_lock():
+                return _dispatch(namespace, parser, output)
+        return _dispatch(namespace, parser, output)
+    except LockError as error:
+        output.issue(error)
+        return 3 if namespace.command == "trigger" else 10
+
+
+def _dispatch(
+    namespace: argparse.Namespace, parser: argparse.ArgumentParser, output: Console
+) -> int:
 
     if namespace.command == "trigger":
         from vaultkeep.trigger.cli import run

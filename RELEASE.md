@@ -295,7 +295,9 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
 
 ### 4.2 Update
 
-First [pause schedules and drain work](README.md#pause-and-resume-for-maintenance).
+Review [automatic maintenance](README.md#pause-and-resume-for-maintenance).
+Keep existing timers/monitors active to verify automatic pause and resume, with no
+backup work running; also verify safe refusal while a disposable backup is active.
 Use an already installed previous Vaultkeep release as the starting point, then
 run this candidate checkout as the update source.
 
@@ -735,7 +737,8 @@ activation is not part of this checklist.
 
 - [ ] The unified package contains Trigger modules and psutil, exposing only the vaultkeep entry point.
 - [ ] Fresh installation installs the unified command and inactive user worker template;
-      works without logged-in users and never starts/enables/presets services or lingering.
+      works without logged-in users, keeps new monitoring opt-in, and never enables
+      schedules or lingering. Stopped user managers remain stopped.
 - [ ] The unified wheel and source archive pass `python scripts/check_packages.py`;
       the archive supports installation without a neighboring checkout.
 - [ ] Debian 12 and an incompatible existing interpreter are rejected before apt/staging.
@@ -753,14 +756,21 @@ activation is not part of this checklist.
       active/transitioning backups/workers, queued jobs, held foreground locks, unreachable
       managers and a newly appearing manager are handled conservatively.
 - [ ] Enabled-active, enabled-inactive, disabled-active and disabled-inactive schedules
-      retain exact enablement/runtime links and persistent timer timestamps after manual
-      pause, success, refusal, INT/TERM/HUP and rollback. Installer makes no start/stop calls.
+      retain exact enablement/runtime links and persistent timer timestamps after automatic
+      pause, success, refusal, INT/TERM/HUP and rollback. Only originally active launchers
+      receive stop/start calls; backup services and workers never receive stop calls.
 - [ ] Injection at dependency/venv/package install, relocated entry points, package/example/
       unit validation, each artifact/manifest write, activation and system/user reload restores
       old software and all managed artifacts. Restoration failures retain useful snapshots
       and report each failed path/account. Test fresh installation, legacy upgrades, reinstall and repair cases.
-- [ ] Only previously active schedules are manually resumed after validation. Persistent
+- [ ] Existing root/user jobs refresh with original paths/params, including disabled
+      monitors and offline accounts in standard locations. Local overrides and changed
+      identities cause refusal. Generated-unit rollback preserves file modes/timestamps.
+- [ ] Only previously active schedules resume automatically after validation. Persistent
       calendar catch-up works normally; the installer directly replays no completed attempt.
+- [ ] Shared maintenance locking blocks new normal CLI work while installation runs;
+      legacy/custom launchers remain controlled during the first upgrade. Post-commit
+      resume failures retain the deployment and recovery journal and attempt remaining units.
 - [ ] Real user units accept an explicit job-specific monitor --config path, retain exact worker
       semantics, preserve independent worker lifetime and handle queued/activating states.
 - [ ] Standalone migration preserves IDs and schema-1 instance/request/launch/receipt/block

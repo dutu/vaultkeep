@@ -233,7 +233,7 @@ def check_ownership(
     layout: Layout, source: Path, components: list[str], *, staging: bool = False
 ) -> None:
     if not staging and layout.prefix.exists():
-        scratch = [*layout.prefix.glob(".transaction.*")]
+        scratch = [*layout.prefix.glob(".transaction.*"), *layout.prefix.glob(".maintenance.*")]
         stage_root = layout.prefix / ".staging"
         if stage_root.is_symlink():
             fail(f"staging root must not be a symlink: {stage_root}")
