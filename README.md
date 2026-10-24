@@ -1303,6 +1303,10 @@ The archive filename retains the configured backup base name and changes its der
 
 Vaultkeep passes the password to `/usr/bin/7z` through a private terminal with echo disabled, after the password prompt appears. It does not place the password in command arguments, environment variables, manifests, or logs.
 
+If 7-Zip does not display its password prompt within 30 seconds, the operation fails
+and Vaultkeep stops the archive processes. This deadline applies to the prompt;
+archive creation and verification can take longer.
+
 To preserve TAR filesystem semantics, Vaultkeep creates a private plaintext TAR below the mode-specific temporary workspace, encrypts it with AES-256 and encrypted headers, verifies the result, and removes the plaintext TAR before committing the backup. Secure physical erasure is not guaranteed on journaling filesystems, copy-on-write filesystems, or SSDs.
 
 V1 uses one password for a job and destination namespace. Password rotation requires a new job ID, password file, and destination namespace. Retain the old password file while old encrypted backups are needed.

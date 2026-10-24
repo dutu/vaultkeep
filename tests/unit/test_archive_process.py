@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from vaultkeep.archive import process as archive_process
 from vaultkeep.archive.process import run_command, run_pipeline
 from vaultkeep.errors import ArchiveCreationError
 
@@ -139,6 +141,43 @@ def test_terminal_pipeline_waits_for_stderr_prompt_and_preserves_archive_stream(
 def test_terminal_command_reports_exit_before_password_prompt() -> None:
     with pytest.raises(ArchiveCreationError, match="status 9"):
         run_command((Path(sys.executable), "-c", "raise SystemExit(9)"), terminal_input=b"secret\n")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="secure terminal input is POSIX-specific")
+@pytest.mark.parametrize("pipeline", [False, True])
+@pytest.mark.parametrize("banner", ["", "Unexpected password prompt:"])
+def test_password_prompt_timeout_reaps_command_and_pipeline(
+    monkeypatch: pytest.MonkeyPatch, pipeline: bool, banner: str
+) -> None:
+    monkeypatch.setattr(archive_process, "_PASSWORD_PROMPT_TIMEOUT", 0.2)
+    processes: list[subprocess.Popen[bytes]] = []
+    start_process = archive_process._start_process
+
+    def track_process(*args, **kwargs):
+        process = start_process(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(archive_process, "_start_process", track_process)
+    command = (
+        Path(sys.executable),
+        "-c",
+        # Bound the fake child even if the prompt deadline regresses.
+        "import signal, sys, time; signal.alarm(5); "
+        f"print({banner!r}, file=sys.stderr, flush=True); time.sleep(60)",
+    )
+    with pytest.raises(ArchiveCreationError, match="Timed out waiting for archive password prompt"):
+        if pipeline:
+            run_pipeline(
+                command,
+                (Path(sys.executable), "-c", "import sys; sys.stdin.buffer.read()"),
+                producer_terminal_input=b"secret\n",
+            )
+        else:
+            run_command(command, terminal_input=b"secret\n")
+
+    assert len(processes) == (2 if pipeline else 1)
+    assert all(process.poll() is not None for process in processes)
 
 
 def test_pipeline_rejects_mixed_pipe_and_terminal_input() -> None:

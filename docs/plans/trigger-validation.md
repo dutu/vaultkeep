@@ -92,7 +92,7 @@ The Linux test environment is `/tmp/vaultkeep-integration-venv` with Python 3.13
 It is separate from the repository's Windows `.venv`; do not use that environment
 for these Linux/systemd checks.
 
-The latest suite run after adding application-specific matcher coverage completed
+The historical suite run after adding application-specific matcher coverage completed
 with **702 passed, 10 skipped, 2 deselected** in the socket-restricted sandbox:
 
 
@@ -108,8 +108,10 @@ outside-sandbox baseline for an earlier suite completed with **701 passed,
 outside-sandbox suite still needs to be rerun for the complete parser result as
 described in the development guide.
 
-An unfiltered run stalls on the two Debian interactive `.tar.7z` creation/restore
-tests. Encrypted archive integration remains unverified by this run and must pass on
-a suitable release host. Three opt-in release-host checks are skipped without their
+That unfiltered run stalled on the two Debian interactive `.tar.7z` creation/restore
+tests. Current runs include these tests with a deadline, as described in the
+[testing guide](../development/testing.md). Encrypted archive integration was
+unverified by this historical run and must pass on a suitable release host.
+Three opt-in release-host checks are skipped without their
 prepared environment. These results do not close real wallet identity, live systemd
 service lifecycle, supported-architecture execution, or network restore gates.

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
 import sys
+from collections.abc import Iterator
 from contextlib import suppress
 from copy import deepcopy
 from functools import cache
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 import pytest
@@ -31,6 +34,22 @@ pytestmark = pytest.mark.skipif(
     not HAS_LINUX_TOOLS,
     reason="Real Linux archive tools are unavailable",
 )
+
+
+@pytest.fixture(autouse=True)
+def archive_tool_deadline() -> Iterator[None]:
+    """Keep small real-tool tests bounded, including waits after password delivery."""
+
+    def timed_out(signum: int, frame: FrameType | None) -> None:
+        raise TimeoutError("Archive integration test exceeded 60 seconds")
+
+    previous_handler = signal.signal(signal.SIGALRM, timed_out)
+    signal.alarm(60)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 @cache

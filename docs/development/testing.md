@@ -19,10 +19,13 @@ python -m pip download --require-hashes --only-binary=:all: \
     -r requirements.lock -d /tmp/vaultkeep-wheelhouse
 ```
 
-The wheelhouse makes executed installer and installed-contract tests offline. Set
-`VAULTKEEP_TEST_WHEELHOUSE` to another prepared directory if necessary. Production
-installation does not use this test setting. Install GNU tar, zstd, Debian 7zip and
-rsync for relevant tests. Build tooling is development-only except the locked
+The wheelhouse makes executed installer and installed-contract tests offline. These
+tests skip with a preparation hint when compatible wheels for any locked dependency
+are missing. Tests that do not install packages still run without a wheelhouse.
+Set `VAULTKEEP_TEST_WHEELHOUSE` to another prepared directory if necessary. Production
+installation does not use this test setting. Prepare the complete wheelhouse before
+CI or release validation so the installation checks run. Install GNU tar, zstd,
+Debian 7zip and rsync for relevant tests. Build tooling is development-only except the locked
 Hatchling dependencies used for local production package installation.
 
 ## Checks
@@ -74,8 +77,14 @@ and state environment. Process tests check SIGTERM completion evidence and SIGKI
 uncertainty. Status tests separate lock activity from missing, corrupt, inaccessible,
 stale, and contradictory history and verify compact historical safety warnings,
 verbose details, and JSON without mutation.
-Real archive tests use disposable files. Manual verification tests cover both
-formats, missing sources, invalid archives with matching checksums, wrong passwords,
+Real archive tests use disposable files. Each test in `test_archive_tools.py` has a
+60-second deadline, including encrypted creation, verification, and restore; a
+timeout fails the test and lets the archive runners clean up their subprocesses.
+The production password-prompt wait has a separate 30-second deadline, without
+limiting archive processing time. Regression tests cover missing and unexpected
+prompts and subprocess cleanup for commands and pipelines.
+Manual verification tests cover both formats, missing sources, invalid archives
+with matching checksums, wrong passwords,
 unsafe TAR paths, and preservation of backup and state files.
 
 `check_packages.py` builds the unified wheel and source archive, independently
@@ -106,12 +115,13 @@ checks availability and hashes, not execution on arm64.
 
 ## Validation limits
 
-The non-interactive command above excludes two Debian interactive `.tar.7z` creation/
-restore tests that stall in this environment. An unfiltered `pytest` run therefore
-has not completed here. Their exclusion is a validation limitation, not a passing
-encrypted-backup release gate. Run the complete `pytest -vv` suite, including those
-tests, on a host where the interactive 7zip checks can finish before release. See the
+The commands above include the Debian interactive `.tar.7z` creation/restore tests;
+they skip on other distributions or when archive tools are unavailable. Earlier
+local runs excluded these tests after stalls, as recorded in the historical
 [local validation record](../plans/trigger-validation.md#local-validation-record).
+Run the complete `pytest -vv` suite with the prepared wheelhouse and all required
+tools on a Debian release host before release. Skipped tests do not count as passing
+release gates.
 
 Automated checks use disposable files, fake managers, simulated process providers,
 and installed CLI/worker contracts. They do not certify real app identity/writer

@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import tempfile
+import time
 from collections.abc import Collection, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from typing import IO, Any
 from vaultkeep.errors import ArchiveCreationError
 
 _OUTPUT_LIMIT = 64 * 1024
+_PASSWORD_PROMPT_TIMEOUT = 30.0
 _SAFE_ENVIRONMENT = {
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
@@ -281,7 +283,10 @@ class _SecretTerminal:
         prompt = b"Enter password (will not be echoed):"
         offsets = [0] * len(streams)
         tails = [b""] * len(streams)
+        deadline = time.monotonic() + _PASSWORD_PROMPT_TIMEOUT
         while process.poll() is None:
+            if time.monotonic() >= deadline:
+                raise ArchiveCreationError("Timed out waiting for archive password prompt")
             for index, stream in enumerate(streams):
                 # pread leaves the child's shared file offset untouched and keeps
                 # prompt inspection bounded even when a listing is very large.

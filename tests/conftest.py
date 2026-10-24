@@ -2,9 +2,46 @@
 
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
+from packaging.tags import sys_tags
+from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
+
+
+@pytest.fixture(scope="session")
+def installer_wheelhouse() -> Path:
+    """Skip wheel-installing tests unless the locked wheels support this interpreter."""
+    wheelhouse = Path(
+        os.environ.get("VAULTKEEP_TEST_WHEELHOUSE", "/tmp/vaultkeep-wheelhouse")
+    ).resolve()
+    supported_tags = set(sys_tags())
+    available = set()
+    for wheel in wheelhouse.glob("*.whl"):
+        if not wheel.is_file():
+            continue
+        try:
+            name, version, _, tags = parse_wheel_filename(wheel.name)
+        except InvalidWheelFilename:
+            continue
+        if tags & supported_tags:
+            available.add((name, str(version)))
+    lock = Path(__file__).resolve().parents[1] / "requirements.lock"
+    required = re.findall(r"^([\w-]+)==([^\s\\]+)", lock.read_text(), re.MULTILINE)
+    missing = [
+        f"{name}=={version}"
+        for name, version in required
+        if (canonicalize_name(name), version) not in available
+    ]
+    if missing:
+        pytest.skip(
+            f"Offline installer wheelhouse {wheelhouse} lacks compatible locked wheels: "
+            f"{', '.join(missing)}; prepare it using docs/development/testing.md"
+        )
+    return wheelhouse
 
 
 @pytest.fixture

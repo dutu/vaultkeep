@@ -46,8 +46,10 @@ def host(tmp_path: Path) -> dict[str, str]:
             "HOST_LOG": str(tmp_path / "host.log"),
             "HOST_CONTROL": str(tmp_path / "control.json"),
             "PIP_NO_INDEX": "1",
-            "PIP_FIND_LINKS": os.environ.get(
-                "VAULTKEEP_TEST_WHEELHOUSE", "/tmp/vaultkeep-wheelhouse"
+            "PIP_FIND_LINKS": str(
+                Path(
+                    os.environ.get("VAULTKEEP_TEST_WHEELHOUSE", "/tmp/vaultkeep-wheelhouse")
+                ).resolve()
             ),
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         }
@@ -200,11 +202,6 @@ def control(host: dict[str, str], **settings: object) -> None:
     Path(host["HOST_CONTROL"]).write_text(json.dumps(settings))
 
 
-def wheelhouse_available(host: dict[str, str]) -> None:
-    if not list(Path(host["PIP_FIND_LINKS"]).glob("hatchling-*.whl")):
-        pytest.fail("prepare the locked binary wheelhouse; see docs/development/testing.md")
-
-
 @pytest.mark.parametrize(
     "arguments,status,message",
     [
@@ -273,8 +270,7 @@ def test_installer_error_prefix_on_a_terminal(
 
 
 @pytest.fixture
-def installed(host: dict[str, str]) -> dict[str, str]:
-    wheelhouse_available(host)
+def installed(host: dict[str, str], installer_wheelhouse: Path) -> dict[str, str]:
     run_installer(host, "install")
     return host
 
@@ -410,8 +406,8 @@ def test_invalid_systemd_executable_path_fails_before_installation(host, tmp_pat
     assert not Path(host["VAULTKEEP_INSTALL_PREFIX"]).exists()
 
 
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> None:
-    wheelhouse_available(host)
     result = run_installer(host, "install")
     assert result.stdout.startswith("Vaultkeep — Installation\n\n")
     assert "Result: INSTALLED" in result.stdout
@@ -446,8 +442,8 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> N
     assert snapshot(host) == first
 
 
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_custom_layout_units_and_cli_survive_clean_environment(host, tmp_path, valid_config):
-    wheelhouse_available(host)
     host.update(
         VAULTKEEP_INSTALL_PREFIX=str(tmp_path / "application releases"),
         VAULTKEEP_BIN_LINK=str(tmp_path / "commands/backup runner %n $HOME"),
@@ -606,8 +602,8 @@ os.execvp(args[0], args)
     assert ["--user", "daemon-reload"] in calls
 
 
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_legacy_upgrade_preserves_previous_and_data(host: dict[str, str]) -> None:
-    wheelhouse_available(host)
     old = legacy_fixture(host)
     secrets = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "secrets"
     secrets.mkdir(parents=True)
@@ -721,10 +717,10 @@ def test_active_or_ambiguous_work_refuses_without_mutation(
 
 
 @pytest.mark.parametrize("fresh", [False, True])
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_reload_failure_rolls_back_refresh_or_fresh_install(
     host: dict[str, str], fresh: bool
 ) -> None:
-    wheelhouse_available(host)
     if not fresh:
         run_installer(host, "install")
     if not fresh:
@@ -760,8 +756,8 @@ def test_handled_signal_rolls_back_at_reload(installed: dict[str, str], signum: 
 
 
 @pytest.mark.parametrize("purge", [False, True])
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_uninstall_preserves_user_evidence(host: dict[str, str], purge: bool) -> None:
-    wheelhouse_available(host)
     run_installer(host, "install")
     evidence = (
         Path(host["HOST_LOG"]).parent
@@ -901,8 +897,8 @@ def test_manifest_replace_failure_cleans_temporary_file_and_restores_deployment(
     assert snapshot(installed) == before
 
 
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_later_version_retains_previous(host: dict[str, str], tmp_path: Path) -> None:
-    wheelhouse_available(host)
     run_installer(host, "install")
     before = manifest(host)
     source = tmp_path / "later-source"
@@ -1108,6 +1104,7 @@ def component_fixture(host: dict[str, str], combined: bool) -> dict:
 
 
 @pytest.mark.parametrize("combined", [False, True])
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_component_deployment_upgrades_to_unified_package(
     host: dict[str, str], combined: bool
 ) -> None:
@@ -1121,6 +1118,7 @@ def test_component_deployment_upgrades_to_unified_package(
     assert not (Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger.service").exists()
 
 
+@pytest.mark.usefixtures("installer_wheelhouse")
 def test_failed_legacy_combined_upgrade_restores_old_links_and_units(host: dict[str, str]) -> None:
     component_fixture(host, True)
     before = snapshot(host)

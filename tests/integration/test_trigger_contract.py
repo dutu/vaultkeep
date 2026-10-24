@@ -13,12 +13,14 @@ import pytest
 
 @pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
 def test_installed_worker_core_contract(
-    tmp_path: Path, valid_config: dict, backup_mode: str
+    tmp_path: Path, valid_config: dict, backup_mode: str, installer_wheelhouse: Path
 ) -> None:
     root = Path(__file__).resolve().parents[2]
-    wheelhouse = os.environ.get("VAULTKEEP_TEST_WHEELHOUSE", "/tmp/vaultkeep-wheelhouse")
     environment = dict(
-        os.environ, PIP_NO_INDEX="1", PIP_FIND_LINKS=wheelhouse, PIP_DISABLE_PIP_VERSION_CHECK="1"
+        os.environ,
+        PIP_NO_INDEX="1",
+        PIP_FIND_LINKS=str(installer_wheelhouse),
+        PIP_DISABLE_PIP_VERSION_CHECK="1",
     )
     venv = tmp_path / "installed"
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
