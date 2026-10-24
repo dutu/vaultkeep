@@ -122,7 +122,11 @@ def _dispatch(
         elif namespace.command == "verify":
             with terminal_progress(no_color=namespace.no_color) as progress:
                 result = verify_backups(
-                    namespace.config, runtime_params=runtime_params, progress=progress
+                    namespace.config,
+                    runtime_params=runtime_params,
+                    user_mode=namespace.user_mode,
+                    progress=progress,
+                    on_verified=lambda path: output.print(f"Verified: {path}", file=sys.stderr),
                 )
         elif namespace.command == "prune":
             result = prune_backups(

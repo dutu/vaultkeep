@@ -49,6 +49,8 @@ def job(tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.Monkey
         )
 
     monkeypatch.setattr(workflow, "build_archive", build)
+    # Cleanup tests create placeholder archive bytes rather than compressed TARs.
+    monkeypatch.setattr(workflow, "verify_tar_zstd", lambda *args, **kwargs: None)
     return config_path
 
 

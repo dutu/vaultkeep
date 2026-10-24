@@ -52,7 +52,9 @@ def run_command(
                 stdin=(terminal.slave if terminal is not None else subprocess.PIPE)
                 if (input_data is not None or terminal is not None)
                 else subprocess.DEVNULL,
-                stdout=stdout_file if capture_stdout else subprocess.DEVNULL,
+                stdout=stdout_file
+                if capture_stdout or terminal is not None
+                else subprocess.DEVNULL,
                 stderr=stderr_file,
                 cwd=cwd,
                 terminal_stdin=terminal is not None,
@@ -66,16 +68,16 @@ def run_command(
                 if terminal_input is None:
                     raise AssertionError("Terminal input disappeared")
                 terminal.close_slave()
-                terminal.write(bytes(terminal_input))
-                # communicate() drains a captured stdout pipe while waiting.  A plain
-                # wait() deadlocks when an interactive 7-Zip listing fills that pipe.
+                terminal.write_when_prompted(process, (stdout_file, stderr_file), terminal_input)
                 process.communicate()
-                terminal.close_master()
             else:
                 process.communicate(input=bytes(input_data) if input_data is not None else None)
         except BaseException:
             _terminate_process(process)
             raise
+        finally:
+            if terminal is not None:
+                terminal.close_master()
         result = CommandResult(
             process.returncode,
             _read_bounded(stdout_file) if capture_stdout else b"",
@@ -147,7 +149,7 @@ def run_pipeline(
                 if producer_terminal_input is None:
                     raise AssertionError("Producer terminal input disappeared")
                 terminal.close_slave()
-                terminal.write(bytes(producer_terminal_input))
+                terminal.write_when_prompted(producer, (producer_error,), producer_terminal_input)
             elif producer.stdin is not None:
                 try:
                     if producer_input is not None:
@@ -157,8 +159,6 @@ def run_pipeline(
                     producer.stdin.close()
             producer.wait()
             consumer.wait()
-            if terminal is not None:
-                terminal.close_master()
         except OSError as error:
             _terminate_process(producer)
             _terminate_process(consumer)
@@ -167,6 +167,9 @@ def run_pipeline(
             _terminate_process(producer)
             _terminate_process(consumer)
             raise
+        finally:
+            if terminal is not None:
+                terminal.close_master()
         producer_result = CommandResult(
             producer.returncode,
             b"",
@@ -267,6 +270,30 @@ class _SecretTerminal:
             raise ArchiveCreationError(
                 f"Cannot provide archive password to terminal: {error}"
             ) from error
+
+    def write_when_prompted(
+        self,
+        process: subprocess.Popen[bytes],
+        streams: Sequence[IO[bytes]],
+        value: bytes | bytearray | memoryview,
+    ) -> None:
+        """Wait for 7-Zip's prompt before it can discard early terminal input."""
+        prompt = b"Enter password (will not be echoed):"
+        offsets = [0] * len(streams)
+        tails = [b""] * len(streams)
+        while process.poll() is None:
+            for index, stream in enumerate(streams):
+                # pread leaves the child's shared file offset untouched and keeps
+                # prompt inspection bounded even when a listing is very large.
+                chunk = os.pread(stream.fileno(), _OUTPUT_LIMIT, offsets[index])
+                offsets[index] += len(chunk)
+                content = tails[index] + chunk
+                if prompt in content:
+                    self.write(bytes(value))
+                    return
+                tails[index] = content[-len(prompt) :]
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=0.01)
 
     def close(self) -> None:
         self.close_master()

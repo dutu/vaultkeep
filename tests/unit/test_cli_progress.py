@@ -105,7 +105,12 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
     ("command", "handler", "result", "stage"),
     [
         ("list", "list_backups", "listed", "Listing backup metadata"),
-        ("verify", "verify_backups", "verified", "Verifying backup manifests and checksums"),
+        (
+            "verify",
+            "verify_backups",
+            "verified",
+            "Verifying backup manifests, checksums, and archive contents",
+        ),
     ],
 )
 def test_terminal_read_only_command_reports_progress_and_heartbeat_and_preserves_stdout(

@@ -62,7 +62,7 @@ def encrypted_job(
     tested: list[Path] = []
 
     def test_password(arguments: Sequence[str | Path], *, terminal_input: bytes) -> CommandResult:
-        assert arguments[:-1] == (Path("/usr/bin/7z"), "t", "-bd", "-sccUTF-8", "-p", "--")
+        assert arguments[:-1] == (Path("/usr/bin/7z"), "t", "-bd", "-sccUTF-8", "--")
         archive = Path(arguments[-1])
         assert archive.is_file()
         tested.append(archive)
@@ -145,9 +145,7 @@ def test_changed_password_blocks_run_without_adopting_fingerprint_or_pruning(
     if source_changed:
         (job.parent / "source" / "data").write_bytes(b"changed source")
     artifacts = {
-        path: path.read_bytes()
-        for path in (job.parent / "backups").rglob("*")
-        if path.is_file()
+        path: path.read_bytes() for path in (job.parent / "backups").rglob("*") if path.is_file()
     }
 
     def unexpected(*args: Any, **kwargs: Any) -> None:
@@ -163,9 +161,7 @@ def test_changed_password_blocks_run_without_adopting_fingerprint_or_pruning(
     assert tested == [first.archive_path]
     assert (state_path.read_bytes() if state_path.exists() else None) == original_state
     assert {
-        path: path.read_bytes()
-        for path in (job.parent / "backups").rglob("*")
-        if path.is_file()
+        path: path.read_bytes() for path in (job.parent / "backups").rglob("*") if path.is_file()
     } == artifacts
 
 

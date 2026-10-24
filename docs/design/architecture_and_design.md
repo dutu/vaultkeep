@@ -720,7 +720,7 @@ The plaintext TAR is always unlinked in a `finally` cleanup path. Secure physica
 
 Cleanup of the plaintext TAR is a pre-commit requirement. If deletion fails, Vaultkeep does not finalize the encrypted backup and reports the exact remaining path.
 
-Vaultkeep invokes Debian's `7z` binary with argument-list subprocess execution, a private working directory, `-t7z`, `-mhe=on`, `-sccUTF-8`, and a bare `-p` switch. It sends the password through a no-echo child-process pseudo-terminal. The password is never included in argv, the environment, logs, manifest data, or hook context.
+Vaultkeep creates encrypted archives with Debian's `7z` binary using argument-list subprocess execution, a private working directory, `-t7z`, `-mhe=on`, `-sccUTF-8`, and a bare `-p` switch. Read and test commands omit `-p` so 7-Zip prompts for the archive password rather than treating it as an explicitly empty password. Vaultkeep waits for the password prompt before sending the password through a no-echo child-process pseudo-terminal. Streamed extraction directs 7-Zip's messages to stderr with `-bso2`, keeping the inner TAR stream separate and allowing prompt detection. The password is never included in argv, the environment, logs, manifest data, or hook context.
 
 ## 10.4 Credential handling
 
@@ -2490,7 +2490,7 @@ archive creation
 archive verification
 encrypted inner-TAR cleanup
 password-file validation
-password-pipe handling
+password-terminal prompt handling
 encrypted-header verification
 credential-continuity and password-rotation rejection
 configuration fingerprinting

@@ -570,9 +570,11 @@ def test_7z_encryption_passes_password_only_through_stdin(
     assert observed["options"]["terminal_input"] == b"private-value\nprivate-value\n"
 
 
+@pytest.mark.parametrize("with_snapshot", [False, True])
 def test_tar_zstd_verification_checks_stream_and_exact_members(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    with_snapshot: bool,
 ) -> None:
     calls: list[str] = []
     archive = tmp_path / "backup.tar.zst"
@@ -593,16 +595,18 @@ def test_tar_zstd_verification_checks_stream_and_exact_members(
 
     verification_module.verify_tar_zstd(
         archive,
-        _snapshot(tmp_path),
+        _snapshot(tmp_path) if with_snapshot else None,
         tools=ArchiveTools(tar=Path("/tar"), zstd=Path("/zstd")),
     )
 
     assert calls == ["test", "list"]
 
 
+@pytest.mark.parametrize("with_snapshot", [False, True])
 def test_7z_verification_requires_hidden_header_and_one_inner_tar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    with_snapshot: bool,
 ) -> None:
     archive = tmp_path / "backup.tar.7z"
     archive.write_bytes(b"archive")
@@ -627,11 +631,45 @@ def test_7z_verification_requires_hidden_header_and_one_inner_tar(
 
     verification_module.verify_tar_7z(
         archive,
-        _snapshot(tmp_path),
+        _snapshot(tmp_path) if with_snapshot else None,
         job_id="app",
         password=PasswordSecret(b"secret"),
         tools=ArchiveTools(tar=Path("/tar"), seven_zip=Path("/7z")),
     )
+
+
+@pytest.mark.parametrize("archive_format", ["tar.zst", "tar.7z"])
+def test_archive_creation_verification_still_requires_exact_snapshot_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, archive_format: str
+) -> None:
+    archive = tmp_path / f"backup.{archive_format}"
+    archive.write_bytes(b"archive")
+    responses = iter(
+        (
+            CommandResult(0, b"", b""),
+            CommandResult(2, b"", b"password required"),
+            CommandResult(0, b"Path = app.tar\n", b""),
+        )
+    )
+    monkeypatch.setattr(verification_module, "run_command", lambda *args, **kwargs: next(responses))
+
+    def pipeline(*args: Any, **kwargs: Any) -> None:
+        kwargs["consumer_stdout"].write(b"unexpected-member\n")
+
+    monkeypatch.setattr(verification_module, "run_pipeline", pipeline)
+
+    with pytest.raises(ArchiveVerificationError, match="does not match the source snapshot"):
+        if archive_format == "tar.zst":
+            verification_module.verify_tar_zstd(archive, _snapshot(tmp_path), tools=ArchiveTools())
+        else:
+            with PasswordSecret(b"secret") as password:
+                verification_module.verify_tar_7z(
+                    archive,
+                    _snapshot(tmp_path),
+                    job_id="app",
+                    password=password,
+                    tools=ArchiveTools(),
+                )
 
 
 def test_7z_verification_rejects_exposed_inner_name(

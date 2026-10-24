@@ -1041,7 +1041,19 @@ Verification checks:
 
 - the backup manifest and filenames;
 - the backup directory layout;
-- the SHA-256 checksum against the sidecar and manifest.
+- the SHA-256 checksum against the sidecar and manifest;
+- the complete Zstandard stream and TAR structure for `.tar.zst`;
+- the configured password, complete 7-Zip archive, encrypted headers, and single
+  inner `{job}.tar` member for `.tar.7z`;
+- TAR member paths, rejecting duplicate, absolute, and parent-traversal paths.
+
+Verification works without the original sources and never changes backups, local
+state, or retention. Encrypted jobs require a password file containing the archive's
+passphrase, with the same ownership and permissions required by `run`.
+
+Each verified archive is reported on stderr. Verification continues after individual
+backup failures and reports their paths and reasons; any failure produces a nonzero
+exit status.
 
 When stderr is a terminal, `verify` displays configuration validation, destination
 checks, and backup verification stages with elapsed time. Long stages repeat every
@@ -1264,7 +1276,7 @@ encryption:
 
 The archive filename retains the configured backup base name and changes its derived extension to `.tar.7z`.
 
-Vaultkeep passes the password to `/usr/bin/7z` through a private input pipe. It does not place the password in command arguments, environment variables, manifests, or logs.
+Vaultkeep passes the password to `/usr/bin/7z` through a private terminal with echo disabled, after the password prompt appears. It does not place the password in command arguments, environment variables, manifests, or logs.
 
 To preserve TAR filesystem semantics, Vaultkeep creates a private plaintext TAR below the mode-specific temporary workspace, encrypts it with AES-256 and encrypted headers, verifies the result, and removes the plaintext TAR before committing the backup. Secure physical erasure is not guaranteed on journaling filesystems, copy-on-write filesystems, or SSDs.
 

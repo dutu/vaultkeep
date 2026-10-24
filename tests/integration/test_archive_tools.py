@@ -78,7 +78,7 @@ def _restore_tar_zstd(archive: Path, restore_root: Path) -> None:
 
 def _restore_tar_7z(archive: Path, restore_root: Path, password: PasswordSecret) -> None:
     run_pipeline(
-        (TOOLS.seven_zip, "x", "-so", "-bd", "-p", "--", archive),
+        (TOOLS.seven_zip, "x", "-so", "-bso2", "-bd", "--", archive),
         (TOOLS.tar, "--extract", "--file=-", f"--directory={restore_root}"),
         producer_terminal_input=password.terminal_input(confirm=False),
     )

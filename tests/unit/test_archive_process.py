@@ -97,12 +97,16 @@ def test_command_rejects_mixed_pipe_and_terminal_input() -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="secure terminal input is POSIX-specific")
-def test_terminal_command_drains_captured_stdout() -> None:
+@pytest.mark.parametrize("prompt_stream", ["stdout", "stderr"])
+def test_terminal_command_waits_for_prompt_and_drains_captured_stdout(prompt_stream: str) -> None:
     result = run_command(
         (
             Path(sys.executable),
             "-c",
-            "import sys; sys.stdin.readline(); sys.stdout.write('x' * 200000)",
+            "import signal, sys, termios, time; signal.alarm(3); time.sleep(0.05); "
+            "termios.tcflush(0, termios.TCIFLUSH); "
+            f"print('Enter password (will not be echoed):', file=sys.{prompt_stream}, flush=True); "
+            "sys.stdin.readline(); sys.stdout.write('x' * 200000)",
         ),
         terminal_input=b"password\n",
         capture_stdout=True,
@@ -110,6 +114,31 @@ def test_terminal_command_drains_captured_stdout() -> None:
 
     assert result.returncode == 0
     assert len(result.stdout) == 64 * 1024 + len(b"\n[output truncated]")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="secure terminal input is POSIX-specific")
+def test_terminal_pipeline_waits_for_stderr_prompt_and_preserves_archive_stream() -> None:
+    with tempfile.TemporaryFile() as output:
+        run_pipeline(
+            (
+                Path(sys.executable),
+                "-c",
+                "import signal, sys, termios, time; signal.alarm(3); time.sleep(0.05); "
+                "termios.tcflush(0, termios.TCIFLUSH); "
+                "print('Enter password (will not be echoed):', file=sys.stderr, flush=True); "
+                "assert sys.stdin.readline() == 'secret\\n'; sys.stdout.write('archive-data')",
+            ),
+            (Path(sys.executable), "-c", "import sys; sys.stdout.write(sys.stdin.read())"),
+            producer_terminal_input=b"secret\n",
+            consumer_stdout=output,
+        )
+        output.seek(0)
+        assert output.read() == b"archive-data"
+
+
+def test_terminal_command_reports_exit_before_password_prompt() -> None:
+    with pytest.raises(ArchiveCreationError, match="status 9"):
+        run_command((Path(sys.executable), "-c", "raise SystemExit(9)"), terminal_input=b"secret\n")
 
 
 def test_pipeline_rejects_mixed_pipe_and_terminal_input() -> None:

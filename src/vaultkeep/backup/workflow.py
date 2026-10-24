@@ -22,6 +22,8 @@ from vaultkeep.archive import (
     build_archive,
     encrypted_backup_credential_verifier,
     load_password_file,
+    verify_tar_7z,
+    verify_tar_zstd,
 )
 from vaultkeep.backup.execution import Execution
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
@@ -36,7 +38,12 @@ from vaultkeep.destination import (
     execute_prune_plan,
     probe_destination_writability,
 )
-from vaultkeep.errors import DestinationError, SourceDiscoveryError, VaultkeepError
+from vaultkeep.errors import (
+    ArchiveVerificationError,
+    DestinationError,
+    SourceDiscoveryError,
+    VaultkeepError,
+)
 from vaultkeep.file_backups import (
     file_config,
     file_destinations,
@@ -175,25 +182,68 @@ def verify_backups(
     config_path: Path,
     *,
     runtime_params: Mapping[str, str] | None = None,
+    user_mode: bool = False,
     progress: Callable[[str], None] | None = None,
+    on_verified: Callable[[Path], None] | None = None,
 ) -> CommandResult:
-    """Discovery already verifies sidecars; command exposes its structural result."""
+    """Verify metadata, checksums, archive streams, credentials, and safe TAR members."""
     report = progress if progress is not None else lambda message: None
     parameters = dict(runtime_params or {})
     report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
     report("Checking destination")
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
-    report("Verifying backup manifests and checksums")
+    report("Verifying backup manifests, checksums, and archive contents")
     destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
+    owner_uid, owner_gid = _runtime_owner(user_mode)
+    loaded_password = (
+        load_password_file(
+            Path(config.encryption.password_file), owner_uid=owner_uid, owner_gid=owner_gid
+        )
+        if config.encryption.password_file
+        else None
+    )
+    tools = ArchiveTools()
     count = 0
-    for destination in destinations:
-        discovered = discover_backups(destination, runtime_params=parameters)
-        if discovered.malformed:
-            raise DestinationError(
-                "Matching malformed destination entries prevent successful verification"
+    failures: list[str] = []
+    archive_failed = False
+    try:
+        for destination in destinations:
+            try:
+                discovered = discover_backups(destination, runtime_params=parameters)
+            except (DestinationError, OSError) as error:
+                failures.append(f"{destination.destination.root}: {error}")
+                continue
+            failures.extend(
+                f"{entry.path}: malformed backup: {entry.reason}" for entry in discovered.malformed
             )
-        count += len(discovered.backups)
+            for backup in discovered.backups:
+                report(f"Verifying archive {str(backup.archive_path)!r}")
+                try:
+                    if backup.manifest.archive_format == "tar.zst":
+                        verify_tar_zstd(backup.archive_path, tools=tools)
+                    else:
+                        if loaded_password is None:
+                            raise ArchiveVerificationError("Encrypted backup requires a password")
+                        verify_tar_7z(
+                            backup.archive_path,
+                            job_id=backup.manifest.job,
+                            password=loaded_password.secret,
+                            tools=tools,
+                        )
+                except (VaultkeepError, OSError) as error:
+                    archive_failed = True
+                    failures.append(f"{backup.archive_path}: {error}")
+                    continue
+                count += 1
+                if on_verified is not None:
+                    on_verified(backup.archive_path)
+    finally:
+        if loaded_password is not None:
+            loaded_password.secret.clear()
+    if failures:
+        error_type = ArchiveVerificationError if archive_failed else DestinationError
+        raise error_type("Backup verification failed:\n" + "\n".join(failures))
     return CommandResult("verify", "verified", backups=count)
 
 

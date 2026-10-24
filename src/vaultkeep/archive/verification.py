@@ -20,11 +20,11 @@ from vaultkeep.state.models import BackupStateRecord
 
 def verify_tar_zstd(
     archive_path: Path,
-    snapshot: SourceSnapshot,
+    snapshot: SourceSnapshot | None = None,
     *,
     tools: ArchiveTools,
 ) -> None:
-    """Verify the complete Zstandard stream and exact GNU TAR member set."""
+    """Verify the stream and safe TAR members, optionally matching a source snapshot."""
     _require_nonempty_archive(archive_path)
     try:
         run_command((tools.zstd, "--test", "--quiet", archive_path))
@@ -41,7 +41,8 @@ def verify_tar_zstd(
             )
             listing.seek(0)
             members = parse_gnu_tar_listing(listing.read())
-        compare_tar_members(snapshot, members)
+        if snapshot is not None:
+            compare_tar_members(snapshot, members)
     except ArchiveVerificationError:
         raise
     except ArchiveCreationError as error:
@@ -50,19 +51,19 @@ def verify_tar_zstd(
 
 def verify_tar_7z(
     archive_path: Path,
-    snapshot: SourceSnapshot,
+    snapshot: SourceSnapshot | None = None,
     *,
     job_id: str,
     password: PasswordSecret,
     tools: ArchiveTools,
 ) -> None:
-    """Verify encryption, outer membership, inner TAR stream, and source members."""
+    """Verify encryption and safe TAR members, optionally matching a source snapshot."""
     _require_nonempty_archive(archive_path)
     inner_name = f"{job_id}.tar"
     password_input = password.terminal_input()
     try:
         run_command(
-            (tools.seven_zip, "t", "-bd", "-sccUTF-8", "-p", "--", archive_path),
+            (tools.seven_zip, "t", "-bd", "-sccUTF-8", "--", archive_path),
             terminal_input=password_input,
         )
         unauthenticated = run_command(
@@ -82,7 +83,6 @@ def verify_tar_7z(
                 "-slt",
                 "-ba",
                 "-sccUTF-8",
-                "-p",
                 "--",
                 archive_path,
             ),
@@ -99,9 +99,9 @@ def verify_tar_7z(
                     tools.seven_zip,
                     "x",
                     "-so",
+                    "-bso2",
                     "-bd",
                     "-sccUTF-8",
-                    "-p",
                     "--",
                     archive_path,
                     inner_name,
@@ -117,7 +117,8 @@ def verify_tar_7z(
             )
             tar_listing.seek(0)
             members = parse_gnu_tar_listing(tar_listing.read())
-        compare_tar_members(snapshot, members)
+        if snapshot is not None:
+            compare_tar_members(snapshot, members)
     except ArchiveVerificationError:
         raise
     except ArchiveCreationError as error:
@@ -133,7 +134,7 @@ def test_7z_password(
     """Return whether the current password opens one complete encrypted archive."""
     try:
         run_command(
-            (tools.seven_zip, "t", "-bd", "-sccUTF-8", "-p", "--", archive_path),
+            (tools.seven_zip, "t", "-bd", "-sccUTF-8", "--", archive_path),
             terminal_input=password.terminal_input(),
         )
     except ArchiveCreationError:

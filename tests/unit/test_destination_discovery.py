@@ -8,16 +8,25 @@ from typing import Any
 
 import pytest
 
+from vaultkeep.archive import LoadedPassword, PasswordSecret
 from vaultkeep.archive import checksums as checksums_module
 from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum_sidecar
+from vaultkeep.backup import workflow
 from vaultkeep.backup.workflow import list_backups, prune_backups, verify_backups
 from vaultkeep.config.models import JobConfig
 from vaultkeep.destination.discovery import discover_backups
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
 from vaultkeep.destination.pruning import build_prune_plan, execute_prune_plan
 from vaultkeep.destination.templates import allocate_job_backup_paths, create_staging_directory
-from vaultkeep.errors import DestinationError, DestinationTemplateError, PruneError
+from vaultkeep.errors import (
+    ArchiveVerificationError,
+    DestinationError,
+    DestinationTemplateError,
+    PasswordFileError,
+    PruneError,
+)
 from vaultkeep.file_backups import file_config
+from vaultkeep.state.models import CredentialFingerprint
 
 
 def _config(tmp_path: Path, valid_config: dict[str, Any]) -> JobConfig:
@@ -53,8 +62,8 @@ def _create_backup(config: JobConfig, number: int, created_at: datetime) -> Path
             config_fingerprint="sha256:" + "b" * 64,
             archive=paths.archive_path.name,
             archive_digest=f"sha256:{digest}",
-            archive_format="tar.zst",
-            encrypted=False,
+            archive_format=config.archive.format,
+            encrypted=config.archive.format == "tar.7z",
             hostname="host",
         ),
     )
@@ -75,6 +84,108 @@ def test_discovery_returns_valid_records_and_ignores_unrelated(
     assert len(discovered.backups) == 1
     assert discovered.malformed == ()
     assert discovered.state_records[0].job_id == "app"
+
+
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
+def test_verify_checks_all_archives_and_reports_all_failures(
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    backup_mode: str,
+) -> None:
+    valid_config["backup_mode"] = backup_mode
+    config = _config(tmp_path, valid_config)
+    destinations = (
+        [file_config(config, Path("/missing-source") / name) for name in ("one", "two")]
+        if backup_mode == "per_file"
+        else [config, config]
+    )
+    archives = []
+    malformed = []
+    for number, destination in enumerate(destinations, start=1):
+        root = Path(destination.destination.root)
+        root.mkdir(exist_ok=True)
+        directory = _create_backup(destination, number, datetime(2026, 7, 23, number, tzinfo=UTC))
+        archives.append(next(directory.glob("*.tar.zst")))
+        bad = root / f"backup-app-20260723T{number:02}3000Z"
+        bad.mkdir()
+        malformed.append(bad)
+    good_directory = _create_backup(destinations[-1], 3, datetime(2026, 7, 23, 3, tzinfo=UTC))
+    good = next(good_directory.glob("*.tar.zst"))
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(config.model_dump_json())
+    inspected = []
+    verified = []
+
+    def inspect(path: Path, *, tools: Any) -> None:
+        inspected.append(path)
+        if path != good:
+            raise ArchiveVerificationError(f"invalid stream {path.name}")
+
+    monkeypatch.setattr(workflow, "verify_tar_zstd", inspect)
+
+    with pytest.raises(ArchiveVerificationError) as caught:
+        verify_backups(config_path, on_verified=verified.append)
+
+    assert set(inspected) == {*archives, good}
+    assert verified == [good]
+    for path in (*archives, *malformed):
+        assert str(path) in str(caught.value)
+    assert "invalid stream" in str(caught.value)
+    assert "malformed backup" in str(caught.value)
+
+
+@pytest.mark.parametrize("user_mode", [False, True])
+@pytest.mark.parametrize("outcome", ["verified", "failed", "interrupted"])
+def test_verify_loads_one_password_for_all_backups_and_always_clears_it(
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    user_mode: bool,
+    outcome: str,
+) -> None:
+    valid_config["archive"]["format"] = "tar.7z"
+    valid_config["encryption"] = {
+        "mode": "password",
+        "password_file": str(tmp_path / "password"),
+    }
+    config = _config(tmp_path, valid_config)
+    for number in (1, 2):
+        _create_backup(config, number, datetime(2026, 7, 23, number, tzinfo=UTC))
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(config.model_dump_json())
+    secret = PasswordSecret(b"secret")
+    fingerprint = CredentialFingerprint(device=1, inode=2, size=6, mtime_ns=3, ctime_ns=4)
+    loaded = []
+    inspected = []
+    monkeypatch.setattr(workflow.os, "geteuid", lambda: 1234)
+
+    def load(path: Path, *, owner_uid: int, owner_gid: int | None) -> LoadedPassword:
+        loaded.append((path, owner_uid, owner_gid))
+        return LoadedPassword(secret, fingerprint)
+
+    def inspect(path: Path, *, job_id: str, password: PasswordSecret, tools: Any) -> None:
+        assert job_id == "app"
+        assert password is secret
+        assert password.terminal_input() == b"secret\n"
+        inspected.append(path)
+        if outcome == "failed":
+            raise ArchiveVerificationError("Wrong password")
+        if outcome == "interrupted":
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(workflow, "load_password_file", load)
+    monkeypatch.setattr(workflow, "verify_tar_7z", inspect)
+    if outcome == "verified":
+        assert verify_backups(config_path, user_mode=user_mode).backups == 2
+    else:
+        error = ArchiveVerificationError if outcome == "failed" else KeyboardInterrupt
+        with pytest.raises(error):
+            verify_backups(config_path, user_mode=user_mode)
+    assert loaded == [(tmp_path / "password", 1234 if user_mode else 0, None if user_mode else 0)]
+    assert len(inspected) == (1 if outcome == "interrupted" else 2)
+    with pytest.raises(PasswordFileError, match="cleared"):
+        secret.terminal_input()
 
 
 @pytest.mark.parametrize("backup_mode", ["combined", "per_file"])

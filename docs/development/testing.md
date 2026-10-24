@@ -31,7 +31,7 @@ Hatchling dependencies used for local production package installation.
 ruff format --check .
 ruff check .
 mypy
-pytest --no-cov -q -k 'not test_real_header_encrypted_tar_7z_creation_and_verification and not test_real_header_encrypted_tar_7z_restore_drill'
+pytest --no-cov -q
 python scripts/check_packages.py
 git diff --check
 ```
@@ -74,7 +74,9 @@ and state environment. Process tests check SIGTERM completion evidence and SIGKI
 uncertainty. Status tests separate lock activity from missing, corrupt, inaccessible,
 stale, and contradictory history and verify compact historical safety warnings,
 verbose details, and JSON without mutation.
-Real archive tests use disposable files.
+Real archive tests use disposable files. Manual verification tests cover both
+formats, missing sources, invalid archives with matching checksums, wrong passwords,
+unsafe TAR paths, and preservation of backup and state files.
 
 `check_packages.py` builds the unified wheel and source archive, independently
 rebuilds the extracted archive, checks the single entry point and bundled Trigger

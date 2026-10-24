@@ -173,8 +173,30 @@ def test_verify_reports_stages_without_changing_verification_result(
     assert stages == [
         "Loading and validating configuration",
         "Checking destination",
-        "Verifying backup manifests and checksums",
+        "Verifying backup manifests, checksums, and archive contents",
     ]
+
+
+@pytest.mark.parametrize("user_mode", [False, True])
+def test_verify_cli_passes_mode_and_reports_verified_archives(
+    local_job: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, user_mode: bool
+) -> None:
+    from vaultkeep.cli import commands
+
+    archive = local_job.parent / "backup.tar.7z"
+
+    def verify(path: Path, **kwargs: Any) -> workflow.CommandResult:
+        assert path == local_job
+        assert kwargs["user_mode"] is user_mode
+        kwargs["on_verified"](archive)
+        return workflow.CommandResult("verify", "verified", backups=1)
+
+    monkeypatch.setattr(commands, "verify_backups", verify)
+
+    assert main([*(["--user"] if user_mode else []), "--config", str(local_job), "verify"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "verify: verified\n"
+    assert captured.err == f"Verified: {archive}\n"
 
 
 def test_runtime_validation_checks_marker_before_writing_probe(
