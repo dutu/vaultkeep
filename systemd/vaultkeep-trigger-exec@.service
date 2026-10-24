@@ -4,7 +4,7 @@ Documentation=man:systemd.service(5)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/vaultkeep --user trigger exec-worker %i
+ExecStart=@VAULTKEEP_BIN@ --user trigger exec-worker %i
 Restart=no
 TimeoutStartSec=infinity
 UMask=0077

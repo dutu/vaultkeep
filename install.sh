@@ -513,18 +513,8 @@ stage_release() {
     log "Preparing Vaultkeep $version in staging for validation..."
     install_packages "$stage"
     verify_release "$stage" "$version"
-    python3 - "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR" <<'META'
-import json
-import sys
-from pathlib import Path
-
-Path(sys.argv[1]).write_text(json.dumps({
-    "schema_version": 3,
-    "version": sys.argv[2],
-    "source_digest": sys.argv[3],
-    "source_checkout": sys.argv[4],
-}, indent=2, sort_keys=True) + "\n")
-META
+    python3 "$SOURCE_DIR/src/vaultkeep/installation.py" metadata \
+        "$stage/deployment.json" "$version" "$digest" "$SOURCE_DIR"
     chown -R root:root "$stage"
 }
 
@@ -562,18 +552,18 @@ verify_systemd_templates() {
     local tmp
     tmp=$(mktemp -d "$VK_STAGING/units.XXXXXX")
     UNIT_VALIDATION_DIR="$tmp"
-    sed -E 's#^ExecStart=/usr/local/bin/vaultkeep .*$#ExecStart=/bin/true#' \
-        "$SOURCE_DIR/systemd/vaultkeep@.service" >"$tmp/vaultkeep@.service"
+    python3 "$SOURCE_DIR/src/vaultkeep/installation.py" templates "$SOURCE_DIR/systemd" "$tmp"
+    sed -i -E 's#^ExecStart=.*$#ExecStart=/bin/true#' "$tmp/vaultkeep@.service"
     awk '
         { print }
         $0 == "Unit=vaultkeep@%i.service" { print "OnCalendar=*-*-* 00:00:00" }
-    ' "$SOURCE_DIR/systemd/vaultkeep@.timer" >"$tmp/vaultkeep@.timer"
+    ' "$tmp/vaultkeep@.timer" >"$tmp/timer"
+    mv "$tmp/timer" "$tmp/vaultkeep@.timer"
     systemd-analyze verify "$tmp/vaultkeep@.service" "$tmp/vaultkeep@.timer"
     if [[ "$COMPONENTS" == core,trigger ]]; then
         local name
         for name in vaultkeep-trigger-exec@.service; do
-            sed -E 's#^ExecStart=.*#ExecStart=/bin/true#' \
-                "$SOURCE_DIR/systemd/$name" >"$tmp/$name"
+            sed -i -E 's#^ExecStart=.*#ExecStart=/bin/true#' "$tmp/$name"
         done
         install -d -m 0700 "$tmp/runtime"
         XDG_RUNTIME_DIR="$tmp/runtime" systemd-analyze --user verify \
@@ -638,14 +628,22 @@ resume_schedules() {
 }
 
 install_units_and_links() {
+    local templates="$SOURCE_DIR/systemd"
+    if [[ "$DRY_RUN" == 0 ]]; then
+        templates=$(mktemp -d "$VK_STAGING/units.XXXXXX")
+        UNIT_VALIDATION_DIR="$templates"
+        python3 "$SOURCE_DIR/src/vaultkeep/installation.py" templates "$SOURCE_DIR/systemd" "$templates"
+    fi
     run install -d -o root -g root -m 0755 "$VK_SYSTEMD_ROOT" "$(dirname "$VK_BIN_LINK")"
-    run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep@.service" "$VK_SERVICE_UNIT"
-    run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep@.timer" "$VK_TIMER_UNIT"
+    run install -o root -g root -m 0644 "$templates/vaultkeep@.service" "$VK_SERVICE_UNIT"
+    run install -o root -g root -m 0644 "$templates/vaultkeep@.timer" "$VK_TIMER_UNIT"
     if [[ "$COMPONENTS" == core,trigger ]]; then
         run install -d -o root -g root -m 0755 "$VK_USER_SYSTEMD_ROOT"
-        run install -o root -g root -m 0644 "$SOURCE_DIR/systemd/vaultkeep-trigger-exec@.service" "$VK_WORKER_UNIT"
+        run install -o root -g root -m 0644 "$templates/vaultkeep-trigger-exec@.service" "$VK_WORKER_UNIT"
     fi
     if [[ "$DRY_RUN" == 0 ]]; then
+        rm -rf "$templates"
+        UNIT_VALIDATION_DIR=""
         ln -s "releases/$RELEASE_ID" "$VK_PREFIX/.current.$$"
         mv -Tf "$VK_PREFIX/.current.$$" "$VK_CURRENT"
         ln -sfn "$VK_CURRENT/venv/bin/vaultkeep" "$VK_BIN_LINK"

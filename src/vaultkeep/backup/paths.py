@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from vaultkeep.installation import installation_path
 
 
 @dataclass(frozen=True, slots=True)
 class WorkflowPaths:
     """Explicit testable locations for local state and private archive workspaces."""
 
-    state_root: Path = Path("/var/lib/vaultkeep/jobs")
-    local_temp_root: Path = Path("/var/lib/vaultkeep/tmp")
+    state_root: Path = field(
+        default_factory=lambda: installation_path("VAULTKEEP_VAR_ROOT") / "jobs"
+    )
+    local_temp_root: Path = field(
+        default_factory=lambda: installation_path("VAULTKEEP_VAR_ROOT") / "tmp"
+    )
     lock_root: Path = Path("/run/lock/vaultkeep")
 
 

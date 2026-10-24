@@ -6,13 +6,12 @@ import errno
 import json
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from vaultkeep.config import (
@@ -22,6 +21,7 @@ from vaultkeep.config import (
     resolve_runtime_config,
 )
 from vaultkeep.errors import ConfigurationError, TimerError
+from vaultkeep.installation import installation_path, systemd_argument
 from vaultkeep.maintenance import command_selection
 from vaultkeep.validation import validate_semantics
 
@@ -97,9 +97,13 @@ class RenderedSchedule:
 class TimerPaths:
     """Filesystem locations used by the timer manager."""
 
-    jobs_root: Path = Path("/etc/vaultkeep/jobs")
-    units_root: Path = Path("/etc/systemd/system")
-    registry_path: Path = Path("/var/lib/vaultkeep/systemd-instances.json")
+    jobs_root: Path = field(
+        default_factory=lambda: installation_path("VAULTKEEP_CONFIG_ROOT") / "jobs"
+    )
+    units_root: Path = field(default_factory=lambda: installation_path("VAULTKEEP_SYSTEMD_ROOT"))
+    registry_path: Path = field(
+        default_factory=lambda: installation_path("VAULTKEEP_VAR_ROOT") / "systemd-instances.json"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -615,19 +619,26 @@ class TimerManager:
         self, config_path: Path, instance: str, runtime_params: Mapping[str, str]
     ) -> str | None:
         resolved = config_path.resolve()
-        arguments = ["/usr/local/bin/vaultkeep"]
+        arguments = [str(installation_path("VAULTKEEP_BIN_LINK"))]
         if self.user_mode:
             arguments.append("--user")
         arguments.extend(("--config", str(resolved)))
         for key, value in sorted(runtime_params.items()):
             arguments.extend(("--param", f"{key}={value}"))
         arguments.append("run")
-        command = shlex.join(arguments) if self.user_mode else " ".join(arguments)
+        try:
+            command = " ".join(
+                systemd_argument(argument, executable=index == 0)
+                for index, argument in enumerate(arguments)
+            )
+        except ValueError as error:
+            raise TimerError(str(error)) from error
+        condition = str(resolved).replace("%", "%%")
         if self.user_mode:
             content = (
                 "[Unit]\n"
                 f"Description=Vaultkeep user backup job {instance}\n"
-                f"ConditionPathExists={resolved}\n\n"
+                f"ConditionPathExists={condition}\n\n"
                 "[Service]\n"
                 "Type=oneshot\n"
                 f"ExecStart={command}\n"
@@ -643,7 +654,7 @@ class TimerManager:
         content = (
             "[Unit]\n"
             "ConditionPathExists=\n"
-            f"ConditionPathExists={resolved}\n\n"
+            f"ConditionPathExists={condition}\n\n"
             "[Service]\n"
             "ExecStart=\n"
             f"ExecStart={command}\n"

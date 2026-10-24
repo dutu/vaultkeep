@@ -2273,10 +2273,20 @@ interpreter is provisioned. Apt package changes are outside rollback.
 
 ## 25.1 Installation paths
 
-All installations use `/opt/vaultkeep/releases/<version>` and contain `src`, one
+By default, installations use `/opt/vaultkeep/releases/<version>` and contain `src`, one
 fresh `venv`, and `deployment.json`. `/opt/vaultkeep/current` is the activation pointer;
 `/usr/local/bin/vaultkeep` points through `current/venv/bin`. Scheduling and Trigger
 share one package version and entry point.
+
+Installer path overrides are recorded in the existing release `deployment.json`,
+which is readable by users (`0644`). Installed commands resolve the layout relative
+to their virtual environment, independently of session and systemd environments;
+explicit environment overrides take precedence. Root job discovery, timer registry,
+state/temp paths, and the deployment lock use that layout. Older releases without
+layout metadata retain the defaults. Shared unit sources are templates rendered
+with the selected binary and configuration paths, with literal systemd escaping.
+Maintenance accepts the configured executable and the legacy default executable
+so updates can refresh units generated before custom layouts were supported.
 
 Core system templates stay under `/etc/systemd/system`. The shared Trigger worker
 template uses `/etc/systemd/user`; monitor services are generated explicitly per job

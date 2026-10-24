@@ -39,6 +39,8 @@ def read_file(path: Path) -> dict[str, Any] | None:
 
 def command_selection(content: str, *, monitor: bool, user: bool) -> tuple[Path, dict[str, str]]:
     """Decode only the literal argument forms written by Vaultkeep's renderers."""
+    from vaultkeep.installation import installation_path
+
     commands = [line[10:] for line in content.splitlines() if line.startswith("ExecStart=")]
     commands = [command for command in commands if command]
     if len(commands) != 1 or "\\\n" in content:
@@ -46,10 +48,20 @@ def command_selection(content: str, *, monitor: bool, user: bool) -> tuple[Path,
     raw = commands[0]
     # Generated units escape literal systemd expansions as %% and $$. Refuse
     # custom specifiers, environment substitutions and C-style escapes.
-    if re.search(r"(?<!%)%(?!%)|(?<!\$)\$(?!\$)", raw) or "\\x" in raw:
+    words = shlex.split(raw)
+    if (
+        any(re.search(r"(?<!%)%(?!%)", word) for word in words)
+        or any(re.search(r"(?<!\$)\$(?!\$)", word) for word in words[1:])
+        or re.search(r"(?<!\\)(?:\\\\)*\\x", raw)
+    ):
         raise ValueError("custom systemd expansions require manual review")
-    argv = [word.replace("%%", "%").replace("$$", "$") for word in shlex.split(raw)]
-    if not argv or argv.pop(0) != "/usr/local/bin/vaultkeep":
+    argv = [
+        word.replace("%%", "%") if index == 0 else word.replace("%%", "%").replace("$$", "$")
+        for index, word in enumerate(words)
+    ]
+    # Older releases generated the default executable even with a custom layout.
+    executables = {"/usr/local/bin/vaultkeep", str(installation_path("VAULTKEEP_BIN_LINK"))}
+    if not argv or argv.pop(0) not in executables:
         raise ValueError("unexpected managed service executable")
     if user and (not argv or argv.pop(0) != "--user"):
         raise ValueError("user service requires --user")

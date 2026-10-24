@@ -4,7 +4,7 @@ User mode lets a normal user configure, run, and schedule their own Vaultkeep jo
 
 User mode is for backups of files the user can already read to destinations the user can already write. It does not grant access to system files, root-owned application data, protected secrets, or system mounts.
 
-User mode uses the shared `/usr/local/bin/vaultkeep` command with the `--user` flag:
+User mode uses the shared `/usr/local/bin/vaultkeep` command with the `--user` flag. If the administrator chose a [custom command path](../README.md#installation), use that command instead; generated monitors and timers use it automatically:
 
 ```bash
 vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml run

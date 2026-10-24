@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import tempfile
 from pathlib import Path
 
+from vaultkeep.installation import installation_path, systemd_argument
 from vaultkeep.trigger.config import TriggerConfig
 from vaultkeep.trigger.errors import BlockedError, ConfigurationError
 from vaultkeep.trigger.paths import account_home, validate_scope
@@ -42,25 +42,29 @@ def _systemctl(*arguments: str) -> str:
     return result.stdout
 
 
-def _quote_systemd_argument(value: str) -> str:
+def _quote_systemd_argument(value: str, *, executable: bool = False) -> str:
     """Quote one ExecStart argument with systemd syntax and literal expansions."""
-    if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise ConfigurationError("monitor command arguments must not contain control characters")
-    if re.fullmatch(r"[A-Za-z0-9_./:=,@+-]+", value):
-        return value
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    escaped = escaped.replace("%", "%%").replace("$", "$$")
-    return '"' + escaped + '"'
+    try:
+        return systemd_argument(value, executable=executable)
+    except ValueError as error:
+        raise ConfigurationError(str(error)) from error
 
 
 def render_service(config: TriggerConfig) -> str:
     # Always use the stable installed entry point, matching timer services.
-    args = ["/usr/local/bin/vaultkeep", "--user", "--config", str(config.source_path)]
+    args = [
+        str(installation_path("VAULTKEEP_BIN_LINK")),
+        "--user",
+        "--config",
+        str(config.source_path),
+    ]
     for key, value in sorted(config.params.items()):
         args.extend(["--param", f"{key}={value}"])
     args.extend(["trigger", "monitor"])
     # ExecStart is parsed by systemd, not by a shell.
-    command = " ".join(_quote_systemd_argument(arg) for arg in args)
+    command = " ".join(
+        _quote_systemd_argument(arg, executable=index == 0) for index, arg in enumerate(args)
+    )
     return (
         f"# Managed by Vaultkeep: {service_name(config)}\n"
         "[Unit]\n"

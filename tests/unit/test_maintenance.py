@@ -130,6 +130,39 @@ def test_refresh_old_monitor_command_without_activating_or_changing_permissions(
 
 
 @pytest.mark.parametrize("user", [False, True])
+def test_refresh_migrates_default_schedule_binary_to_custom_layout(
+    tmp_path, valid_config, monkeypatch, user
+):
+    spec, paths, _ = scheduled_job(
+        tmp_path, valid_config, monkeypatch, user=user, params={"repo": "nas"}
+    )
+    service = next(paths.units_root.rglob("*.service" if user else "override.conf"))
+    original = service.read_bytes()
+    monkeypatch.setenv("VAULTKEEP_BIN_LINK", "/custom/bin/vaultkeep")
+    plan = maintenance.plan(spec)
+    maintenance.apply(plan)
+    assert "ExecStart=/custom/bin/vaultkeep " in service.read_text()
+    # The regenerated custom command must remain refreshable.
+    maintenance.plan(spec)
+    maintenance.apply(plan, restore=True)
+    assert service.read_bytes() == original
+
+
+def test_refresh_migrates_default_monitor_binary_to_custom_layout(
+    tmp_path, valid_config, monkeypatch
+):
+    spec, path, _ = monitor_job(tmp_path, valid_config)
+    original = path.read_bytes()
+    monkeypatch.setenv("VAULTKEEP_BIN_LINK", "/custom/bin/vaultkeep")
+    plan = maintenance.plan(spec)
+    maintenance.apply(plan)
+    assert "ExecStart=/custom/bin/vaultkeep --user" in path.read_text()
+    maintenance.plan(spec)
+    maintenance.apply(plan, restore=True)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("user", [False, True])
 def test_refresh_refuses_schedule_overrides(tmp_path, valid_config, monkeypatch, user):
     spec, paths, _ = scheduled_job(tmp_path, valid_config, monkeypatch, user=user)
     override = paths.units_root / "vaultkeep@app.service.d/custom.conf"

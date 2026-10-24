@@ -42,8 +42,15 @@ def report_error(message: str) -> None:
 def path_env(name: str, default: str) -> Path:
     value = os.environ.get(name, default)
     path = Path(value)
-    if not path.is_absolute() or str(path) != value or ".." in path.parts:
+    if (
+        not path.is_absolute()
+        or str(path) != value
+        or ".." in path.parts
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
         fail(f"installer path must be absolute and normalized: {name}")
+    if name == "VAULTKEEP_BIN_LINK" and any(char in value for char in "'\"\\"):
+        fail("systemd executable path must not contain quotes or backslashes")
     return path
 
 
@@ -291,6 +298,15 @@ def check_ownership(
                 or (expected_schema == 2 and metadata.get("components") != data["components"])
             ):
                 fail(f"deployment metadata disagrees with manifest: {identity}")
+            if "layout" in metadata and metadata["layout"] != {
+                "VAULTKEEP_INSTALL_PREFIX": str(layout.prefix),
+                "VAULTKEEP_CONFIG_ROOT": str(layout.config),
+                "VAULTKEEP_VAR_ROOT": str(layout.var),
+                "VAULTKEEP_BIN_LINK": str(layout.bin),
+                "VAULTKEEP_SYSTEMD_ROOT": str(layout.service.parent),
+                "VAULTKEEP_USER_SYSTEMD_ROOT": str(layout.worker.parent),
+            }:
+                fail(f"deployment layout disagrees with manifest: {identity}")
 
 
 def needs_reconciliation(layout: Layout, components: list[str]) -> bool:

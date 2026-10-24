@@ -250,7 +250,7 @@ Application code, virtual environments, and installer ownership metadata are con
 └── install-manifest.json
 ```
 
-Debian keeps the remaining files in standard purpose-specific locations:
+By default, Debian keeps the remaining files in standard purpose-specific locations:
 
 | Purpose | Location |
 |---|---|
@@ -261,6 +261,17 @@ Debian keeps the remaining files in standard purpose-specific locations:
 | Trigger worker template | `/etc/systemd/user/vaultkeep-trigger-exec@.service` |
 
 The ownership manifest allows the installer to identify its files without scanning the system or guessing from filenames.
+
+To use a custom command or root configuration directory, pass absolute, normalized paths to the installer:
+
+```sh
+sudo env VAULTKEEP_BIN_LINK=/usr/local/bin/vaultkeep-custom \
+  VAULTKEEP_CONFIG_ROOT=/etc/vaultkeep-custom ./install.sh install
+```
+
+`VAULTKEEP_INSTALL_PREFIX` and `VAULTKEEP_VAR_ROOT` similarly override the application directory and root state/temporary directory. Repeat the same overrides for `update`, reinstallation, and `uninstall`; changing them does not migrate an existing installation. Generated services and installed commands retain the chosen layout without requiring these variables in user sessions or systemd environments. Use the chosen command and configuration paths in the procedures below.
+
+Systemd does not allow quotes or backslashes in executable paths; the installer rejects those command paths. Keep shared unit directories at their defaults unless systemd is separately configured to search the chosen locations.
 
 Installation does not start a backup. Example files are copied to the root-mode jobs directory with the `.example` extension, so they are not active jobs:
 

@@ -2,11 +2,11 @@
 Description=Vaultkeep backup job %i
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=/etc/vaultkeep/jobs/%i.yaml
+ConditionPathExists=@VAULTKEEP_JOB_CONDITION@
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/vaultkeep --config /etc/vaultkeep/jobs/%i.yaml run
+ExecStart=@VAULTKEEP_BIN@ --config @VAULTKEEP_JOB_CONFIG@ run
 User=root
 Group=root
 UMask=0077

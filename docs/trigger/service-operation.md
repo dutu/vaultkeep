@@ -14,6 +14,8 @@ worker template. It uses `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity
 Workers remain independent of monitor stop/restart. Do not add monitor lifecycle
 dependencies or enable individual attempt instances.
 
+These command paths are the installation defaults. With a [custom installation layout](../../README.md#installation), both monitor services and the shared worker template use the configured stable command path.
+
 Only a monitor submits workers, via
 `systemctl --user start --no-block vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service`.
 The shared template reads frozen requests, so it takes no current configuration.

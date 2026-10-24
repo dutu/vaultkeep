@@ -41,7 +41,7 @@ sudo ./install.sh update --dry-run
 sudo ./install.sh update
 ```
 
-The root installation provides the shared `/usr/local/bin/vaultkeep` command that both root mode and user mode use.
+The root installation provides the shared `/usr/local/bin/vaultkeep` command that both root mode and user mode use. If installed with [custom paths](../README.md#installation), substitute the chosen command, configuration, and state locations in this guide and repeat the same installer overrides when updating or uninstalling.
 
 ## Create a root-mode job
 

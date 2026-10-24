@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -400,6 +401,15 @@ def test_update_needs_manifest(host: dict[str, str]) -> None:
     assert "update requires an existing installation manifest" in result.stderr
 
 
+@pytest.mark.parametrize("suffix", ["quote'", 'quote"', r"back\slash"])
+def test_invalid_systemd_executable_path_fails_before_installation(host, tmp_path, suffix):
+    host["VAULTKEEP_BIN_LINK"] = str(tmp_path / suffix / "vaultkeep")
+    result = run_installer(host, "install", check=False)
+    assert result.returncode != 0
+    assert "executable path must not contain quotes or backslashes" in result.stderr
+    assert not Path(host["VAULTKEEP_INSTALL_PREFIX"]).exists()
+
+
 def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> None:
     wheelhouse_available(host)
     result = run_installer(host, "install")
@@ -434,6 +444,83 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> N
     first = snapshot(host)
     run_installer(host, "update")
     assert snapshot(host) == first
+
+
+def test_custom_layout_units_and_cli_survive_clean_environment(host, tmp_path, valid_config):
+    wheelhouse_available(host)
+    host.update(
+        VAULTKEEP_INSTALL_PREFIX=str(tmp_path / "application releases"),
+        VAULTKEEP_BIN_LINK=str(tmp_path / "commands/backup runner %n $HOME"),
+        VAULTKEEP_CONFIG_ROOT=str(tmp_path / "job configs %n $HOME"),
+    )
+    run_installer(host, "install")
+    data = manifest(host)
+    release = Path(data["active_release"])
+    metadata = release / "deployment.json"
+    assert metadata.stat().st_mode & 0o777 == 0o644
+    recorded = json.loads(metadata.read_text())["layout"]
+    assert all(host[name] == value for name, value in recorded.items())
+    service = (Path(host["VAULTKEEP_SYSTEMD_ROOT"]) / "vaultkeep@.service").read_text()
+    worker = (
+        Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service"
+    ).read_text()
+    assert 'ExecStart="' + host["VAULTKEEP_BIN_LINK"].replace("%", "%%") + '" ' in service
+    assert service.split("ExecStart=", 1)[1].split(" --config", 1)[0] in worker
+    assert "/etc/vaultkeep/jobs" not in service
+
+    job = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "jobs/app.yaml"
+    job.write_text(json.dumps(valid_config))
+    clean = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "user")}
+    script = """
+import json, sys
+from pathlib import Path
+from vaultkeep.backup.paths import WorkflowPaths
+from vaultkeep.schedule import TimerManager
+from vaultkeep.maintenance import command_selection
+expected = json.loads(sys.argv[1])
+manager = TimerManager()
+assert str(manager.paths.jobs_root) == expected['VAULTKEEP_CONFIG_ROOT'] + '/jobs'
+assert str(manager.paths.units_root) == expected['VAULTKEEP_SYSTEMD_ROOT']
+assert str(WorkflowPaths().state_root) == expected['VAULTKEEP_VAR_ROOT'] + '/jobs'
+job = manager.paths.jobs_root / 'app.yaml'
+unit = manager._service_content(job, 'app', {'repo': 'nas'})
+assert command_selection(unit, monitor=False, user=False) == (job, {'repo': 'nas'})
+assert '/usr/local/bin/vaultkeep' not in unit
+"""
+    result = subprocess.run(
+        [str(release / "venv/bin/python"), "-I", "-c", script, json.dumps(recorded)],
+        env=clean,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    with (Path(host["VAULTKEEP_INSTALL_PREFIX"]) / "maintenance.lock").open("rb") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = subprocess.run(
+            [host["VAULTKEEP_BIN_LINK"], "--config", str(job), "run"],
+            env=clean,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+    assert result.returncode == 10, result.stdout + result.stderr
+    assert "installation/update is in progress" in result.stderr
+    before = snapshot(host)
+    run_installer(host, "update")
+    assert snapshot(host) == before
+
+
+def test_modified_deployment_layout_requires_review(installed):
+    metadata = Path(manifest(installed)["active_release"]) / "deployment.json"
+    data = json.loads(metadata.read_text())
+    data["layout"]["VAULTKEEP_BIN_LINK"] = "/unrelated/bin/vaultkeep"
+    metadata.write_text(json.dumps(data))
+    before = snapshot(installed)
+    result = run_installer(installed, "update", check=False)
+    assert result.returncode != 0
+    assert "deployment layout disagrees with manifest" in result.stderr
+    assert snapshot(installed) == before
 
 
 def test_missing_cli_module_reports_traceback_and_preserves_existing_install(

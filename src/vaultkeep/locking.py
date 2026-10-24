@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vaultkeep.errors import LockError
+from vaultkeep.installation import installation_path
 
 
 def requires_deployment_lock(command: str | None, action: str | None) -> bool:
@@ -23,7 +24,7 @@ def requires_deployment_lock(command: str | None, action: str | None) -> bool:
 @contextmanager
 def deployment_lock() -> Iterator[None]:
     """Keep installed code in place while a command uses it; fail without waiting."""
-    path = Path(os.environ.get("VAULTKEEP_INSTALL_PREFIX", "/opt/vaultkeep")) / "maintenance.lock"
+    path = installation_path("VAULTKEEP_INSTALL_PREFIX") / "maintenance.lock"
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
