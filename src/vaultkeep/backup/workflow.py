@@ -617,8 +617,6 @@ def _validate_runtime(
     root = Path(config.destination.root)
     if not root.is_dir():
         raise DestinationError(f"Destination root is not an accessible directory: {root}")
-    if config.destination.mount_point is not None:
-        _assert_configured_mount_point(root, Path(config.destination.mount_point))
     if config.destination.expected_fstype is not None:
         actual_fstype = _mounted_filesystem_type(root)
         if actual_fstype != config.destination.expected_fstype:
@@ -639,24 +637,7 @@ def _validate_runtime(
                 raise DestinationError(f"Configured source does not exist: {source.path}")
 
 
-def _assert_configured_mount_point(root: Path, mount_point: Path) -> None:
-    if not mount_point.is_dir():
-        raise DestinationError(
-            f"Configured mount point is not an accessible directory: {mount_point}"
-        )
-    try:
-        root_resolved = root.resolve(strict=False)
-        mount_point_resolved = mount_point.resolve(strict=False)
-    except OSError as error:
-        raise DestinationError(
-            f"Unable to resolve configured destination mount point: {mount_point}"
-        ) from error
-    if not _path_is_relative_to(root_resolved, mount_point_resolved):
-        raise DestinationError(f"Destination root is not below configured mount point: {root}")
-    _mounted_filesystem_type(mount_point_resolved, exact_mount_point=True)
-
-
-def _mounted_filesystem_type(path: Path, *, exact_mount_point: bool = False) -> str:
+def _mounted_filesystem_type(path: Path) -> str:
     """Inspect this process's mount namespace, including bind mounts, without writing."""
     command = [
         "findmnt",
@@ -666,7 +647,7 @@ def _mounted_filesystem_type(path: Path, *, exact_mount_point: bool = False) -> 
         "--raw",
         "--output",
         "FSTYPE",
-        "--mountpoint" if exact_mount_point else "--target",
+        "--target",
         str(path),
     ]
     try:
@@ -675,8 +656,6 @@ def _mounted_filesystem_type(path: Path, *, exact_mount_point: bool = False) -> 
         raise DestinationError(
             f"Cannot inspect destination filesystem at {path}: {error}"
         ) from error
-    if exact_mount_point and completed.returncode == 1 and not completed.stdout.strip():
-        raise DestinationError(f"Configured mount point is not mounted: {path}")
     filesystem_types = completed.stdout.split()
     if completed.returncode != 0 or len(filesystem_types) != 1:
         raise DestinationError(
@@ -684,14 +663,6 @@ def _mounted_filesystem_type(path: Path, *, exact_mount_point: bool = False) -> 
             "findmnt did not return one mounted filesystem type"
         )
     return filesystem_types[0]
-
-
-def _path_is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
 
 
 def _runtime_owner(user_mode: bool) -> tuple[int, int | None]:

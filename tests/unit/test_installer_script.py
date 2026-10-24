@@ -865,7 +865,7 @@ def managed_timer(host, valid_config, monkeypatch, *, active=True):
     source.mkdir()
     destination.mkdir()
     valid_config["sources"][0]["path"] = str(source)
-    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["destination"].update(root=str(destination))
     valid_config["schedule"]["enabled"] = True
     config = jobs / "app.yaml"
     config.write_text(json.dumps(valid_config))

@@ -225,7 +225,7 @@ For each host, record:
   - Release-gate tests are collected and run.
   - No release-gate test is skipped.
   - The host check confirms Debian, root, systemd, and required tools.
-  - The mount check confirms CIFS and NFS filesystem types.
+  - The filesystem check confirms CIFS and NFS filesystem types.
   - Installer dry-runs complete or report the explicitly accepted clean-host
     update precondition.
 
@@ -410,7 +410,7 @@ For each combination, create a fixture containing:
   - `job.id` matches the config filename stem.
   - `destination.root` points to the tested destination.
   - `destination.marker_file` is present and exists in the destination.
-  - `destination.mount_point` is set to the actual CIFS or NFS mount path.
+  - `destination.expected_fstype` matches the actual CIFS or NFS filesystem type.
   - `archive.format` is the format being tested.
   - `encryption.mode` is `password` only for `.tar.7z`.
   - `encryption.password_file` points to a root-owned mode-`0600` file for

@@ -22,7 +22,7 @@ and [user mode guide](docs/user-mode.md).
   - [Back up directory files separately](#back-up-directory-files-separately)
   - [Destination name templates](#destination-name-templates)
   - [Runtime template parameters](#runtime-template-parameters)
-  - [Destination mount checks](#destination-mount-checks)
+  - [Destination safety checks](#destination-safety-checks)
   - [Desktop notifications](#desktop-notifications)
   - [CLI reference](#cli-reference)
   - [Terminal output](#terminal-output)
@@ -398,13 +398,12 @@ sources:
 
 destination:
   root: /mnt/backups/electrum
-  mount_point: /mnt/backups
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 ```
 
 1. Set the source and destination to your actual paths. The destination root must
-   already exist. Set `mount_point` to the actual share mount, or omit it for a
-   local destination. Keep the job's archive, encryption, and retention settings.
+   already exist. Configure the optional [destination safety checks](#destination-safety-checks)
+   as needed. Keep the job's archive, encryption, and retention settings.
 2. Validate and run the job as its owning user:
 
    ```sh
@@ -519,42 +518,39 @@ Runtime parameter names must match `[A-Za-z_][A-Za-z0-9_]*` and cannot use built
 
 Runtime parameter values are part of the effective backup identity. Different parameter values use different destination namespaces, configuration fingerprints, local state files, locks, and timer instances.
 
-### Destination mount checks
+### Destination safety checks
 
-For destinations below a mounted filesystem, set `destination.mount_point` to the actual mount path:
+`destination.root` must be an existing directory. Two optional safety checks can
+be configured independently: use either, both, or neither.
 
-```yaml
-destination:
-  root: /mnt/backups/app
-  mount_point: /mnt/backups
-```
-
-When `mount_point` is present, Vaultkeep requires it to be currently mounted before using `destination.root`. The mount point can be `destination.root` itself or one of its parents. Omit `mount_point` for ordinary local destinations.
+- `marker_file` confirms that a designated marker exists as a regular file below
+  `destination.root`. Use a relative path without `..` components. Vaultkeep does
+  not check its contents or create it automatically. A missing or inaccessible
+  marker blocks destination writes.
+- `expected_fstype` verifies the actual filesystem backing `destination.root` as
+  seen by Vaultkeep, including inside a container. Use an exact kernel filesystem
+  type such as `cifs`, `nfs`, `nfs4`, or `ext4`.
 
 For a CIFS destination, especially one mounted on an LXC host and bind-mounted into
-the container, also require the destination filesystem type:
+the container, both checks can be useful:
 
 ```yaml
 destination:
   root: /mnt/backups/app
-  mount_point: /mnt/backups
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
   expected_fstype: cifs
   marker_file: .vaultkeep-destination
 ```
 
-`expected_fstype` is optional and checks the filesystem backing `destination.root`
-as seen by Vaultkeep, including inside a container. It requires an exact kernel
-filesystem type such as `cifs`, `nfs`, or `nfs4`; it can be used without
-`mount_point`. If an LXC bind mount exposes a host local directory instead of the
-CIFS share, the filesystem type differs and Vaultkeep stops before writing to or
+If an LXC bind mount exposes a host local directory instead of the CIFS share,
+the filesystem type differs and Vaultkeep stops before writing to or
 managing backups on that destination. A type check does not identify a particular
 server or share.
 
-1. Inspect the mount point and destination from the environment that runs Vaultkeep
+1. Inspect the destination from the environment that runs Vaultkeep
    (inside LXC when applicable):
 
    ```sh
-   findmnt --uniq --mountpoint /mnt/backups --output TARGET,SOURCE,FSTYPE
    findmnt --uniq --target /mnt/backups/app --output TARGET,SOURCE,FSTYPE
    ```
 
@@ -577,11 +573,15 @@ server or share.
    vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
    ```
 
-Mount checks use `findmnt` from the required `util-linux` package and recognize
-bind mounts. Failed or unavailable mount inspection and filesystem type mismatches
-stop the operation with destination error exit code 5. Schema-only validation
-skips these runtime checks. Full validation also probes writing, renaming, and
-removal; a registered mount alone does not establish that a NAS is reachable.
+Filesystem type checks use `findmnt` from the required `util-linux` package and
+recognize bind mounts in the running process's mount namespace. Failed, unavailable,
+or ambiguous filesystem inspection and filesystem type mismatches stop the operation
+with destination error exit code 5. Schema-only validation skips these runtime checks.
+Configured safety checks precede the writable-destination probe, which tests writing,
+renaming, and removal during full validation and before backup writes. In `per_file`
+mode, the parent destination is checked before creating each child directory; child
+directories do not need their own marker, and retain the filesystem type check.
+A filesystem type check alone does not establish that a NAS is reachable.
 These checks confirm conditions at the time of inspection; they do not prevent
 mount changes or network failures during an operation.
 

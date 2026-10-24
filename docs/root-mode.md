@@ -66,12 +66,14 @@ job:
   id: app
 ```
 
-Use absolute source and destination paths. For mounted destinations, mount the share through the operating system and set `destination.mount_point` to the actual mount path. The mount point can be `destination.root` itself or one of its parents.
+Use absolute source and destination paths. Mount network shares through the operating
+system before using them as destinations.
 
 For CIFS shares, set `destination.expected_fstype: cifs` to reject a local directory
 exposed through an LXC bind mount when the host share is unavailable. See the
-[destination mount checks](../README.md#destination-mount-checks) for verification commands
-and the optional destination marker.
+[destination safety checks](../README.md#destination-safety-checks) for verification commands.
+The optional `destination.marker_file` independently requires a designated marker
+file below the destination root. Either check can be used alone or together.
 
 ## Validate and run manually
 

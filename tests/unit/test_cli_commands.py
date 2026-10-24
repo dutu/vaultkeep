@@ -58,7 +58,6 @@ def test_runtime_validation_probes_destination_writability(
         "destination": {
             **valid_config["destination"],
             "root": str(tmp_path),
-            "mount_point": None,
         },
     }
     config = JobConfig.model_validate(config_data)
@@ -84,7 +83,6 @@ def local_job(tmp_path: Path, valid_config: dict[str, Any]) -> Path:
     destination.mkdir()
     valid_config["sources"][0]["path"] = str(source)
     valid_config["destination"]["root"] = str(destination)
-    valid_config["destination"]["mount_point"] = None
     config = tmp_path / "app.yaml"
     config.write_text(json.dumps(valid_config), encoding="utf-8")
     return config
@@ -182,9 +180,7 @@ def test_verify_reports_stages_without_changing_verification_result(
 def test_runtime_validation_checks_marker_before_writing_probe(
     tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    valid_config["destination"].update(
-        root=str(tmp_path), mount_point=None, marker_file="missing-marker"
-    )
+    valid_config["destination"].update(root=str(tmp_path), marker_file="missing-marker")
 
     def unexpected_probe(root: Path) -> None:
         pytest.fail("Missing marker must prevent destination writes")
@@ -212,7 +208,7 @@ def test_commands_reject_local_bind_mount_before_destination_access(
 ) -> None:
     data = json.loads(local_job.read_text())
     data["backup_mode"] = backup_mode
-    data["destination"].update(mount_point=data["destination"]["root"], expected_fstype="cifs")
+    data["destination"]["expected_fstype"] = "cifs"
     local_job.write_text(json.dumps(data))
 
     def unexpected_access(*args: Any, **kwargs: Any) -> Any:
@@ -232,71 +228,6 @@ def test_commands_reject_local_bind_mount_before_destination_access(
     assert main(["--user", "--config", str(local_job), *command]) == 5
     assert "expected cifs, found ext4" in capsys.readouterr().err
     assert list((local_job.parent / "destination").iterdir()) == []
-
-
-def test_runtime_validation_accepts_destination_below_mounted_parent(
-    tmp_path: Path,
-    valid_config: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    mount_point = tmp_path / "share"
-    root = mount_point / "app"
-    root.mkdir(parents=True)
-    config_data = {
-        **valid_config,
-        "destination": {
-            **valid_config["destination"],
-            "root": str(root),
-            "mount_point": str(mount_point),
-        },
-    }
-    config = JobConfig.model_validate(config_data)
-
-    def mounted(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert command[-2:] == ["--mountpoint", str(mount_point.resolve())]
-        return subprocess.CompletedProcess(command, 0, "cifs\n", "")
-
-    # A same-filesystem bind mount can be missed by os.path.ismount().
-    monkeypatch.setattr(workflow.os.path, "ismount", lambda path: False)
-    monkeypatch.setattr(workflow.subprocess, "run", mounted)
-
-    workflow._validate_runtime(
-        config,
-        require_sources=False,
-        require_writable_destination=False,
-    )
-
-
-def test_runtime_validation_rejects_unmounted_configured_mount_point(
-    tmp_path: Path,
-    valid_config: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    mount_point = tmp_path / "share"
-    root = mount_point / "app"
-    root.mkdir(parents=True)
-    config_data = {
-        **valid_config,
-        "destination": {
-            **valid_config["destination"],
-            "root": str(root),
-            "mount_point": str(mount_point),
-        },
-    }
-    config = JobConfig.model_validate(config_data)
-
-    monkeypatch.setattr(
-        workflow.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", ""),
-    )
-
-    with pytest.raises(DestinationError, match="Configured mount point is not mounted"):
-        workflow._validate_runtime(
-            config,
-            require_sources=False,
-            require_writable_destination=False,
-        )
 
 
 def test_user_workflow_paths_use_xdg_locations(

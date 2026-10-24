@@ -85,7 +85,6 @@ def test_list_never_reads_archive_contents_but_verify_and_prune_still_check_them
     backup_mode: str,
 ) -> None:
     valid_config["backup_mode"] = backup_mode
-    valid_config["destination"]["mount_point"] = None
     config = _config(tmp_path, valid_config)
     destination = (
         file_config(config, tmp_path / "missing-source" / "wallet")

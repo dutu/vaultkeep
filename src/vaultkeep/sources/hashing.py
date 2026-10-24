@@ -15,7 +15,7 @@ from vaultkeep.errors import SourceChangedError, SourceHashError
 from vaultkeep.sources.entries import SourceEntry, SourceEntryType, SourceSnapshot
 
 SOURCE_DIGEST_FORMAT_VERSION = 1
-CONFIG_FINGERPRINT_FORMAT_VERSION = 1
+CONFIG_FINGERPRINT_FORMAT_VERSION = 2
 _HASH_CHUNK_SIZE = 1024 * 1024
 _METADATA_POLICY = ("mode", "uid", "gid")
 
@@ -99,11 +99,7 @@ def calculate_config_fingerprint(
             "root": _normalize_posix_path(config.destination.root),
             "name_template": config.destination.name_template,
             "marker_file": config.destination.marker_file,
-            "mount_point": (
-                _normalize_posix_path(config.destination.mount_point)
-                if config.destination.mount_point is not None
-                else None
-            ),
+            "expected_fstype": config.destination.expected_fstype,
         },
         "runtime_params": dict(sorted((runtime_params or {}).items())),
         "archive": {

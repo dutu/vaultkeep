@@ -31,7 +31,7 @@ def health_job(tmp_path, valid_config, monkeypatch):
     source.mkdir()
     destination.mkdir()
     valid_config["sources"][0]["path"] = str(source)
-    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["destination"].update(root=str(destination))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(validation, "state_root", lambda _scope: tmp_path / "trigger-state")
     monkeypatch.setattr(validation.os, "geteuid", lambda: 1000)

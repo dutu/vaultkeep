@@ -31,7 +31,7 @@ def job(tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.Monkey
     destination = tmp_path / "backups"
     destination.mkdir()
     valid_config["sources"][0].update(path=str(source))
-    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["destination"].update(root=str(destination))
     config_path = tmp_path / "app.yaml"
     config_path.write_text(json.dumps(valid_config))
 

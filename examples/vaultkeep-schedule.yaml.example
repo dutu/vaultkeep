@@ -49,14 +49,13 @@ destination:
   # Built-ins: {job}, {hostname}, {timestamp}, {timestamp_utc}, {source_hash}, {format}.
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 
-  # Optional marker required below destination.root. Value: relative path.
+  # Optional regular marker file required below destination.root. Value: relative path.
+  # Create it yourself on the intended destination; Vaultkeep never creates it.
   # marker_file: ".vaultkeep-target"
-
-  # Optional mount check. Value: absolute mount path at or above destination.root.
-  # mount_point: /mnt/backups
 
   # Optional exact filesystem type backing root, as seen by Vaultkeep.
   # Use cifs to reject an LXC bind mount of a host local directory.
+  # Independent of marker_file: configure either, both, or neither safety check.
   # expected_fstype: cifs
 
 archive:

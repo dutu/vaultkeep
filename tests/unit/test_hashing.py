@@ -325,9 +325,17 @@ def test_backup_relevant_configuration_changes_fingerprint(
     destination["destination"]["name_template"] = "changed-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
     candidates.append(destination)
 
-    mount_point = deepcopy(valid_config)
-    mount_point["destination"]["mount_point"] = "/mnt/other-backups"
-    candidates.append(mount_point)
+    root = deepcopy(valid_config)
+    root["destination"]["root"] = "/mnt/other-backups/app"
+    candidates.append(root)
+
+    marker = deepcopy(valid_config)
+    marker["destination"]["marker_file"] = ".vaultkeep-target"
+    candidates.append(marker)
+
+    fstype = deepcopy(valid_config)
+    fstype["destination"]["expected_fstype"] = "cifs"
+    candidates.append(fstype)
 
     compression = deepcopy(valid_config)
     compression["archive"]["compression_level"] = 7
@@ -355,6 +363,21 @@ def test_config_fingerprint_format_version_is_included(
     )
 
 
+def test_destination_fingerprint_differs_from_previous_format(
+    valid_config: dict[str, Any],
+) -> None:
+    # Recorded fingerprints of this fixture under the previous destination schema,
+    # with its former optional check configured and omitted, respectively.
+    previous_fingerprints = {
+        "sha256:e6e3acc6b2270f7392ab738f7bee014a4e9f70c575b28206a87b935a2fd5aeb8",
+        "sha256:25833b2e0667992f839d675e10a7d65622251b1fc374b38fc5d90949faa16b84",
+    }
+
+    assert calculate_config_fingerprint(JobConfig.model_validate(valid_config)) not in (
+        previous_fingerprints
+    )
+
+
 def test_hard_linked_files_are_hashed(tmp_path: Path, valid_config: dict[str, Any]) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -373,7 +396,7 @@ def test_hard_linked_files_are_hashed(tmp_path: Path, valid_config: dict[str, An
     assert before != after
 
 
-@pytest.mark.parametrize("section", ["retention", "schedule", "hooks", "logging", "destination"])
+@pytest.mark.parametrize("section", ["retention", "schedule", "hooks", "logging"])
 def test_operational_configuration_is_excluded_from_fingerprint(
     valid_config: dict[str, Any], section: str
 ) -> None:
@@ -385,8 +408,6 @@ def test_operational_configuration_is_excluded_from_fingerprint(
         candidate[section]["window"] = "02:00-04:00"
     elif section == "hooks":
         candidate[section]["on_success"] = {"command": "true"}
-    elif section == "destination":
-        candidate[section]["expected_fstype"] = "cifs"
     else:
         candidate[section]["level"] = "debug"
 

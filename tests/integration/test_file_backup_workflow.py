@@ -40,7 +40,7 @@ def file_job(tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.M
     valid_config["sources"][0].update(
         path=str(source), archive_prefix="wallets", exclude=["*.lock"]
     )
-    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["destination"].update(root=str(destination))
     valid_config["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
     job = tmp_path / "app.yaml"
     job.write_text(json.dumps(valid_config))
@@ -276,16 +276,129 @@ def test_whole_job_lock_prevents_overlapping_manual_or_trigger_runs(file_job: Pa
     assert list((file_job.parent / "backups").iterdir()) == []
 
 
-def test_parent_marker_is_checked_before_creating_per_file_directories(file_job: Path) -> None:
+@pytest.mark.parametrize("expected_fstype", [None, "cifs"])
+def test_parent_marker_is_checked_before_creating_per_file_directories(
+    file_job: Path, monkeypatch: pytest.MonkeyPatch, expected_fstype: str | None
+) -> None:
     document = json.loads(file_job.read_text())
     document["destination"]["marker_file"] = "share-marker"
+    document["destination"]["expected_fstype"] = expected_fstype
     file_job.write_text(json.dumps(document))
+    inspected: list[Path] = []
+
+    def inspect(path: Path) -> str:
+        inspected.append(path)
+        return "cifs"
+
+    monkeypatch.setattr(workflow, "_mounted_filesystem_type", inspect)
     with pytest.raises(DestinationError, match="marker is missing"):
         _run(file_job)
-    assert list((file_job.parent / "backups").iterdir()) == []
-    (file_job.parent / "backups" / "share-marker").touch()
+    root = file_job.parent / "backups"
+    assert list(root.iterdir()) == []
+    (root / "share-marker").touch()
     assert _run(file_job).result == "created"
     assert workflow.verify_backups(file_job).backups == 2
+    assert all(
+        not (root / file_key(name) / "share-marker").exists()
+        for name in ("personal wallet", "savings")
+    )
+    if expected_fstype is not None:
+        assert {root, root / file_key("personal wallet"), root / file_key("savings")} <= (
+            set(inspected)
+        )
+    else:
+        assert inspected == []
+
+
+@pytest.mark.parametrize("marker_file", [None, "share-marker"])
+@pytest.mark.parametrize("inspection_fails", [False, True])
+def test_parent_filesystem_is_checked_before_creating_per_file_directories(
+    file_job: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker_file: str | None,
+    inspection_fails: bool,
+) -> None:
+    document = json.loads(file_job.read_text())
+    document["destination"].update(marker_file=marker_file, expected_fstype="cifs")
+    file_job.write_text(json.dumps(document))
+    root = file_job.parent / "backups"
+    if marker_file is not None:
+        (root / marker_file).touch()
+
+    def inspect(path: Path) -> str:
+        assert path == root
+        if inspection_fails:
+            raise DestinationError("Cannot inspect destination filesystem")
+        return "ext4"
+
+    def unexpected_probe(path: Path) -> None:
+        pytest.fail("Parent filesystem safety checks must precede destination writes")
+
+    monkeypatch.setattr(workflow, "_mounted_filesystem_type", inspect)
+    monkeypatch.setattr(workflow, "probe_destination_writability", unexpected_probe)
+    message = "Cannot inspect" if inspection_fails else "expected cifs, found ext4"
+    with pytest.raises(DestinationError, match=message):
+        _run(file_job)
+    assert {path.name for path in root.iterdir()} == ({marker_file} if marker_file else set())
+
+
+@pytest.mark.parametrize("failed_guard", ["marker", "filesystem"])
+def test_parent_safety_is_rechecked_before_each_per_file_directory(
+    file_job: Path, monkeypatch: pytest.MonkeyPatch, failed_guard: str
+) -> None:
+    document = json.loads(file_job.read_text())
+    document["destination"].update(marker_file="share-marker", expected_fstype="cifs")
+    file_job.write_text(json.dumps(document))
+    root = file_job.parent / "backups"
+    marker = root / "share-marker"
+    marker.touch()
+    actual_fstype = "cifs"
+    monkeypatch.setattr(workflow, "_mounted_filesystem_type", lambda path: actual_fstype)
+    original = workflow._run_single_backup
+
+    def run_then_change_destination(*args: Any, **kwargs: Any) -> workflow.CommandResult:
+        nonlocal actual_fstype
+        result = original(*args, **kwargs)
+        if failed_guard == "marker":
+            marker.unlink()
+        else:
+            actual_fstype = "ext4"
+        return result
+
+    monkeypatch.setattr(workflow, "_run_single_backup", run_then_change_destination)
+    result = _run(file_job)
+    assert result.result == "failed"
+    assert [outcome.result for outcome in result.files] == ["created", "failed"]
+    assert not (root / file_key("savings")).exists()
+
+
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
+@pytest.mark.parametrize("missing_state", [False, True])
+def test_previous_fingerprint_requires_new_backup_with_existing_or_reconstructed_state(
+    file_job: Path, monkeypatch: pytest.MonkeyPatch, backup_mode: str, missing_state: bool
+) -> None:
+    document = json.loads(file_job.read_text())
+    document["backup_mode"] = backup_mode
+    document["retention"]["hourly"] = 24
+    file_job.write_text(json.dumps(document))
+    previous_fingerprint = "sha256:25833b2e0667992f839d675e10a7d65622251b1fc374b38fc5d90949faa16b84"
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            workflow, "calculate_config_fingerprint", lambda *a, **k: previous_fingerprint
+        )
+        assert _run(file_job).result == "created"
+        assert _run(file_job).result == "unchanged"
+    if missing_state:
+        state_paths = tuple((file_job.parent / "state").rglob("state.json"))
+        assert state_paths
+        for path in state_paths:
+            path.unlink()
+
+    workflow.datetime.current += timedelta(hours=1)
+    assert _run(file_job).result == "created"
+    assert _run(file_job).result == "unchanged"
+    expected_backups = 4 if backup_mode == "per_file" else 2
+    assert workflow.verify_backups(file_job).backups == expected_backups
 
 
 def test_managed_destination_link_is_rejected_without_writing_through_it(file_job: Path) -> None:

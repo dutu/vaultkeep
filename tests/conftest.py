@@ -30,7 +30,6 @@ def valid_config() -> dict[str, Any]:
         "destination": {
             "root": "/mnt/backups/app",
             "name_template": "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}",
-            "mount_point": "/mnt/backups",
         },
         "archive": {"format": "tar.zst", "compression_level": 6},
         "encryption": {"mode": "none"},

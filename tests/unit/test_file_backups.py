@@ -18,7 +18,7 @@ from vaultkeep.state.identity import job_identity_hash
 def _config(valid_config: dict[str, Any], source: Path, destination: Path) -> JobConfig:
     valid_config["backup_mode"] = "per_file"
     valid_config["sources"][0].update(path=str(source), archive_prefix="wallets")
-    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["destination"].update(root=str(destination))
     return JobConfig.model_validate(valid_config)
 
 
@@ -92,7 +92,7 @@ def test_child_config_preserves_file_name_and_parent_guards(
     config = config.model_copy(
         update={
             "destination": config.destination.model_copy(
-                update={"marker_file": "marker", "mount_point": str(tmp_path)}
+                update={"marker_file": "marker", "expected_fstype": "cifs"}
             )
         }
     )
@@ -103,7 +103,7 @@ def test_child_config_preserves_file_name_and_parent_guards(
     assert child.destination.root == str(tmp_path / "backups" / file_key("wallet A"))
     assert child.destination.marker_file is None
     assert config.destination.marker_file == "marker"
-    assert child.destination.mount_point == str(tmp_path)
+    assert child.destination.expected_fstype == "cifs"
     assert child.job == config.job
 
 

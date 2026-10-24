@@ -157,9 +157,12 @@ The destination is one of:
 - an NFS mount;
 - a local filesystem.
 
-Vaultkeep must verify that the expected destination is actually mounted before writing.
-
-It must support a configurable destination marker file to avoid accidentally writing into an unmounted local directory.
+Vaultkeep supports two independent, optional destination safety checks before writes:
+`marker_file` requires a designated regular file below the destination root, and
+`expected_fstype` verifies the filesystem backing that root in the running process's
+mount namespace, including bind mounts. Either, both, or neither may be configured.
+Markers are never created automatically. Unavailable or ambiguous filesystem
+information, type mismatches, and missing or inaccessible markers block writes.
 
 ### 3.4 Strict configuration
 
@@ -464,13 +467,14 @@ filesystem encoding. This bounds destination component length and distinguishes
 names that collide after sanitization or on case-insensitive shares. No mapping
 registry or additional destination metadata is needed. The job ID, name template,
 and manifest schema stay unchanged. `per_file` is included in the child
-configuration fingerprint; the existing combined-mode fingerprint is unchanged.
+configuration fingerprint; combined mode omits this field.
 
 The original job lock covers selection and the complete batch. Each file's local
 identity additionally includes its destination key; this keeps its state, lock,
-and private archive workspace independent. The parent mount and marker are checked
-before creating a child destination. The marker remains relative to the parent;
-child destinations retain the mount requirement and reject symlinks.
+and private archive workspace independent. The configured parent filesystem type
+and marker are checked before creating each child destination. The marker remains
+relative to the parent; child destinations retain the filesystem type check and
+reject symlinks.
 
 Per-file expected backup and filesystem errors are collected while remaining files
 are attempted. The CLI reports details on stderr and emits the usual single
@@ -593,7 +597,7 @@ The same immutable `SourceSnapshot` entry list drives hashing and archive creati
 
 Vaultkeep also calculates a backup-relevant configuration fingerprint. It includes source paths, source archive path layout fields, exclusions, source options, destination identity, explicit runtime parameters, archive format, encryption mode, password-file path, and metadata policy. It excludes password contents, logging, retention counts, hooks, and scheduling. A changed fingerprint forces a new backup even when the source digest is unchanged.
 
-Configuration fingerprint format version 1 uses canonical, key-sorted JSON and SHA-256. Destination identity includes the root, naming template, marker path, and mount requirement. Archive identity includes the format and compression level. The fixed metadata-policy identifier records that mode, numeric user ID, and numeric group ID participate in source hashing.
+Configuration fingerprint format version 2 uses canonical, key-sorted JSON and SHA-256. Destination identity includes the root, naming template, marker path, and expected filesystem type. Archive identity includes the format and compression level. The fixed metadata-policy identifier records that mode, numeric user ID, and numeric group ID participate in source hashing.
 
 For password-protected jobs, Vaultkeep also records a local credential-generation fingerprint containing the password file's device, inode, size, nanosecond modification time, and nanosecond change time. This local fingerprint is never copied into a destination manifest and never contains a digest of the password.
 
@@ -1317,7 +1321,8 @@ Check cross-field relationships:
 - one or more sources are configured;
 - source paths are absolute;
 - rendered destination root is absolute;
-- when configured, destination mount point is absolute and contains the rendered destination root;
+- when configured, the destination marker path is relative and has no null characters or `..` components;
+- when configured, the expected filesystem type is one kernel filesystem name;
 - destination is not inside a source;
 - sources do not overlap;
 - `name_template` is present;
@@ -1350,9 +1355,9 @@ Before a real backup, check:
 - sources exist;
 - sources are readable;
 - destination exists;
-- destination is mounted as expected;
-- destination is writable;
-- destination marker exists, when configured;
+- the actual destination filesystem type matches `expected_fstype`, when configured;
+- destination marker exists as a regular file, when configured;
+- destination is writable, checked after the configured safety checks;
 - required commands exist;
 - every configured hook executable and resolved parent path passes section 15 ownership, type, mode, and executability checks;
 - `/usr/bin/7z` belongs to Debian's `7zip` package and passes Vaultkeep's stdin-password and encrypted-header compatibility check for `tar.7z`;
@@ -1413,9 +1418,9 @@ vaultkeep --config job.yaml validate --schema-only
 Full `validate`, `run` preflight, and non-dry-run `prune` check destination access by
 creating a private temporary directory, writing a small file, atomically renaming the
 nonempty directory with the same no-overwrite operation used for backup finalization,
-and removing the probe. Mount and marker checks precede probe creation. Failures name
-the operation and destination; cleanup failures report the remaining probe path and
-preserve any preceding probe error. A rename collision never removes the existing
+and removing the probe. Configured filesystem type and marker checks precede probe
+creation. Failures name the operation and destination; cleanup failures report the
+remaining probe path and preserve any preceding probe error. A rename collision never removes the existing
 target. The probe checks current access under the calling identity, not future access
 or the durability of a completed backup.
 
@@ -1423,8 +1428,8 @@ or the durability of a completed backup.
 
 Command-specific runtime validation is:
 
-- `run`: sources, destination, mount, marker, state path, `tar`, and the command required by the selected archive format;
-- `list`: destination, mount, marker, and manifest access; source existence is not checked;
+- `run`: sources, destination, configured filesystem type and marker, state path, `tar`, and the command required by the selected archive format;
+- `list`: destination, configured filesystem type and marker, and manifest access; source existence is not checked;
 - `verify`: all `list` checks plus archive readability, `tar`, `zstd` for `.tar.zst`, and `7z` plus password validation for `.tar.7z`;
 - `prune`: all `list` checks plus destination write access unless `--dry-run` is set.
 
@@ -2160,17 +2165,14 @@ destination:
   # from this shared base. Only directory names receive numeric suffixes on collision.
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
 
-  # Optional marker that must exist below destination.root.
+  # Optional regular marker file that must exist below destination.root.
+  # Vaultkeep never creates it automatically.
   # marker_file: ".vaultkeep-target"
-
-  # Optional mount point for mounted destinations. When set, this path must
-  # be mounted before Vaultkeep uses destination.root. It can be
-  # destination.root itself or one of its parents.
-  # mount_point: /mnt/backups
 
   # Optional exact kernel filesystem type backing destination.root.
   # Checked with findmnt in the running process's mount namespace before
   # destination writes or backup management; cifs rejects host local fallbacks.
+  # Independent of marker_file: configure either, both, or neither safety check.
   # expected_fstype: cifs
 
 archive:
@@ -2587,7 +2589,7 @@ Encrypted-archive integration tests inspect `/proc/<pid>/cmdline` and the captur
 
 ## 28. Security considerations
 
-- Validate destination mount and marker.
+- Validate the destination's configured filesystem type and marker before writes.
 - Use safe YAML loading.
 - Reject path traversal.
 - Do not follow symlinks by default.

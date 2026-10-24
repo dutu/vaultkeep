@@ -42,7 +42,7 @@ def job(tmp_path, valid_config, monkeypatch):
     destination = tmp_path / "backups"
     destination.mkdir()
     valid_config["sources"][0]["path"] = str(source)
-    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["destination"].update(root=str(destination))
     valid_config["schedule"] = {"enabled": False}
     path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))

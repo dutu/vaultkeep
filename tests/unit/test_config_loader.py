@@ -90,3 +90,24 @@ def test_schema_collects_independent_errors(
 def test_missing_file_is_configuration_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="Unable to parse"):
         load_config(tmp_path / "missing.yaml")
+
+
+@pytest.mark.parametrize("value", [None, "/mnt/backups"])
+def test_removed_destination_field_is_rejected(
+    tmp_path: Path, valid_config: dict[str, object], value: str | None
+) -> None:
+    import json
+
+    destination = valid_config["destination"]
+    assert isinstance(destination, dict)
+    destination["mount_point"] = value
+    path = _write_config(tmp_path / "app.yaml", json.dumps(valid_config))
+
+    with pytest.raises(ConfigurationError) as captured:
+        load_config(path)
+
+    assert len(captured.value.issues) == 1
+    issue = captured.value.issues[0]
+    assert issue.dotted_path == "destination.mount_point"
+    assert issue.code == "extra_forbidden"
+    assert issue.message == "Unknown property."

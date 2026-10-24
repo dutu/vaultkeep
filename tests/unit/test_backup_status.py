@@ -38,7 +38,7 @@ def local_job(tmp_path, valid_config, monkeypatch):
     (source / "data").write_text("source data")
     destination.mkdir()
     valid_config["sources"][0].update(path=str(source))
-    valid_config["destination"].update(root=str(destination), mount_point=None)
+    valid_config["destination"].update(root=str(destination))
     valid_config["schedule"] = {"enabled": False}
     job = tmp_path / "app.yaml"
     job.write_text(json.dumps(valid_config))

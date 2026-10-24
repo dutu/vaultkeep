@@ -68,7 +68,6 @@ class DestinationConfig(StrictConfigModel):
     root: NonEmptyString
     name_template: NonEmptyString
     marker_file: NonEmptyString | None = None
-    mount_point: NonEmptyString | None = None
     expected_fstype: Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9_.-]+$")] | None = None
 
 
