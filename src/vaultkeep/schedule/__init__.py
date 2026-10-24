@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,6 +100,14 @@ class TimerPaths:
     jobs_root: Path = Path("/etc/vaultkeep/jobs")
     units_root: Path = Path("/etc/systemd/system")
     registry_path: Path = Path("/var/lib/vaultkeep/systemd-instances.json")
+
+
+@dataclass(frozen=True, slots=True)
+class _SyncChange:
+    action: str
+    instance: str
+    timer_content: str | None = None
+    service_content: str | None = None
 
 
 def user_timer_paths() -> TimerPaths:
@@ -269,8 +279,11 @@ class TimerManager:
         return rendered
 
     def sync(self, *, dry_run: bool = False) -> tuple[str, ...]:
+        """Plan the whole synchronization, then apply it with rollback on failure."""
         planned: list[str] = []
-        for config_path, config, parameters in self._managed_jobs():
+        changes: list[_SyncChange] = []
+        deleted: list[str] = []
+        for config_path, config, parameters in self._managed_jobs(deleted=deleted):
             if parameters is None:
                 planned.append(f"skip {config.job.id}: {_UNINSTALLED_PARAMETERS}")
                 continue
@@ -279,14 +292,138 @@ class TimerManager:
             if not config.schedule.enabled:
                 action = "disable"
             planned.append(f"{action} {instance}")
-            if not dry_run:
-                if config.schedule.enabled:
-                    (self.update if action == "update" else self.install)(
-                        config_path, runtime_params=parameters
-                    )
-                else:
-                    self.disable(config_path, runtime_params=parameters)
+            changes.append(
+                _SyncChange(
+                    action,
+                    instance,
+                    self._timer_content(instance, render_schedule(config))
+                    if config.schedule.enabled
+                    else None,
+                    self._service_content(config_path, instance, parameters)
+                    if config.schedule.enabled
+                    else None,
+                )
+            )
+        for instance in deleted:
+            planned.append(f"remove {instance}")
+            changes.append(_SyncChange("remove", instance))
+        if not dry_run and changes:
+            self._apply_sync(changes)
         return tuple(planned)
+
+    def _apply_sync(self, changes: list[_SyncChange]) -> None:
+        registry = self._registry()
+        files = {self.paths.registry_path}
+        for change in changes:
+            files.update(
+                (
+                    self._timer_drop_in_path(change.instance),
+                    self._service_drop_in_path(change.instance),
+                )
+            )
+        snapshots: dict[Path, tuple[bytes, int] | None] = {}
+        states: dict[str, tuple[bool, bool]] = {}
+        try:
+            for path in sorted(files):
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    snapshots[path] = None
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    raise TimerError(f"Not a regular managed timer file: {path}")
+                snapshots[path] = (path.read_bytes(), stat.S_IMODE(info.st_mode))
+            for change in changes:
+                enabled = self._is_enabled(change.instance)
+                active = self._systemctl("is-active", self._unit(change.instance), check=False)
+                states[change.instance] = (enabled, active.strip() == "active")
+        except OSError as error:
+            raise TimerError(f"Cannot snapshot schedules before sync: {error}") from error
+
+        touched: dict[str, tuple[bool, bool]] = {}
+        try:
+            for change in changes:
+                instance = change.instance
+                touched[instance] = states[instance]
+                if change.action in ("disable", "remove"):
+                    if (
+                        change.action == "remove"
+                        or self._timer_drop_in_path(instance).is_file()
+                        or any(states[instance])
+                    ):
+                        self._systemctl("disable", "--now", self._unit(instance))
+                        self._systemctl("clean", "--what=state", self._unit(instance))
+                    if change.action == "remove":
+                        self._set_sync_file(self._timer_drop_in_path(instance), None)
+                        self._set_sync_file(self._service_drop_in_path(instance), None)
+                        self._daemon_reload()
+                        registry.pop(instance)
+                    continue
+                self._set_sync_file(self._timer_drop_in_path(instance), change.timer_content)
+                self._set_sync_file(self._service_drop_in_path(instance), change.service_content)
+                self._daemon_reload()
+                if change.action == "create":
+                    self._systemctl("enable", "--now", self._unit(instance))
+                elif states[instance][0]:
+                    self._systemctl("restart", self._unit(instance))
+                registry[instance] = str(self._timer_drop_in_path(instance))
+            if any(change.action != "disable" for change in changes):
+                self.paths.registry_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                _write_registry(self.paths.registry_path, registry)
+        except (Exception, KeyboardInterrupt) as error:
+            errors = self._rollback_sync(snapshots, touched)
+            detail = f"; rollback incomplete: {'; '.join(errors)}" if errors else "; rolled back"
+            reason = "interrupted" if isinstance(error, KeyboardInterrupt) else str(error)
+            raise TimerError(f"Schedule synchronization failed: {reason}{detail}") from error
+
+    def _set_sync_file(self, path: Path, content: str | None) -> None:
+        if content is not None:
+            path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            _atomic_write(path, content, mode=0o644)
+        else:
+            path.unlink(missing_ok=True)
+            if not self.user_mode:
+                try:
+                    path.parent.rmdir()
+                except OSError as error:
+                    if error.errno not in (errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST):
+                        raise
+
+    def _rollback_sync(
+        self,
+        snapshots: dict[Path, tuple[bytes, int] | None],
+        states: dict[str, tuple[bool, bool]],
+    ) -> list[str]:
+        errors: list[str] = []
+
+        def attempt(
+            operation: Callable[..., object], *arguments: object, **keywords: object
+        ) -> None:
+            try:
+                operation(*arguments, **keywords)
+            except (OSError, TimerError) as error:
+                errors.append(str(error))
+
+        for instance, (enabled, active) in states.items():
+            if self._timer_drop_in_path(instance).is_file() or enabled or active:
+                attempt(self._systemctl, "stop", self._unit(instance))
+                # Remove new enablement links while the unit file still exists.
+                if not enabled:
+                    attempt(self._systemctl, "disable", self._unit(instance))
+        for path, snapshot in snapshots.items():
+            if snapshot is None:
+                attempt(path.unlink, missing_ok=True)
+            else:
+                content, mode = snapshot
+                attempt(path.parent.mkdir, mode=0o755, parents=True, exist_ok=True)
+                attempt(_atomic_write, path, content, mode=mode)
+        attempt(self._daemon_reload)
+        for instance, (enabled, active) in states.items():
+            if enabled:
+                attempt(self._systemctl, "enable", self._unit(instance))
+            if active:
+                attempt(self._systemctl, "restart", self._unit(instance))
+        return errors
 
     def list(self) -> tuple[str, ...]:
         result: list[str] = []
@@ -317,7 +454,9 @@ class TimerManager:
             validated.append(f"valid {instance}: {rendered.on_calendar}")
         return tuple(validated)
 
-    def _managed_jobs(self) -> list[tuple[Path, JobConfig, dict[str, str] | None]]:
+    def _managed_jobs(
+        self, *, deleted: list[str] | None = None
+    ) -> list[tuple[Path, JobConfig, dict[str, str] | None]]:
         """Resolve all saved selections before any bulk operation changes timers."""
         registry = self._registry()
         templates = {
@@ -332,6 +471,8 @@ class TimerManager:
                 )
             service_path = self._service_drop_in_path(instance)
             if not self.user_mode and not service_path.exists():
+                # Without an override, the root service template always uses %i.yaml.
+                # Instance names alone cannot identify a parameterized selection.
                 config_path = (self.paths.jobs_root / f"{instance}.yaml").resolve()
                 parameters: dict[str, str] = {}
             else:
@@ -350,6 +491,16 @@ class TimerManager:
                     [f"{key}={value}" for key, value in parameters.items()]
                 )
             if config_path not in templates:
+                if (
+                    deleted is not None
+                    and config_path.parent == self.paths.jobs_root.resolve()
+                    and config_path.suffix == ".yaml"
+                    and not config_path.exists()
+                    and not config_path.is_symlink()
+                    and self._instance_id(config_path, config_path.stem, parameters) == instance
+                ):
+                    deleted.append(instance)
+                    continue
                 raise TimerError(
                     f"Registered timer configuration is not a managed job: {config_path}"
                 )
@@ -578,12 +729,10 @@ class TimerManager:
         return completed.stdout
 
 
-def _atomic_write(path: Path, content: str, *, mode: int) -> None:
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as stream:
+def _atomic_write(path: Path, content: str | bytes, *, mode: int) -> None:
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
-        stream.write(content)
+        stream.write(content.encode("utf-8") if isinstance(content, str) else content)
         stream.flush()
         os.fsync(stream.fileno())
     try:

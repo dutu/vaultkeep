@@ -1202,7 +1202,13 @@ vaultkeep [--user] schedules sync --dry-run
 vaultkeep [--user] schedules sync
 ```
 
-`schedules sync` creates or updates timers for jobs with `schedule.enabled: true` and disables timers for jobs with `schedule.enabled: false`. Use `--dry-run` to preview the actions.
+`schedules sync` creates or updates timers for jobs with `schedule.enabled: true`
+and disables timers for jobs with `schedule.enabled: false`. It also stops,
+disables, and removes registered timers whose job YAML has been deleted, clearing
+their persistent timestamps. Unrelated unit files and overrides are retained.
+Removal attempts timestamp cleanup even if the generated timer file is already missing;
+cleanup errors fail sync and trigger rollback.
+Use `--dry-run` to preview the actions without applying changes.
 
 Bulk operations use all jobs in the selected scope's jobs directory and take no
 `--config` or `--param` selection. `schedules validate` checks job configuration and
@@ -1222,6 +1228,13 @@ the remaining jobs continue. Skipped templates are not fully validated; validate
 one with its intended `--param` values before installing it. Sync checks all
 selected configurations and saved parameter selections before changing timers.
 Invalid configurations or unreadable saved selections stop sync during this check.
+In root mode, a timer without a service override uses `<instance>.yaml`, as defined
+by the shared service template. Its name is not used to infer saved parameters.
+If applying the plan fails or is interrupted with Ctrl-C, sync restores the previous
+generated files and ownership registry, reloads systemd, and restores timer
+enablement and activity before reporting the failure. Any errors during restoration
+are reported as an incomplete rollback.
+Persistent timestamps already cleared during sync are not restored.
 
 ### Password-protected backups
 
@@ -1251,6 +1264,8 @@ Vaultkeep passes the password to `/usr/bin/7z` through a private input pipe. It 
 To preserve TAR filesystem semantics, Vaultkeep creates a private plaintext TAR below the mode-specific temporary workspace, encrypts it with AES-256 and encrypted headers, verifies the result, and removes the plaintext TAR before committing the backup. Secure physical erasure is not guaranteed on journaling filesystems, copy-on-write filesystems, or SSDs.
 
 V1 uses one password for a job and destination namespace. Password rotation requires a new job ID, password file, and destination namespace. Retain the old password file while old encrypted backups are needed.
+
+When the password file changes or local backup state must be reconstructed, Vaultkeep tests the newest valid encrypted backup with the current password before deciding whether to create a backup. If the test fails, the run stops before archive creation or automatic retention. Replacing the password file with the same passphrase is supported.
 
 ### Lifecycle hooks
 

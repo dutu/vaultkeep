@@ -16,7 +16,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
 
-from vaultkeep.archive import ArchiveBuildRequest, build_archive, load_password_file
+from vaultkeep.archive import (
+    ArchiveBuildRequest,
+    ArchiveTools,
+    build_archive,
+    encrypted_backup_credential_verifier,
+    load_password_file,
+)
 from vaultkeep.backup.execution import Execution
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
 from vaultkeep.backup.results import failure_reason
@@ -383,6 +389,11 @@ def _run_single_backup(
             application_version=installed_version(),
             destination_backups=discovered.state_records,
             current_credential=loaded_password.fingerprint if loaded_password else None,
+            verify_credential=(
+                encrypted_backup_credential_verifier(loaded_password.secret, tools=ArchiveTools())
+                if loaded_password
+                else None
+            ),
         )
         latest_state = reconciliation.state
         decision = evaluate_unchanged(

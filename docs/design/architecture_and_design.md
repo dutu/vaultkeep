@@ -1795,7 +1795,7 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 - never modify unrelated units;
 - support `--dry-run`.
 
-Synchronization uses a plan-then-apply transaction. Any invalid job or ownership-registry error aborts before file or systemd state changes. During apply, drop-ins and the ownership registry use atomic replacement. A failed apply restores the previous generated files, registry, and enabled states, reloads systemd, and exits with timer-management failure.
+Synchronization uses a plan-then-apply transaction. Any invalid job or ownership-registry error aborts before file or systemd state changes. During apply, drop-ins and the ownership registry use atomic replacement. A failed apply, including interruption with Ctrl-C, restores the previous generated files and registry, reloads systemd, restores timer enabled and active states, and exits with timer-management failure. Restoration continues after individual rollback errors and reports any incomplete rollback. Persistent timestamps cleared during apply are not restored. Deleted registered instances undergo disable and timestamp cleanup even when their generated timer file is absent; cleanup failures abort apply and trigger rollback.
 
 `schedules list` displays every configured job, its enabled setting, installed state, active state, next trigger, and configuration drift. `schedules validate` validates every job, renders every schedule, runs systemd calendar and unit verification, checks registry ownership, reports all independently detectable errors, and never mutates files or systemd state. `schedules sync --dry-run` displays the exact create, update, disable, remove, and unchanged plan without applying it.
 
@@ -1808,6 +1808,8 @@ Vaultkeep maintains an ownership registry:
 The registry is root-owned, mode `0600`, schema-versioned, and updated atomically. It records the exact generated path and unit name for every managed instance.
 
 Timer commands require a configuration file directly below the managed jobs directory. Its filename stem must equal `job.id`. Unparameterized jobs map directly from `vaultkeep@<job>.timer` to `/etc/vaultkeep/jobs/<job>.yaml`. Parameterized jobs use a derived instance name and a generated service override that points back to the same configuration file plus the exact runtime parameters.
+
+In root mode, a registered instance without a service override follows the shared service template's `<instance>.yaml` mapping. Instance-name patterns do not determine whether parameters were saved: plain job IDs may also resemble derived instance names. Sync removes such an instance when its mapped YAML is absent.
 
 ---
 

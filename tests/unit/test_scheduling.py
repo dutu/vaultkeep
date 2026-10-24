@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from ruamel.yaml import YAML
 
+from vaultkeep import schedule as schedule_module
 from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import ConfigurationError, TimerError
 from vaultkeep.schedule import (
@@ -291,6 +292,13 @@ def test_bulk_schedules_reuse_each_installed_parameter_selection(
         command
         for instance in instances
         for command in (
+            (*prefix, "is-enabled", f"vaultkeep@{instance}.timer"),
+            (*prefix, "is-active", f"vaultkeep@{instance}.timer"),
+        )
+    ] + [
+        command
+        for instance in instances
+        for command in (
             (*prefix, "disable", "--now", f"vaultkeep@{instance}.timer"),
             (*prefix, "clean", "--what=state", f"vaultkeep@{instance}.timer"),
         )
@@ -371,12 +379,19 @@ def test_bulk_schedules_reject_damaged_installed_selections_before_mutating(
     }
     commands.clear()
 
-    for operation in (manager.list, manager.validate_all, manager.sync):
+    operations = [manager.list, manager.validate_all]
+    # A missing root override restores the template's plain-instance mapping.
+    if damage != "missing_service" or manager.user_mode:
+        operations.append(manager.sync)
+    for operation in operations:
         with pytest.raises(ConfigurationError if damage == "invalid_parameter" else TimerError):
             operation()
     assert commands == []
     assert not manager._timer_drop_in_path("a_plain").exists()
     assert all(path.read_bytes() == content for path, content in before.items())
+    if damage == "missing_service" and not manager.user_mode:
+        assert manager.sync(dry_run=True)[-1] == f"remove {instance}"
+        assert commands == []
 
 
 @pytest.mark.parametrize("instances", [[], {"../app": "/timer"}, {"app": None}])
@@ -472,3 +487,449 @@ def test_bulk_cli_handles_installed_and_uninstalled_parameterized_jobs(
     assert "skip z_template: no installed parameter selection" in output.out
     assert output.err == ""
     assert all(command[0] == "systemd-analyze" for command in commands)
+
+
+@pytest.fixture
+def syncing_timers(
+    managed_timers: tuple[TimerManager, list[tuple[str, ...]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]]:
+    manager, commands = managed_timers
+    states: dict[str, tuple[bool, bool]] = {}
+
+    def run(command: tuple[str, ...], *, check: bool = True) -> str:
+        commands.append(command)
+        arguments = command[2:] if manager.user_mode else command[1:]
+        if arguments == ("daemon-reload",):
+            return ""
+        operation, unit = arguments[0], arguments[-1]
+        enabled, active = states.get(unit, (False, False))
+        if operation == "is-enabled":
+            return "enabled\n" if enabled else "disabled\n"
+        if operation == "is-active":
+            return "active\n" if active else "inactive\n"
+        instance = unit.removeprefix("vaultkeep@").removesuffix(".timer")
+        if (
+            manager.user_mode
+            and operation == "enable"
+            and not manager._timer_drop_in_path(instance).is_file()
+        ):
+            raise TimerError(f"Unit file does not exist: {unit}")
+        if operation == "enable":
+            states[unit] = (True, active or "--now" in arguments)
+        elif operation == "disable":
+            states[unit] = (False, active and "--now" not in arguments)
+        elif operation in ("restart", "stop"):
+            states[unit] = (enabled, operation == "restart")
+        return ""
+
+    monkeypatch.setattr(manager, "_run", run)
+    return manager, commands, states
+
+
+def _save_sync_job(manager: TimerManager, config: dict[str, Any], job_id: str) -> Path:
+    config = deepcopy(config)
+    config["job"]["id"] = job_id
+    path = manager.paths.jobs_root / f"{job_id}.yaml"
+    YAML(typ="safe").dump(config, path)
+    return path
+
+
+def _sync_files(manager: TimerManager) -> dict[Path, tuple[bytes, int]]:
+    paths = [path for path in manager.paths.units_root.rglob("*") if path.is_file()]
+    if manager.paths.registry_path.exists():
+        paths.append(manager.paths.registry_path)
+    return {path: (path.read_bytes(), path.stat().st_mode & 0o777) for path in paths}
+
+
+@pytest.mark.parametrize("parameterized", [False, True])
+def test_sync_removes_deleted_jobs_and_preserves_unrelated_files(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    parameterized: bool,
+) -> None:
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    kept = _save_sync_job(manager, valid_config, "kept")
+    manager.install(kept)
+    if parameterized:
+        _parameterize_destination(valid_config, "both")
+    deleted = _save_sync_job(manager, valid_config, "deleted")
+    for params in ({"repo": "nas-a"}, {"repo": "nas-b"}) if parameterized else ({},):
+        manager.install(deleted, runtime_params=params)
+    instances = sorted(set(manager._registry()) - {"kept"})
+    unrelated = manager.paths.units_root / "unrelated.timer"
+    unrelated.write_text("operator timer\n")
+    if not manager.user_mode:
+        override = manager._timer_drop_in_path(instances[0]).parent / "operator.conf"
+        override.write_text("[Timer]\nAccuracySec=1min\n")
+    deleted.unlink()
+    before = _sync_files(manager)
+    commands.clear()
+    expected = ("update kept", *(f"remove {instance}" for instance in instances))
+
+    assert manager.sync(dry_run=True) == expected
+    assert commands == []
+    assert _sync_files(manager) == before
+    assert manager.sync() == expected
+
+    assert set(manager._registry()) == {"kept"}
+    assert unrelated.read_text() == "operator timer\n"
+    if not manager.user_mode:
+        assert override.read_text() == "[Timer]\nAccuracySec=1min\n"
+    for instance in instances:
+        assert states[manager._unit(instance)] == (False, False)
+        assert not manager._timer_drop_in_path(instance).exists()
+        assert not manager._service_drop_in_path(instance).exists()
+        operations = [command for command in commands if command[-1] == manager._unit(instance)]
+        assert any("disable" in command and "--now" in command for command in operations)
+        assert any("clean" in command and "--what=state" in command for command in operations)
+    assert manager.sync(dry_run=True) == ("update kept",)
+
+
+@pytest.mark.parametrize("action", ["update", "create", "disable", "remove"])
+@pytest.mark.parametrize("failure", ["systemd", "registry", "interrupt"])
+def test_sync_rolls_back_files_registry_and_timer_states(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    failure: str,
+) -> None:
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    first = _save_sync_job(manager, valid_config, "a_first")
+    manager.install(first)
+    _parameterize_destination(valid_config, "both")
+    second = _save_sync_job(manager, valid_config, "z_second")
+    params = {"repo": "nas-a"}
+    instance = manager._instance_id(second, "z_second", params)
+    # Keep a saved selection for creates, with its timer file missing.
+    manager.install(second, runtime_params=params)
+    if action == "create":
+        manager._timer_drop_in_path(instance).unlink()
+        states[manager._unit(instance)] = (False, False)
+    elif action == "disable":
+        valid_config["schedule"] = {"enabled": False}
+    elif action == "remove":
+        second.unlink()
+    if action != "remove":
+        _save_sync_job(manager, valid_config, "z_second")
+    valid_config["schedule"] = {"enabled": True, "interval": "daily", "at": "04:00"}
+    plain = deepcopy(valid_config)
+    plain["destination"]["root"] = "/mnt/backups/plain"
+    plain["destination"]["name_template"] = "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+    _save_sync_job(manager, plain, "a_first")
+    # Also verify restoration of a disabled but manually active timer.
+    states[manager._unit("a_first")] = (False, True)
+    manager._timer_drop_in_path("a_first").chmod(0o640)
+    files_before = _sync_files(manager)
+    states_before = dict(states)
+    run = manager._run
+    fired = False
+
+    def fail(command: tuple[str, ...], *, check: bool = True) -> str:
+        nonlocal fired
+        output = run(command, check=check)
+        operation = {"update": "restart", "create": "enable", "disable": "clean"}.get(action)
+        target = (
+            "daemon-reload" in command and not manager._timer_drop_in_path(instance).exists()
+            if action == "remove"
+            else operation in command and command[-1] == manager._unit(instance)
+        )
+        if failure in ("systemd", "interrupt") and not fired and target:
+            fired = True
+            if failure == "interrupt":
+                raise KeyboardInterrupt
+            raise TimerError("injected systemd failure")
+        return output
+
+    if failure in ("systemd", "interrupt"):
+        monkeypatch.setattr(manager, "_run", fail)
+    else:
+        write_registry = schedule_module._write_registry
+
+        def fail_registry(path: Path, instances: dict[str, str]) -> None:
+            nonlocal fired
+            write_registry(path, instances)
+            fired = True
+            raise OSError("injected registry failure after replacement")
+
+        monkeypatch.setattr(schedule_module, "_write_registry", fail_registry)
+    commands.clear()
+
+    with pytest.raises(TimerError, match="(injected.*|interrupted); rolled back"):
+        manager.sync()
+
+    assert fired
+    assert _sync_files(manager) == files_before
+    assert states == states_before
+    assert any("daemon-reload" in command for command in commands)
+
+
+def test_sync_rolls_back_new_install_and_absent_registry_on_file_failure(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    _save_sync_job(manager, valid_config, "a_first")
+    _save_sync_job(manager, valid_config, "z_second")
+    write = schedule_module._atomic_write
+
+    def fail(path: Path, content: str | bytes, *, mode: int) -> None:
+        if path == manager._timer_drop_in_path("z_second"):
+            raise OSError("injected timer file failure")
+        write(path, content, mode=mode)
+
+    monkeypatch.setattr(schedule_module, "_atomic_write", fail)
+    with pytest.raises(TimerError, match="injected timer file failure; rolled back"):
+        manager.sync()
+
+    assert _sync_files(manager) == {}
+    assert all(state == (False, False) for state in states.values())
+    assert any("enable" in command and "--now" in command for command in commands)
+
+
+@pytest.mark.parametrize("during_registry_write", [False, True])
+def test_sync_rolls_back_new_install_on_interrupt(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    during_registry_write: bool,
+) -> None:
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    _save_sync_job(manager, valid_config, "app")
+    if during_registry_write:
+        write_registry = schedule_module._write_registry
+
+        def interrupt_registry(path: Path, instances: dict[str, str]) -> None:
+            write_registry(path, instances)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(schedule_module, "_write_registry", interrupt_registry)
+    else:
+        run = manager._run
+
+        def interrupt_enable(command: tuple[str, ...], *, check: bool = True) -> str:
+            output = run(command, check=check)
+            if "enable" in command and "--now" in command:
+                raise KeyboardInterrupt
+            return output
+
+        monkeypatch.setattr(manager, "_run", interrupt_enable)
+
+    with pytest.raises(TimerError, match="interrupted; rolled back"):
+        manager.sync()
+
+    assert _sync_files(manager) == {}
+    assert not manager.paths.registry_path.exists()
+    assert states[manager._unit("app")] == (False, False)
+    assert any("disable" in command for command in commands)
+    assert any("daemon-reload" in command for command in commands)
+
+
+def test_sync_reports_rollback_failures_and_continues_restoring(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    path = _save_sync_job(manager, valid_config, "app")
+    manager.install(path)
+    before = _sync_files(manager)
+    valid_config["schedule"]["window"] = "02:00-04:00"
+    _save_sync_job(manager, valid_config, "app")
+    run = manager._run
+
+    def fail(command: tuple[str, ...], *, check: bool = True) -> str:
+        if "restart" in command:
+            raise TimerError("injected persistent restart failure")
+        return run(command, check=check)
+
+    monkeypatch.setattr(manager, "_run", fail)
+    with pytest.raises(
+        TimerError, match="rollback incomplete:.*injected persistent restart failure"
+    ):
+        manager.sync()
+    assert _sync_files(manager) == before
+    assert states[manager._unit("app")] == (True, False)
+
+
+def test_sync_does_not_operate_on_an_uninstalled_disabled_timer(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+) -> None:
+    manager, commands, _ = syncing_timers
+    valid_config["schedule"] = {"enabled": False}
+    _save_sync_job(manager, valid_config, "app")
+
+    assert manager.sync() == ("disable app",)
+    assert all("is-enabled" in command or "is-active" in command for command in commands)
+    assert not manager.paths.registry_path.exists()
+
+
+@pytest.mark.parametrize("job_id", ["app", "app--repo-nas-a--0123456789abcdef"])
+def test_sync_removes_the_final_job_and_is_idempotent(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    job_id: str,
+) -> None:
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    path = _save_sync_job(manager, valid_config, job_id)
+    manager.install(path)
+    path.unlink()
+
+    commands.clear()
+    assert manager.sync(dry_run=True) == (f"remove {job_id}",)
+    assert commands == []
+    assert manager.sync() == (f"remove {job_id}",)
+    assert manager._registry() == {}
+    assert states[manager._unit(job_id)] == (False, False)
+    assert not manager._timer_drop_in_path(job_id).exists()
+    assert not manager._service_drop_in_path(job_id).exists()
+    commands.clear()
+    assert manager.sync() == ()
+    assert commands == []
+
+
+@pytest.mark.parametrize("clean_fails", [False, True])
+def test_sync_cleans_deleted_timer_even_when_generated_timer_file_is_missing(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    clean_fails: bool,
+) -> None:
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    path = _save_sync_job(manager, valid_config, "app")
+    manager.install(path)
+    path.unlink()
+    manager._timer_drop_in_path("app").unlink()
+    states[manager._unit("app")] = (False, False)
+    before = _sync_files(manager)
+    run = manager._run
+
+    def fail_clean(command: tuple[str, ...], *, check: bool = True) -> str:
+        output = run(command, check=check)
+        if "clean" in command and clean_fails:
+            raise TimerError("injected cleanup failure")
+        return output
+
+    monkeypatch.setattr(manager, "_run", fail_clean)
+    commands.clear()
+    assert manager.sync(dry_run=True) == ("remove app",)
+    assert commands == []
+    assert _sync_files(manager) == before
+    if clean_fails:
+        with pytest.raises(TimerError, match="injected cleanup failure; rolled back"):
+            manager.sync()
+        assert _sync_files(manager) == before
+        assert "app" in manager._registry()
+    else:
+        assert manager.sync() == ("remove app",)
+        assert manager._registry() == {}
+        assert not manager._service_drop_in_path("app").exists()
+    prefix = ("systemctl", "--user") if manager.user_mode else ("systemctl",)
+    assert (*prefix, "disable", "--now", manager._unit("app")) in commands
+    assert (*prefix, "clean", "--what=state", manager._unit("app")) in commands
+
+
+@pytest.mark.parametrize("damage", ["missing_service", "outside_path", "wrong_job"])
+def test_sync_handles_deleted_jobs_with_damaged_saved_selections(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    damage: str,
+) -> None:
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    _save_sync_job(manager, valid_config, "a_plain")
+    _parameterize_destination(valid_config, "both")
+    path = _save_sync_job(manager, valid_config, "app")
+    params = {"repo": "nas-a"}
+    manager.install(path, runtime_params=params)
+    instance = manager._instance_id(path, "app", params)
+    service = manager._service_drop_in_path(instance)
+    if damage == "missing_service":
+        service.unlink()
+    else:
+        target = (
+            path.parent.parent / "app.yaml"
+            if damage == "outside_path"
+            else path.with_name("wrong.yaml")
+        )
+        service.write_text(service.read_text().replace(str(path), str(target)))
+    path.unlink()
+    before = _sync_files(manager)
+    states_before = dict(states)
+    commands.clear()
+
+    if damage == "missing_service" and not manager.user_mode:
+        expected = ("create a_plain", f"remove {instance}")
+        assert manager.sync(dry_run=True) == expected
+        assert commands == []
+        assert _sync_files(manager) == before
+        assert manager.sync() == expected
+        assert states[manager._unit(instance)] == (False, False)
+        assert set(manager._registry()) == {"a_plain"}
+        return
+
+    for dry_run in (True, False):
+        with pytest.raises(TimerError):
+            manager.sync(dry_run=dry_run)
+    assert commands == []
+    assert _sync_files(manager) == before
+    assert states == states_before
+
+
+def test_sync_renders_the_whole_plan_before_mutating(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, commands, _ = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    _save_sync_job(manager, valid_config, "a_first")
+    _save_sync_job(manager, valid_config, "z_second")
+    render = manager._timer_content
+
+    def fail(instance: str, rendered: schedule_module.RenderedSchedule) -> str:
+        if instance == "z_second":
+            raise TimerError("injected rendering failure")
+        return render(instance, rendered)
+
+    monkeypatch.setattr(manager, "_timer_content", fail)
+    with pytest.raises(TimerError, match="injected rendering failure"):
+        manager.sync()
+    assert commands == []
+    assert _sync_files(manager) == {}
+
+
+def test_sync_snapshots_the_whole_plan_before_mutating(
+    syncing_timers: tuple[TimerManager, list[tuple[str, ...]], dict[str, tuple[bool, bool]]],
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, commands, _ = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    for job in ("a_first", "z_second"):
+        manager.install(_save_sync_job(manager, valid_config, job))
+    before = _sync_files(manager)
+    read = Path.read_bytes
+
+    def fail(path: Path) -> bytes:
+        if path == manager._timer_drop_in_path("z_second"):
+            raise OSError("injected snapshot failure")
+        return read(path)
+
+    commands.clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", fail)
+        with pytest.raises(TimerError, match="Cannot snapshot schedules before sync"):
+            manager.sync()
+    assert commands == []
+    assert _sync_files(manager) == before
