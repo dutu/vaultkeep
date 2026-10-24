@@ -1209,6 +1209,20 @@ Bulk operations use all jobs in the selected scope's jobs directory and take no
 schedule calendars; use `vaultkeep --config JOB.yaml validate` (with `--user` for
 user jobs) for complete runtime and health checks of one job.
 
+For parameterized jobs, bulk commands reuse the parameters saved by each installed
+timer and report each instance separately. `schedules sync` updates or disables
+those selections. Add a new selection explicitly:
+
+```text
+vaultkeep [--user] --config <job.yaml> --param repo=nas-a schedule install
+```
+
+Templates with no installed parameter selection produce a `skip` message, and
+the remaining jobs continue. Skipped templates are not fully validated; validate
+one with its intended `--param` values before installing it. Sync checks all
+selected configurations and saved parameter selections before changing timers.
+Invalid configurations or unreadable saved selections stop sync during this check.
+
 ### Password-protected backups
 
 Create a password file without placing the password in command history. The path and ownership rules are mode-specific:

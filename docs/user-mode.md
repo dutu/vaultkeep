@@ -194,6 +194,8 @@ vaultkeep --user schedules sync --dry-run
 vaultkeep --user schedules sync
 ```
 
+For parameterized jobs, see [bulk schedule behavior](../README.md#manage-all-job-timers).
+
 User timers depend on the user's systemd user manager. On many Debian systems, user timers run while the user has an active login session. To run user timers after boot without an active session, an administrator may need to enable lingering:
 
 ```bash

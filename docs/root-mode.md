@@ -142,6 +142,8 @@ sudo vaultkeep schedules sync --dry-run
 sudo vaultkeep schedules sync
 ```
 
+For parameterized jobs, see [bulk schedule behavior](../README.md#manage-all-job-timers).
+
 ## Secrets and hooks
 
 Root-mode encrypted backups use root-owned password files:

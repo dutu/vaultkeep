@@ -13,8 +13,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
-from vaultkeep.errors import TimerError
+from vaultkeep.config import (
+    JobConfig,
+    load_config,
+    parse_runtime_parameters,
+    resolve_runtime_config,
+)
+from vaultkeep.errors import ConfigurationError, TimerError
+from vaultkeep.maintenance import command_selection
 from vaultkeep.validation import validate_semantics
 
 _WEEKDAYS = {
@@ -27,6 +33,7 @@ _WEEKDAYS = {
     "sunday": "Sun",
 }
 _SYSTEMD_VERSION = re.compile(r"systemd\s+(\d+)")
+_UNINSTALLED_PARAMETERS = "no installed parameter selection; use schedule install with --param"
 
 SERVICE_TEMPLATE = """[Unit]
 Description=Vaultkeep backup job %i
@@ -263,42 +270,131 @@ class TimerManager:
 
     def sync(self, *, dry_run: bool = False) -> tuple[str, ...]:
         planned: list[str] = []
-        for config_path in sorted(self.paths.jobs_root.glob("*.yaml")):
-            config = self._load_managed(config_path, require_enabled=False)
-            action = "update" if self._timer_drop_in_path(config.job.id).exists() else "create"
+        for config_path, config, parameters in self._managed_jobs():
+            if parameters is None:
+                planned.append(f"skip {config.job.id}: {_UNINSTALLED_PARAMETERS}")
+                continue
+            instance = self._instance_id(config_path, config.job.id, parameters)
+            action = "update" if self._timer_drop_in_path(instance).is_file() else "create"
             if not config.schedule.enabled:
                 action = "disable"
-            planned.append(f"{action} {config.job.id}")
+            planned.append(f"{action} {instance}")
             if not dry_run:
                 if config.schedule.enabled:
-                    (self.update if action == "update" else self.install)(config_path)
+                    (self.update if action == "update" else self.install)(
+                        config_path, runtime_params=parameters
+                    )
                 else:
-                    self.disable(config_path)
+                    self.disable(config_path, runtime_params=parameters)
         return tuple(planned)
 
     def list(self) -> tuple[str, ...]:
         result: list[str] = []
-        for config_path in sorted(self.paths.jobs_root.glob("*.yaml")):
-            config = self._load_managed(config_path, require_enabled=False)
-            installed = self._timer_drop_in_path(config.job.id).is_file()
-            result.append(
-                f"{config.job.id}: enabled={config.schedule.enabled} installed={installed}"
-            )
+        for config_path, config, parameters in self._managed_jobs():
+            if parameters is None:
+                result.append(f"skip {config.job.id}: {_UNINSTALLED_PARAMETERS}")
+                continue
+            instance = self._instance_id(config_path, config.job.id, parameters)
+            installed = self._timer_drop_in_path(instance).is_file()
+            if self.user_mode or parameters:
+                installed = installed and self._service_drop_in_path(instance).is_file()
+            result.append(f"{instance}: enabled={config.schedule.enabled} installed={installed}")
         return tuple(result)
 
     def validate_all(self) -> tuple[str, ...]:
         """Validate every managed job without writing files or changing systemd state."""
         validated: list[str] = []
-        self._registry()
-        for config_path in sorted(self.paths.jobs_root.glob("*.yaml")):
-            config = self._load_managed(config_path, require_enabled=False)
+        for config_path, config, parameters in self._managed_jobs():
+            if parameters is None:
+                validated.append(f"skip {config.job.id}: {_UNINSTALLED_PARAMETERS}")
+                continue
+            instance = self._instance_id(config_path, config.job.id, parameters)
             if not config.schedule.enabled:
-                validated.append(f"valid disabled {config.job.id}")
+                validated.append(f"valid disabled {instance}")
                 continue
             rendered = render_schedule(config)
             self._run(("systemd-analyze", "calendar", rendered.on_calendar))
-            validated.append(f"valid {config.job.id}: {rendered.on_calendar}")
+            validated.append(f"valid {instance}: {rendered.on_calendar}")
         return tuple(validated)
+
+    def _managed_jobs(self) -> list[tuple[Path, JobConfig, dict[str, str] | None]]:
+        """Resolve all saved selections before any bulk operation changes timers."""
+        registry = self._registry()
+        templates = {
+            path.resolve(): self._load_template(path)
+            for path in sorted(self.paths.jobs_root.glob("*.yaml"))
+        }
+        selections: dict[Path, list[dict[str, str]]] = {}
+        for instance, timer_path in sorted(registry.items()):
+            if timer_path != str(self._timer_drop_in_path(instance)):
+                raise TimerError(
+                    f"Timer ownership registry path does not match instance: {instance}"
+                )
+            service_path = self._service_drop_in_path(instance)
+            if not self.user_mode and not service_path.exists():
+                config_path = (self.paths.jobs_root / f"{instance}.yaml").resolve()
+                parameters: dict[str, str] = {}
+            else:
+                try:
+                    config_path, parameters = command_selection(
+                        service_path.read_text(encoding="utf-8"),
+                        monitor=False,
+                        user=self.user_mode,
+                    )
+                except (OSError, ValueError) as error:
+                    raise TimerError(
+                        f"Cannot read timer parameter selection {service_path}: {error}"
+                    ) from error
+                config_path = config_path.resolve()
+                parameters = parse_runtime_parameters(
+                    [f"{key}={value}" for key, value in parameters.items()]
+                )
+            if config_path not in templates:
+                raise TimerError(
+                    f"Registered timer configuration is not a managed job: {config_path}"
+                )
+            config = templates[config_path]
+            if self._instance_id(config_path, config.job.id, parameters) != instance:
+                raise TimerError(f"Saved parameters do not match timer instance: {instance}")
+            selections.setdefault(config_path, []).append(parameters)
+
+        jobs: list[tuple[Path, JobConfig, dict[str, str] | None]] = []
+        for config_path, template in templates.items():
+            for parameters in selections.get(config_path, [{}]):
+                try:
+                    config = resolve_runtime_config(template, parameters)
+                    validate_semantics(config, config_path=config_path, runtime_params=parameters)
+                except ConfigurationError as error:
+                    if config_path in selections or any(
+                        issue.code != "param_missing" for issue in error.issues
+                    ):
+                        raise
+                    # Missing values defer runtime validation, but other detectable
+                    # template errors must still fail preflight.
+                    try:
+                        validate_semantics(template, config_path=config_path)
+                    except ConfigurationError as validation_error:
+                        issues = tuple(
+                            issue
+                            for issue in validation_error.issues
+                            if issue.code != "param_missing"
+                        )
+                        if issues:
+                            raise ConfigurationError(issues) from validation_error
+                    jobs.append((config_path, template, None))
+                else:
+                    jobs.append((config_path, config, parameters))
+        return jobs
+
+    def _load_template(self, config_path: Path) -> JobConfig:
+        resolved = config_path.resolve()
+        jobs_root = self.paths.jobs_root.resolve()
+        if resolved.parent != jobs_root or resolved.suffix != ".yaml":
+            raise TimerError(f"Timer configuration must be directly below {jobs_root}: {resolved}")
+        config = load_config(resolved)
+        if config.job.id != resolved.stem:
+            raise TimerError("Timer configuration filename must match job.id")
+        return config
 
     def _load_managed(
         self,
@@ -307,15 +403,9 @@ class TimerManager:
         require_enabled: bool,
         runtime_params: Mapping[str, str] | None = None,
     ) -> JobConfig:
-        resolved = config_path.resolve()
-        jobs_root = self.paths.jobs_root.resolve()
-        if resolved.parent != jobs_root or resolved.suffix != ".yaml":
-            raise TimerError(f"Timer configuration must be directly below {jobs_root}: {resolved}")
         parameters = dict(runtime_params or {})
-        config = resolve_runtime_config(load_config(resolved), parameters)
-        validate_semantics(config, config_path=resolved, runtime_params=parameters)
-        if config.job.id != resolved.stem:
-            raise TimerError("Timer configuration filename must match job.id")
+        config = resolve_runtime_config(self._load_template(config_path), parameters)
+        validate_semantics(config, config_path=config_path.resolve(), runtime_params=parameters)
         if require_enabled and not config.schedule.enabled:
             raise TimerError("Timer installation requires schedule.enabled: true")
         return config
@@ -416,7 +506,15 @@ class TimerManager:
             document = json.loads(self.paths.registry_path.read_text(encoding="utf-8"))
             if document == {}:  # Empty registry written by a fresh installer.
                 return {}
-            return dict(document["instances"])
+            instances = document["instances"]
+            if not isinstance(instances, dict) or any(
+                not isinstance(instance, str)
+                or re.fullmatch(r"[A-Za-z0-9_-]+", instance) is None
+                or not isinstance(path, str)
+                for instance, path in instances.items()
+            ):
+                raise ValueError("instances must map valid instance names to timer paths")
+            return dict(instances)
         except (OSError, KeyError, TypeError, ValueError) as error:
             raise TimerError(f"Invalid timer ownership registry: {error}") from error
 
