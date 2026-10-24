@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from vaultkeep.config import load_config as load_job_config
+from vaultkeep.config.models import TriggerMatcherConfig
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.state.identity import job_identity_hash
@@ -123,16 +124,15 @@ class TriggerConfig:
 
 
 def matcher_from_canonical(data: dict[str, Any]) -> MatcherSpec:
-    """Rebuild a :class:`MatcherSpec` from a frozen request snapshot."""
-    entrypoints = tuple(
-        Entrypoint(kind=item["kind"], value=item["value"]) for item in data.get("entrypoints", ())
-    )
+    """Validate and rebuild a matcher from a frozen request snapshot."""
+    raw = TriggerMatcherConfig.model_validate(data)
+    entrypoints = tuple(Entrypoint(kind=item.kind, value=item.value) for item in raw.entrypoints)
     return MatcherSpec(
-        exe_realpath=data.get("exe_realpath"),
+        exe_realpath=raw.exe_realpath,
         entrypoints=entrypoints,
-        argv_tokens=tuple(data.get("argv_tokens") or ()),
-        cmdline_regex=data.get("cmdline_regex"),
-        env_eq=dict(data.get("env_eq") or {}),
+        argv_tokens=tuple(raw.argv_tokens),
+        cmdline_regex=raw.cmdline_regex,
+        env_eq=dict(raw.env_eq),
     )
 
 

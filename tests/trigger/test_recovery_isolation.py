@@ -45,7 +45,9 @@ def _monitor(store: StateStore, *instances):
 
 
 @pytest.mark.parametrize("phase", ["startup", "tick"])
-@pytest.mark.parametrize("fault", ["missing", "contradictory", "corrupt", "schema", "encoding"])
+@pytest.mark.parametrize(
+    "fault", ["missing", "contradictory", "corrupt", "schema", "encoding", "matcher"]
+)
 def test_bad_instance_is_blocked_without_stopping_healthy_instance(
     store: StateStore, phase: str, fault: str
 ) -> None:
@@ -60,6 +62,8 @@ def test_bad_instance_is_blocked_without_stopping_healthy_instance(
     store.write_instance(state)
     if fault == "contradictory":
         store.write_request(replace(request, instance_id="wrong-owner"))
+    elif fault == "matcher":
+        store.write_request(replace(request, matcher={}))
     elif fault == "corrupt":
         store.instance_path(broken.id).write_text("{not-json")
     elif fault == "encoding":

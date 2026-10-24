@@ -132,7 +132,7 @@ def test_root_schedule_and_user_trigger_coexist(
 ) -> None:
     from copy import deepcopy
 
-    from vaultkeep.schedule import TimerManager, TimerPaths
+    from vaultkeep.schedule import SERVICE_TEMPLATE, TIMER_TEMPLATE, TimerManager, TimerPaths
 
     root_config = deepcopy(valid_config)
     root_config["schedule"]["enabled"] = True
@@ -141,6 +141,9 @@ def test_root_schedule_and_user_trigger_coexist(
     root_job = root_jobs / "app.yaml"
     root_job.write_text(json.dumps(root_config))
     root_units = tmp_path / "etc/systemd/system"
+    root_units.mkdir(parents=True)
+    (root_units / "vaultkeep@.timer").write_text(TIMER_TEMPLATE)
+    (root_units / "vaultkeep@.service").write_text(SERVICE_TEMPLATE)
     registry = tmp_path / "var/lib/vaultkeep/systemd-instances.json"
     manager = TimerManager(TimerPaths(root_jobs, root_units, registry))
     root_commands = []

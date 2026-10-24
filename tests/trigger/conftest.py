@@ -102,7 +102,6 @@ class FakeController:
         self.submission = submission or SubmissionResult(SubmissionClass.ACCEPTED, 0, "", True)
         self.reachable = reachable
         self.started: list[str] = []
-        self.resets: list[str] = []
         self.states: dict[str, UnitState] = {}
 
     def start_unit(self, unit: str) -> SubmissionResult:
@@ -118,9 +117,6 @@ class FakeController:
     @staticmethod
     def template_ready() -> bool:
         return True
-
-    def reset_failed(self, unit: str) -> None:
-        self.resets.append(unit)
 
 
 class RecordingNotifier:

@@ -175,7 +175,7 @@ Installation requires:
 - a supported Debian system;
 - root access;
 - systemd as the active system manager;
-- a trusted local Vaultkeep source tree, normally a clone of the GitHub repository checked out at the intended release tag;
+- a trusted local Vaultkeep source tree checked out at the intended release tag or a reviewed commit;
 - network access to configured Debian package repositories and the Python package index;
 - an existing backup destination or mounted share.
 
@@ -192,12 +192,15 @@ Legacy `p7zip-full` is not used.
 
 ### Install the application
 
-Clone the repository and select the release to install:
+Clone the repository and select the source version to install. Replace
+`<release-tag-or-commit>` with a published release tag or a reviewed commit SHA.
+Use a reviewed commit for development builds when a release tag is unavailable;
+these builds are not released versions.
 
 ```bash
 git clone https://github.com/dutu/vaultkeep.git /path/to/vaultkeep
 cd /path/to/vaultkeep
-git checkout <release-tag>
+git checkout <release-tag-or-commit>
 ```
 
 Then run the installer from that checkout:
@@ -1742,13 +1745,14 @@ If the installed version is different from the checkout version, `install` stops
 
 Use Debian 13 for application updates.
 
-Fetch and select the newer release in the source checkout. The installer [pauses and resumes existing schedules automatically](#pause-and-resume-for-maintenance) and refuses active backup work:
+Fetch and select the newer source version in the source checkout. Replace
+`<new-release-tag-or-commit>` with its release tag or reviewed commit SHA. The
+installer [pauses and resumes existing schedules automatically](#pause-and-resume-for-maintenance) and refuses active backup work:
 
 ```bash
 cd /path/to/vaultkeep
 git fetch --tags --prune
-git pull
-git checkout <new-release-tag>
+git checkout <new-release-tag-or-commit>
 ```
 
 Preview the update from the refreshed checkout:

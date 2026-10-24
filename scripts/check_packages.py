@@ -38,6 +38,7 @@ def check_wheel(wheel: Path, version: str) -> None:
             wheel.name.removesuffix("-py3-none-any.whl") + ".dist-info",
         }
         assert "vaultkeep/trigger/monitor.py" in names
+        assert "vaultkeep/py.typed" in names
         assert "vaultkeep/notifications/notifier.py" in names
         assert "vaultkeep/notifications/desktop.py" in names
         assert "vaultkeep/backup/notifications.py" in names
@@ -88,6 +89,7 @@ def check() -> None:
             archive.extractall(output / "extracted", filter="data")
         extracted = next((output / "extracted").iterdir())
         for required in (
+            "src/vaultkeep/py.typed",
             "src/vaultkeep/trigger/cli.py",
             "src/vaultkeep/notifications/notifier.py",
             "src/vaultkeep/notifications/desktop.py",

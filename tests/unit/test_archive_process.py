@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,101 @@ import pytest
 from vaultkeep.archive import process as archive_process
 from vaultkeep.archive.process import run_command, run_pipeline
 from vaultkeep.errors import ArchiveCreationError
+
+
+@pytest.mark.skipif(os.name != "posix", reason="secure terminal input is POSIX-specific")
+@pytest.mark.parametrize("operation", ["tcgetattr", "tcsetattr"])
+@pytest.mark.parametrize("failure", ["os", "terminal", "interrupt"])
+def test_terminal_setup_failure_closes_both_descriptors(
+    monkeypatch: pytest.MonkeyPatch, operation: str, failure: str
+) -> None:
+    import termios
+
+    descriptors = os.openpty()
+    monkeypatch.setattr(os, "openpty", lambda: descriptors)
+    error = {
+        "os": OSError("setup failed"),
+        "terminal": termios.error("setup failed"),
+        "interrupt": KeyboardInterrupt(),
+    }[failure]
+
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(termios, operation, fail)
+    try:
+        expected = KeyboardInterrupt if failure == "interrupt" else ArchiveCreationError
+        with pytest.raises(expected):
+            archive_process._SecretTerminal.open()
+        for descriptor in descriptors:
+            with pytest.raises(OSError) as captured:
+                os.fstat(descriptor)
+            assert captured.value.errno == errno.EBADF
+    finally:
+        for descriptor in descriptors:
+            with suppress(OSError):
+                os.close(descriptor)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="secure terminal input is POSIX-specific")
+@pytest.mark.parametrize("stage", ["command", "producer", "consumer"])
+def test_terminal_spawn_failure_closes_descriptors_and_reaps_producer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stage: str
+) -> None:
+    terminal = archive_process._SecretTerminal.open()
+    descriptors = (terminal.master, terminal.slave)
+    monkeypatch.setattr(archive_process._SecretTerminal, "open", lambda: terminal)
+    processes: list[subprocess.Popen[bytes]] = []
+    start_process = archive_process._start_process
+
+    def track_process(*args, **kwargs):
+        process = start_process(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(archive_process, "_start_process", track_process)
+    missing_tool = (tmp_path / "missing-tool",)
+    try:
+        with pytest.raises(ArchiveCreationError, match="Cannot start archive tool"):
+            if stage == "command":
+                run_command(missing_tool, terminal_input=b"secret\n")
+            else:
+                producer = (
+                    (Path(sys.executable), "-c", "import time; time.sleep(10)")
+                    if stage == "consumer"
+                    else missing_tool
+                )
+                run_pipeline(producer, missing_tool, producer_terminal_input=b"secret\n")
+        assert len(processes) == (1 if stage == "consumer" else 0)
+        assert all(process.returncode is not None for process in processes)
+        for descriptor in descriptors:
+            with pytest.raises(OSError) as captured:
+                os.fstat(descriptor)
+            assert captured.value.errno == errno.EBADF
+    finally:
+        terminal.close()
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="secure terminal input is POSIX-specific")
+def test_terminal_close_preserves_reused_slave_descriptor() -> None:
+    terminal = archive_process._SecretTerminal.open()
+    slave = terminal.slave
+    terminal.close_slave()
+    replacement = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(replacement, slave)
+        terminal.close()
+        terminal.close()
+        os.fstat(slave)
+    finally:
+        terminal.close()
+        os.close(replacement)
+        if slave != replacement:
+            os.close(slave)
 
 
 def test_command_runner_captures_stdout_and_uses_absolute_tool() -> None:

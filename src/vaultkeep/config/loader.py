@@ -27,6 +27,7 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
         "retention",
         "schedule",
         "trigger",
+        "notifications",
         "hooks",
         "logging",
     ),
@@ -47,7 +48,6 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
         "confirm_seconds",
         "deadline_seconds",
         "params",
-        "notifications",
     ),
     ("trigger", "matcher"): (
         "entrypoints",
@@ -57,7 +57,9 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
         "env_eq",
     ),
     ("trigger", "matcher", "entrypoints"): ("kind", "value"),
-    ("trigger", "notifications"): ("enabled", "command", "timeout_ms"),
+    ("notifications",): ("command", "timeout_ms", "backup", "trigger"),
+    ("notifications", "backup"): ("enabled",),
+    ("notifications", "trigger"): ("enabled",),
     ("hooks",): (
         "before_check",
         "before_archive",

@@ -7,11 +7,13 @@ import os
 import shlex
 import socket
 import stat
+import subprocess
 import sys
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -62,6 +64,35 @@ def test_hook_timeout_is_reported(trusted_shell: None, caplog: pytest.LogCapture
     assert "exit_code=None timed_out=True" in caplog.text
     assert "after_archive hook stdout: before timeout" in caplog.text
     with pytest.raises(HookError, match="after_archive hook timed out"):
+        hooks.require_success(execution)
+
+
+@pytest.mark.parametrize("term_already_exited", [False, True])
+def test_timeout_reaps_hook_when_group_exits_before_sigkill(
+    monkeypatch: pytest.MonkeyPatch, trusted_shell: None, term_already_exited: bool
+) -> None:
+    process = Mock(pid=42)
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired("hook", 1),
+        (b"output before timeout", b""),
+    ]
+    process.wait.side_effect = subprocess.TimeoutExpired("hook", 10)
+    monkeypatch.setattr(hooks.subprocess, "Popen", Mock(return_value=process))
+    kill_group = Mock(
+        side_effect=[
+            ProcessLookupError() if term_already_exited else None,
+            ProcessLookupError(),
+        ]
+    )
+    monkeypatch.setattr(os, "killpg", kill_group)
+
+    execution = hooks.run_hook("before_check", HookConfig(command="true"), _context())
+
+    assert execution.outcome.timed_out
+    assert execution.stdout == b"output before timeout"
+    assert kill_group.call_count == 2
+    assert process.communicate.call_count == 2
+    with pytest.raises(HookError, match="before_check hook timed out"):
         hooks.require_success(execution)
 
 

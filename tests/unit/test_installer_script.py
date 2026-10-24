@@ -942,6 +942,7 @@ def test_paused_enabled_timer_keeps_enablement_and_timestamp(
 def managed_timer(host, valid_config, monkeypatch, *, active=True):
     from vaultkeep.schedule import TimerManager, TimerPaths
 
+    monkeypatch.setenv("PATH", host["PATH"])
     jobs = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "jobs"
     source = jobs.parent / "source"
     destination = jobs.parent / "destination"

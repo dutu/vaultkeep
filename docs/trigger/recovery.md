@@ -66,6 +66,11 @@ malformed type (for example, a non-string attempt ID) or invalid numeric value i
 as corrupt state and blocks only that instance; it never authorizes a decision from
 partially understood evidence.
 
+Frozen request matchers must also satisfy the job's process-matcher schema, including
+nonempty entrypoints, correctly typed predicates, and a valid regular expression.
+An empty or malformed matcher blocks execution instead of treating the application as
+stopped. Repair the underlying request evidence before removing the instance's block.
+
 These blocks survive restart and do not auto-clear. After reviewing and repairing the
 underlying evidence, the operator removes that instance's diagnostic and restarts the
 monitor to re-evaluate it. This is manual recovery; v1 adds no repair/replay command.

@@ -155,7 +155,7 @@ def _dummy_request() -> dict:
         "config_fingerprint": "x",
         "app": "electrum",
         "data_dir": "/home/user/.electrum",
-        "matcher": {},
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/app/run_app"}]},
         "job_config": "/jobs/app.yaml",
         "job_params": {},
         "vaultkeep": "/usr/local/bin/vaultkeep",

@@ -12,6 +12,7 @@ import stat
 import subprocess
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from io import StringIO
@@ -424,7 +425,10 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
         kill_group(process.pid, signal.SIGTERM)
         process.wait(timeout=10)
     except (OSError, subprocess.TimeoutExpired):
-        kill_group(process.pid, getattr(signal, "SIGKILL", 9))
+        # The group can exit between the wait/TERM failure and escalation.
+        # Let the caller's communicate() drain output and reap the shell.
+        with suppress(ProcessLookupError):
+            kill_group(process.pid, getattr(signal, "SIGKILL", 9))
 
 
 def _bounded(value: bytes) -> tuple[bytes, bool]:

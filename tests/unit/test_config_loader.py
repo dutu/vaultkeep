@@ -92,6 +92,41 @@ def test_missing_file_is_configuration_error(tmp_path: Path) -> None:
         load_config(tmp_path / "missing.yaml")
 
 
+@pytest.mark.parametrize(
+    ("parent", "unknown", "expected"),
+    [
+        ((), "notificatons", "notifications"),
+        (("notifications",), "comand", "notifications.command"),
+        (("notifications",), "timout_ms", "notifications.timeout_ms"),
+        (("notifications",), "bakcup", "notifications.backup"),
+        (("notifications",), "triger", "notifications.trigger"),
+        (("notifications", "backup"), "enabld", "notifications.backup.enabled"),
+        (("notifications", "trigger"), "enabld", "notifications.trigger.enabled"),
+        (("trigger",), "notificatons", None),
+        (("trigger", "notifications"), "enabld", None),
+    ],
+)
+def test_notification_typo_suggestions_follow_current_schema(
+    tmp_path: Path, valid_config: dict, parent: tuple[str, ...], unknown: str, expected: str | None
+) -> None:
+    import json
+
+    section = valid_config
+    for key in parent:
+        section = section.setdefault(key, {})
+    section[unknown] = True
+    path = _write_config(tmp_path / "app.yaml", json.dumps(valid_config))
+
+    with pytest.raises(ConfigurationError) as captured:
+        load_config(path)
+
+    issue = captured.value.issues[0]
+    assert issue.code == "extra_forbidden"
+    assert issue.message == (
+        f"Unknown property. Did you mean: {expected}?" if expected else "Unknown property."
+    )
+
+
 @pytest.mark.parametrize("value", [None, "/mnt/backups"])
 def test_removed_destination_field_is_rejected(
     tmp_path: Path, valid_config: dict[str, object], value: str | None

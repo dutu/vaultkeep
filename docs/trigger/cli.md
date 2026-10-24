@@ -104,7 +104,7 @@ Use `status --verbose` for historical safety-warning details and diagnostic path
 | 2 | Argument, job/trigger configuration, selection, or recovery-state error. |
 | 3 | Blocked runtime prerequisite or failed service-manager action. |
 | 4 | Internal worker's backup failed or was deferred. |
-| 5 | Unknown-outcome vocabulary. |
+| 5 | Reserved; no Trigger command currently emits this code. |
 | 6 | Trigger/backup integration error. |
 
 Worker receipts preserve the actual backup exit code separately. These Trigger

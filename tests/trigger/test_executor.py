@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from tests.trigger.conftest import FakeProvider, FakeRunner, child_result
-from vaultkeep.trigger.errors import IntegrationError
+from vaultkeep.trigger.errors import IntegrationError, StateError
 from vaultkeep.trigger.executor import exec_worker
 from vaultkeep.trigger.matcher import ProcessInfo
 from vaultkeep.trigger.models import AttemptOutcome, Receipt, Request, new_uuid, utc_now
@@ -128,6 +128,37 @@ def test_blocked_when_still_running(store: StateStore) -> None:
     assert runner.calls == []
     receipt = store.read_receipt(request.attempt_id)
     assert receipt is not None and receipt.blocked_reason
+
+
+@pytest.mark.parametrize(
+    "matcher",
+    [
+        {},
+        {"entrypoints": []},
+        {"entrypoints": [{}]},
+        {"entrypoints": None},
+        {"entrypoints": [{"kind": "unknown", "value": "/opt/app/run_app"}]},
+        {"entrypoints": [{"kind": "script", "value": 42}]},
+        {"entrypoints": [{"kind": "script", "value": "relative"}]},
+        {**MATCHER, "argv_tokens": "--dir"},
+        {**MATCHER, "argv_tokens": [42]},
+        {**MATCHER, "cmdline_regex": "["},
+        {**MATCHER, "env_eq": {"KEY": 42}},
+        {**MATCHER, "exe_realpath": False},
+    ],
+)
+def test_invalid_persisted_matcher_never_authorizes_backup(
+    store: StateStore, matcher: dict
+) -> None:
+    request = replace(_bound_request(), matcher=matcher)
+    store.write_request(request)
+    runner = FakeRunner([])
+
+    with pytest.raises(StateError, match=r"request\.matcher is malformed"):
+        exec_worker(request.attempt_id, store=store, provider=_running_provider(), runner=runner)
+
+    assert runner.calls == []
+    assert store.read_receipt(request.attempt_id) is None
 
 
 def test_refuses_replay(store: StateStore) -> None:

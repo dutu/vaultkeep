@@ -21,21 +21,24 @@ For the shared job schema, destination template rules, command surface, retentio
 
 Root installs Vaultkeep and its Debian package dependencies once for the host:
 
+Replace `<release-tag-or-commit>` with a published release tag or a reviewed commit
+SHA. Use a reviewed commit for development builds when a release tag is unavailable.
+
 ```bash
 git clone https://github.com/dutu/vaultkeep.git /path/to/vaultkeep
 cd /path/to/vaultkeep
-git checkout <release-tag>
+git checkout <release-tag-or-commit>
 
 sudo ./install.sh install --dry-run
 sudo ./install.sh install
 ```
 
-For updates:
+For updates, select the newer release tag or reviewed commit SHA:
 
 ```bash
 cd /path/to/vaultkeep
 git fetch --tags --prune
-git checkout <new-release-tag>
+git checkout <new-release-tag-or-commit>
 
 sudo ./install.sh update --dry-run
 sudo ./install.sh update

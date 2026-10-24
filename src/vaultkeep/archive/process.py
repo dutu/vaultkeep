@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Collection, Sequence
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
@@ -46,25 +46,24 @@ def run_command(
     if input_data is not None and terminal_input is not None:
         raise ValueError("A command cannot receive both pipe input and terminal input")
     command = tuple(os.fspath(argument) for argument in arguments)
-    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+    with (
+        tempfile.TemporaryFile() as stdout_file,
+        tempfile.TemporaryFile() as stderr_file,
+        ExitStack() as cleanup,
+    ):
         terminal = _SecretTerminal.open() if terminal_input is not None else None
-        try:
-            process = _start_process(
-                command,
-                stdin=(terminal.slave if terminal is not None else subprocess.PIPE)
-                if (input_data is not None or terminal is not None)
-                else subprocess.DEVNULL,
-                stdout=stdout_file
-                if capture_stdout or terminal is not None
-                else subprocess.DEVNULL,
-                stderr=stderr_file,
-                cwd=cwd,
-                terminal_stdin=terminal is not None,
-            )
-        except BaseException:
-            if terminal is not None:
-                terminal.close()
-            raise
+        if terminal is not None:
+            cleanup.callback(terminal.close)
+        process = _start_process(
+            command,
+            stdin=(terminal.slave if terminal is not None else subprocess.PIPE)
+            if (input_data is not None or terminal is not None)
+            else subprocess.DEVNULL,
+            stdout=stdout_file if capture_stdout or terminal is not None else subprocess.DEVNULL,
+            stderr=stderr_file,
+            cwd=cwd,
+            terminal_stdin=terminal is not None,
+        )
         try:
             if terminal is not None:
                 if terminal_input is None:
@@ -77,9 +76,6 @@ def run_command(
         except BaseException:
             _terminate_process(process)
             raise
-        finally:
-            if terminal is not None:
-                terminal.close_master()
         result = CommandResult(
             process.returncode,
             _read_bounded(stdout_file) if capture_stdout else b"",
@@ -113,23 +109,24 @@ def run_pipeline(
         raise ValueError("A pipeline producer cannot receive both pipe input and terminal input")
     producer_command = tuple(os.fspath(argument) for argument in producer_arguments)
     consumer_command = tuple(os.fspath(argument) for argument in consumer_arguments)
-    with tempfile.TemporaryFile() as producer_error, tempfile.TemporaryFile() as consumer_error:
+    with (
+        tempfile.TemporaryFile() as producer_error,
+        tempfile.TemporaryFile() as consumer_error,
+        ExitStack() as cleanup,
+    ):
         terminal = _SecretTerminal.open() if producer_terminal_input is not None else None
-        try:
-            producer = _start_process(
-                producer_command,
-                stdin=(terminal.slave if terminal is not None else subprocess.PIPE)
-                if (producer_input is not None or terminal is not None)
-                else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=producer_error,
-                cwd=producer_cwd,
-                terminal_stdin=terminal is not None,
-            )
-        except BaseException:
-            if terminal is not None:
-                terminal.close()
-            raise
+        if terminal is not None:
+            cleanup.callback(terminal.close)
+        producer = _start_process(
+            producer_command,
+            stdin=(terminal.slave if terminal is not None else subprocess.PIPE)
+            if (producer_input is not None or terminal is not None)
+            else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=producer_error,
+            cwd=producer_cwd,
+            terminal_stdin=terminal is not None,
+        )
         if producer.stdout is None:
             _terminate_process(producer)
             raise ArchiveCreationError("Archive pipeline did not expose producer output")
@@ -169,9 +166,6 @@ def run_pipeline(
             _terminate_process(producer)
             _terminate_process(consumer)
             raise
-        finally:
-            if terminal is not None:
-                terminal.close_master()
         producer_result = CommandResult(
             producer.returncode,
             b"",
@@ -250,17 +244,22 @@ class _SecretTerminal:
     def open(cls) -> _SecretTerminal:
         if os.name != "posix":
             raise ArchiveCreationError("Interactive archive passwords require Debian/POSIX")
-        try:
-            import termios as imported_termios
+        import termios as imported_termios
 
+        try:
             terminal_api: Any = imported_termios
             open_pty: Any = vars(os)["openpty"]
             master, slave = open_pty()
-            settings = terminal_api.tcgetattr(slave)
-            settings[3] &= ~terminal_api.ECHO
-            terminal_api.tcsetattr(slave, terminal_api.TCSANOW, settings)
-            return cls(master, slave)
-        except OSError as error:
+            terminal = cls(master, slave)
+            try:
+                settings = terminal_api.tcgetattr(slave)
+                settings[3] &= ~terminal_api.ECHO
+                terminal_api.tcsetattr(slave, terminal_api.TCSANOW, settings)
+            except BaseException:
+                terminal.close()
+                raise
+            return terminal
+        except (OSError, imported_termios.error) as error:
             raise ArchiveCreationError(
                 f"Cannot create secure archive password terminal: {error}"
             ) from error
@@ -305,12 +304,14 @@ class _SecretTerminal:
         self.close_slave()
 
     def close_master(self) -> None:
+        descriptor, self.master = self.master, -1
         with suppress(OSError):
-            os.close(self.master)
+            os.close(descriptor)
 
     def close_slave(self) -> None:
+        descriptor, self.slave = self.slave, -1
         with suppress(OSError):
-            os.close(self.slave)
+            os.close(descriptor)
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:

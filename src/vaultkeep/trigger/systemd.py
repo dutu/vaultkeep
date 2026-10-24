@@ -73,9 +73,6 @@ class SystemdController(Protocol):
     def template_ready(self) -> bool:
         """Return whether the installed worker template is loadable and unmasked."""
 
-    def reset_failed(self, unit: str) -> None:
-        """Clear a failed unit state after its evidence has been reconciled."""
-
 
 def classify_submission(*, spawned: bool, exit_code: int | None) -> SubmissionClass:
     """Classify a start submission without treating a numeric code as proof alone."""
@@ -198,10 +195,6 @@ class RealSystemdController:
     def manager_reachable() -> bool:
         completed = _probe([_SYSTEMCTL, "--user", "show-environment"])
         return completed is not None and completed.returncode == 0
-
-    @staticmethod
-    def reset_failed(unit: str) -> None:
-        _probe([_SYSTEMCTL, "--user", "reset-failed", unit])
 
     @staticmethod
     def template_ready() -> bool:

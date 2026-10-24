@@ -12,7 +12,6 @@ EXIT_USAGE = 1
 EXIT_CONFIG = 2
 EXIT_BLOCKED = 3
 EXIT_BACKUP_FAILED = 4
-EXIT_OUTCOME_UNKNOWN = 5
 EXIT_INTEGRATION = 6
 
 
@@ -48,18 +47,6 @@ class BlockedError(TriggerError):
     """Execution is blocked or unsafe, including missing runtime prerequisites."""
 
     exit_code = EXIT_BLOCKED
-
-
-class BackupFailedError(TriggerError):
-    """A VaultKeep execution failed."""
-
-    exit_code = EXIT_BACKUP_FAILED
-
-
-class OutcomeUnknownError(TriggerError):
-    """Execution outcome cannot be established and must not be replayed."""
-
-    exit_code = EXIT_OUTCOME_UNKNOWN
 
 
 class IntegrationError(TriggerError):

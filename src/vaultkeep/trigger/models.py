@@ -9,6 +9,9 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
+from pydantic import ValidationError
+
+from vaultkeep.config.models import TriggerMatcherConfig
 from vaultkeep.trigger.version import (
     INSTANCE_STATE_SCHEMA_VERSION,
     LAUNCH_SCHEMA_VERSION,
@@ -304,6 +307,11 @@ class Request:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Request:
         path = "request"
+        matcher = _required_dict(data, "matcher", path=path)
+        try:
+            TriggerMatcherConfig.model_validate(matcher)
+        except ValidationError as error:
+            raise ValueError("request.matcher is malformed") from error
         return cls(
             request_id=_required_str(data, "request_id", path=path),
             attempt_id=_required_str(data, "attempt_id", path=path),
@@ -314,7 +322,7 @@ class Request:
             config_fingerprint=_required_str(data, "config_fingerprint", path=path),
             app=_required_str(data, "app", path=path),
             data_dir=_required_str(data, "data_dir", path=path),
-            matcher=_required_dict(data, "matcher", path=path),
+            matcher=matcher,
             job_config=_required_str(data, "job_config", path=path),
             job_params=_string_map(data, "job_params", path=path),
             vaultkeep=_required_str(data, "vaultkeep", path=path),
