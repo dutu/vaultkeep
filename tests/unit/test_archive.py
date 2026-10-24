@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +35,7 @@ from vaultkeep.archive.tar_input import (
     tar_member_input,
     validate_tar_members,
 )
+from vaultkeep.backup.results import BackupInterrupted
 from vaultkeep.errors import (
     ArchiveCreationError,
     ArchiveVerificationError,
@@ -115,6 +117,17 @@ def _request(
             seven_zip=Path("/tools/7z"),
         ),
     )
+
+
+@pytest.fixture(params=["sigterm", "sigint", "keyboard", "exit"])
+def archive_interruption(request: pytest.FixtureRequest) -> BaseException:
+    if request.param == "sigterm":
+        return BackupInterrupted(signal.SIGTERM)
+    if request.param == "sigint":
+        return BackupInterrupted(signal.SIGINT)
+    if request.param == "keyboard":
+        return KeyboardInterrupt()
+    return SystemExit(2)
 
 
 def test_tar_member_input_is_complete_raw_and_nul_delimited(tmp_path: Path) -> None:
@@ -513,6 +526,60 @@ def test_tar_zstd_reports_partial_cleanup_failure(
         )
 
 
+@pytest.mark.parametrize("stage", ["tar.zst", "inner_tar", "tar.7z"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_archive_creation_preserves_interruptions_during_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    archive_interruption: BaseException,
+    stage: str,
+    cleanup_fails: bool,
+) -> None:
+    output = tmp_path / "partial.archive"
+    inner = tmp_path / "inner.tar"
+    inner.write_bytes(b"plaintext")
+
+    def interrupt(*args: Any, **kwargs: Any) -> None:
+        output.write_bytes(b"partial")
+        raise archive_interruption
+
+    monkeypatch.setattr(tar_zstd_module, "run_pipeline", interrupt)
+    monkeypatch.setattr(tar_zstd_module, "run_command", interrupt)
+    monkeypatch.setattr(tar_7z_module, "run_command", interrupt)
+    unlink = Path.unlink
+
+    def remove(path: Path, *args: Any, **kwargs: Any) -> None:
+        if cleanup_fails and path == output:
+            raise PermissionError("forced cleanup failure")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", remove)
+
+    with pytest.raises(type(archive_interruption)) as raised:
+        if stage == "tar.zst":
+            tar_zstd_module.create_tar_zstd(
+                _snapshot(tmp_path), output, compression_level=6, tools=ArchiveTools()
+            )
+        elif stage == "inner_tar":
+            tar_zstd_module.create_inner_tar(_snapshot(tmp_path), output, tools=ArchiveTools())
+        else:
+            tar_7z_module.encrypt_inner_tar(
+                inner,
+                output,
+                compression_level=6,
+                password=PasswordSecret(b"secret"),
+                tools=ArchiveTools(),
+            )
+
+    assert raised.value is archive_interruption
+    assert output.exists() == cleanup_fails
+    if cleanup_fails:
+        assert "forced cleanup failure" in caplog.text
+        assert str(output) in caplog.text
+        assert any("forced cleanup failure" in note for note in raised.value.__notes__)
+
+
 def test_inner_tar_creation_uses_exclusive_mode_0600(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -806,6 +873,73 @@ def test_build_archive_source_change_removes_partial_artifacts(
 
     assert not request.archive_path.exists()
     assert not request.checksum_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("archive_format", "cleanup_target"),
+    [("tar.zst", "archive"), ("tar.zst", "checksum"), ("tar.7z", "plaintext"), ("tar.7z", "all")],
+)
+def test_build_archive_preserves_interruptions_during_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    archive_interruption: BaseException,
+    archive_format: str,
+    cleanup_target: str,
+) -> None:
+    request = _request(tmp_path, archive_format=archive_format)
+    inner = tmp_path / "private" / "app.tar"
+
+    def create_archive(*args: Any, **kwargs: Any) -> None:
+        request.archive_path.write_bytes(b"archive")
+
+    def interrupt(*args: Any, **kwargs: Any) -> None:
+        raise archive_interruption
+
+    monkeypatch.setattr(builder_module, "create_tar_zstd", create_archive)
+    monkeypatch.setattr(builder_module, "verify_tar_zstd", lambda *args, **kwargs: None)
+    monkeypatch.setattr(builder_module, "verify_checksum_sidecar", interrupt)
+    monkeypatch.setattr(builder_module, "private_inner_tar_path", lambda **kwargs: inner)
+    monkeypatch.setattr(
+        builder_module, "prepare_private_workspace", lambda path: path.parent.mkdir()
+    )
+    monkeypatch.setattr(
+        builder_module,
+        "create_private_inner_tar",
+        lambda *args, **kwargs: inner.write_bytes(b"tar"),
+    )
+    monkeypatch.setattr(builder_module, "encrypt_inner_tar", create_archive)
+    monkeypatch.setattr(builder_module, "verify_tar_7z", interrupt)
+    failed_paths = {
+        "archive": {request.archive_path},
+        "checksum": {request.checksum_path},
+        "plaintext": {inner},
+        "all": {inner, request.archive_path},
+    }[cleanup_target]
+    unlink = Path.unlink
+
+    def remove(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path in failed_paths:
+            raise PermissionError("forced cleanup failure")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", remove)
+
+    with pytest.raises(type(archive_interruption)) as raised:
+        build_archive(
+            request,
+            password=PasswordSecret(b"secret") if archive_format == "tar.7z" else None,
+            source_digest_calculator=lambda snapshot: SOURCE_DIGEST,
+        )
+
+    assert raised.value is archive_interruption
+    assert "forced cleanup failure" in caplog.text
+    notes = "\n".join(raised.value.__notes__)
+    for path in failed_paths:
+        assert str(path) in caplog.text
+        assert str(path) in notes
+    for path in (request.archive_path, request.checksum_path, inner):
+        assert path.exists() == (path in failed_paths)
 
 
 def test_build_archive_preserves_preexisting_checksum_on_exclusive_write_failure(

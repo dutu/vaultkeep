@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -53,7 +54,10 @@ def create_tar_zstd(
         try:
             _remove_partial(output_path)
         except ArchiveCreationError as cleanup_error:
-            raise cleanup_error from error
+            if isinstance(error, Exception):
+                raise cleanup_error from error
+            error.add_note(str(cleanup_error))
+            logging.getLogger(__name__).warning("%s", cleanup_error)
         raise
 
 
@@ -86,7 +90,10 @@ def create_inner_tar(
         try:
             _remove_partial(output_path)
         except ArchiveCreationError as cleanup_error:
-            raise cleanup_error from error
+            if isinstance(error, Exception):
+                raise cleanup_error from error
+            error.add_note(str(cleanup_error))
+            logging.getLogger(__name__).warning("%s", cleanup_error)
         raise
 
 

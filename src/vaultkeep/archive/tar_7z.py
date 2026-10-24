@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -165,9 +166,13 @@ def encrypt_inner_tar(
         except FileNotFoundError:
             pass
         except OSError as cleanup_error:
-            raise ArchiveCreationError(
+            failure = ArchiveCreationError(
                 f"Cannot remove partial encrypted archive {output_path}: {cleanup_error}"
-            ) from error
+            )
+            if isinstance(error, Exception):
+                raise failure from error
+            error.add_note(str(failure))
+            logging.getLogger(__name__).warning("%s", failure)
         raise
 
 

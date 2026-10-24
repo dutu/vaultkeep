@@ -11,6 +11,7 @@ from threading import Event
 
 import pytest
 
+from vaultkeep.archive import builder
 from vaultkeep.archive.base import ArchiveArtifact
 from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum_sidecar
 from vaultkeep.backup import workflow
@@ -202,6 +203,36 @@ def test_sigterm_records_interruption_and_restores_the_previous_signal_handler(l
     previous = status(local_job)["previous"]
     assert previous["result"] == "INTERRUPTED"
     assert previous["exit_code"] == 143 and previous["signal"] == signal.SIGTERM
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_archive_cleanup_failure_preserves_cli_interrupt_and_history(
+    local_job, monkeypatch, signum
+):
+    def create_archive(snapshot, path, **kwargs):
+        path.write_bytes(b"archive")
+
+    def interrupt(*args, **kwargs):
+        raise BackupInterrupted(signum)
+
+    unlink = Path.unlink
+
+    def remove(path, *args, **kwargs):
+        if path.name.endswith(".tar.zst"):
+            raise PermissionError("forced archive cleanup failure")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(workflow, "build_archive", builder.build_archive)
+    monkeypatch.setattr(builder, "create_tar_zstd", create_archive)
+    monkeypatch.setattr(builder, "verify_tar_zstd", interrupt)
+    monkeypatch.setattr(Path, "unlink", remove)
+
+    assert main(["--user", "--config", str(local_job), "run"]) == 128 + signum
+    previous = status(local_job)["previous"]
+    assert previous["result"] == "INTERRUPTED"
+    assert previous["exit_code"] == 128 + signum
+    assert previous["signal"] == signum
+    assert "forced archive cleanup failure" in Path(previous["log_path"]).read_text()
 
 
 @pytest.mark.parametrize("outcome", ["FAILED", "INTERRUPTED", "UNKNOWN"])

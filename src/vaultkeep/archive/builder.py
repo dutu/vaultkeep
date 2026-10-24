@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -133,7 +134,10 @@ def build_archive(
             checksum_created=checksum_created,
         )
         if cleanup_error is not None:
-            raise cleanup_error from error
+            if isinstance(error, Exception):
+                raise cleanup_error from error
+            error.add_note(str(cleanup_error))
+            logging.getLogger(__name__).warning("%s", cleanup_error)
         raise
 
 

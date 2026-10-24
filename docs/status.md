@@ -58,6 +58,10 @@ archive; check it rather than assuming it is absent or corrupt. Archive manifest
 and archive state remain the source of facts about the last successfully created
 backup. An active execution does not hide the preceding result.
 
+If archive cleanup also fails during an interruption, the result remains
+`INTERRUPTED` and retains its interruption exit code and signal. The execution log
+reports cleanup failures, including any private plaintext TAR that could not be removed.
+
 Stale progress cannot override a completion record. A released lock or a finished
 progress stream alone does not establish success or failure. Missing completion
 evidence remains unknown, with no invented completion timestamp. Status never
