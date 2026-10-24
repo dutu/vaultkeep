@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -110,6 +111,7 @@ def run_hook(
     hook: HookConfig,
     context: HookContext,
     *,
+    include_command_output: bool = False,
     owner_uid: int = 0,
     owner_gid: int | None = 0,
     allow_root_owned: bool = False,
@@ -158,6 +160,24 @@ def run_hook(
         stdout_truncated=stdout_truncated,
         stderr_truncated=stderr_truncated,
     )
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "%s hook: executable=%s duration_seconds=%.3f exit_code=%s timed_out=%s "
+        "stdout_truncated=%s stderr_truncated=%s",
+        phase,
+        executable,
+        duration,
+        outcome.exit_code,
+        timed_out,
+        stdout_truncated,
+        stderr_truncated,
+    )
+    if include_command_output:
+        for stream_name, output in (("stdout", bounded_stdout), ("stderr", bounded_stderr)):
+            if output:
+                logger.info(
+                    "%s hook %s: %s", phase, stream_name, output.decode("utf-8", errors="replace")
+                )
     return HookExecution(outcome, bounded_stdout, bounded_stderr)
 
 

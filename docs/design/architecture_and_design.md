@@ -1230,7 +1230,7 @@ Execution uses:
 - captured standard output and standard error;
 - a limit of 1 MiB for each captured stream.
 
-Output beyond the limit is discarded and reported as truncated. Normal logs contain hook phase, executable path, duration, exit status, timeout status, and truncation status. Captured output is logged only when `logging.include_command_output: true`; hook authors are responsible for keeping enabled output free of secrets.
+Output beyond the limit is discarded and reported as truncated. Normal logs contain hook phase, executable path, duration, exit status, timeout status, and truncation status. Summaries and captured output use `INFO` severity and respect `logging.level`. Captured output is logged only when `logging.include_command_output: true`, with each nonempty stream labeled separately and decoded as UTF-8 with invalid bytes replaced. Output is logged before a failed hook result is raised. Hook authors are responsible for keeping enabled output free of secrets.
 
 On timeout or Vaultkeep cancellation, Vaultkeep sends `SIGTERM` to the complete hook process group, waits 10 seconds, sends `SIGKILL` when processes remain, and reaps the group before continuing.
 

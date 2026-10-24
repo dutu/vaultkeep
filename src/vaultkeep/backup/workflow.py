@@ -730,6 +730,7 @@ def _run_configured_hook(
             phase,
             hook,
             context,
+            include_command_output=config.logging.include_command_output,
             owner_uid=owner_uid,
             owner_gid=owner_gid,
             allow_root_owned=allow_root_owned,

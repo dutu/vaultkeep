@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shlex
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,64 @@ def _empty_state() -> LocalState:
         job_identity_hash="a" * 16,
         application_version="1.0.0",
     )
+
+
+@pytest.mark.parametrize("include_output", [None, False, True])
+@pytest.mark.parametrize("exit_code", [0, 4])
+@pytest.mark.parametrize("log_level", [logging.DEBUG, logging.WARNING])
+def test_configured_hook_logging(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+    include_output: bool | None,
+    exit_code: int,
+    log_level: int,
+) -> None:
+    if include_output is None:
+        valid_config["logging"].pop("include_command_output")
+    else:
+        valid_config["logging"]["include_command_output"] = include_output
+    valid_config["hooks"]["before_check"] = {
+        "command": "printf 'stdout-secret\\377'; printf 'stderr-secret' >&2; "
+        f": command-secret; exit {exit_code}"
+    }
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    caplog.set_level(log_level, logger="vaultkeep.hooks")
+    config_path = tmp_path / "app.yaml"
+    outcomes: list[HookOutcomeState] = []
+
+    def run() -> None:
+        workflow._run_configured_hook(
+            "before_check",
+            _config(valid_config),
+            config_path,
+            hooks.HookContext("app", config_path),
+            outcomes,
+        )
+
+    if exit_code:
+        with pytest.raises(HookError, match="exited with status 4"):
+            run()
+    else:
+        run()
+
+    assert len(outcomes) == 1
+    assert outcomes[0].exit_code == exit_code
+    assert "command-secret" not in caplog.text
+    if log_level == logging.WARNING:
+        assert not caplog.records
+        return
+    assert "before_check hook: executable=/bin/sh duration_seconds=" in caplog.text
+    assert f"exit_code={exit_code} timed_out=False" in caplog.text
+    assert "stdout_truncated=False stderr_truncated=False" in caplog.text
+    assert all(record.levelno == logging.INFO for record in caplog.records)
+    if include_output:
+        assert "before_check hook stdout: stdout-secret\ufffd" in caplog.text
+        assert "before_check hook stderr: stderr-secret" in caplog.text
+    else:
+        assert "stdout-secret" not in caplog.text
+        assert "stderr-secret" not in caplog.text
 
 
 @pytest.mark.parametrize("user_mode", [False, True])

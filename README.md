@@ -729,6 +729,11 @@ Actionable failures and warnings remain visible even at `logging.level: error`.
 `trigger monitor` continues to log its ongoing operational events at the configured
 level. These settings do not change command results or exit codes.
 
+Hook execution summaries are logged at `INFO`. To also log captured hook stdout and
+stderr, set `logging.include_command_output: true` and `logging.level` to `info` or
+`debug`. Output is limited to 1 MiB per stream and decoded as UTF-8, replacing invalid
+bytes. Hook output is omitted by default; enable it only when it contains no secrets.
+
 Colors highlight status values: green for success, yellow for warnings or incomplete
 setup, red for failure, and cyan for running stages. Headings, paths, timestamps,
 and ordinary values use the default terminal color. Redirected or captured output

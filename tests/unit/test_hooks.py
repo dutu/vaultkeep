@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import socket
@@ -51,12 +52,17 @@ def test_hook_failure_is_reported(trusted_shell: None) -> None:
         hooks.require_success(hooks.run_hook("before_archive", hook, _context()))
 
 
-def test_hook_timeout_is_reported(trusted_shell: None) -> None:
-    hook = HookConfig(command="sleep 5", timeout_seconds=1)
+def test_hook_timeout_is_reported(trusted_shell: None, caplog: pytest.LogCaptureFixture) -> None:
+    hook = HookConfig(command="printf 'before timeout'; sleep 5", timeout_seconds=1)
+    caplog.set_level(logging.INFO, logger="vaultkeep.hooks")
 
-    execution = hooks.run_hook("after_archive", hook, _context())
+    execution = hooks.run_hook("after_archive", hook, _context(), include_command_output=True)
 
     assert execution.outcome.timed_out is True
+    assert "exit_code=None timed_out=True" in caplog.text
+    assert "after_archive hook stdout: before timeout" in caplog.text
+    with pytest.raises(HookError, match="after_archive hook timed out"):
+        hooks.require_success(execution)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group semantics are POSIX-specific")
@@ -89,16 +95,29 @@ def test_timeout_terminates_hook_descendants(tmp_path: Path, trusted_shell: None
         pytest.fail("timed-out hook left its descendant process running")
 
 
-def test_hook_output_is_bounded(trusted_shell: None) -> None:
+def test_hook_output_is_bounded(trusted_shell: None, caplog: pytest.LogCaptureFixture) -> None:
     hook = HookConfig(
-        command=shlex.join([sys.executable, "-c", "import sys; sys.stdout.write('x' * 1100000)"]),
+        command=shlex.join(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('x' * 1100000 + 'stdout-tail'); "
+                "sys.stderr.write('y' * 1100000 + 'stderr-tail')",
+            ]
+        ),
         timeout_seconds=5,
     )
+    caplog.set_level(logging.INFO, logger="vaultkeep.hooks")
 
-    execution = hooks.run_hook("on_success", hook, _context())
+    execution = hooks.run_hook("on_success", hook, _context(), include_command_output=True)
 
     assert execution.outcome.stdout_truncated is True
+    assert execution.outcome.stderr_truncated is True
     assert len(execution.stdout) == 1024 * 1024
+    assert len(execution.stderr) == 1024 * 1024
+    assert "stdout_truncated=True stderr_truncated=True" in caplog.messages[0]
+    assert caplog.messages[1] == "on_success hook stdout: " + "x" * (1024 * 1024)
+    assert caplog.messages[2] == "on_success hook stderr: " + "y" * (1024 * 1024)
 
 
 @pytest.mark.parametrize("message", ["$VAULTKEEP_JOB on $(hostname)", "{job} on {hostname}"])
