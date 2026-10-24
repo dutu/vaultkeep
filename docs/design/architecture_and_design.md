@@ -1758,18 +1758,17 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 
 1. validate the configuration;
 2. calculate the timer schedule;
-3. create the per-instance timer drop-in;
-4. for parameterized jobs, create a per-instance service override containing the exact `vaultkeep --config ... --param ... run` command and matching `ConditionPathExists`;
+3. stage the per-instance timer and service files and validate the calendar and units with `systemd-analyze`;
+4. atomically replace the managed files; for parameterized jobs, the service override contains the exact `vaultkeep --config ... --param ... run` command and matching `ConditionPathExists`;
 5. reload systemd;
 6. enable and start the timer;
-7. verify the timer;
-8. show the next run.
+7. record the instance in the ownership registry.
 
 `schedule install` and `schedule update` require `schedule.enabled: true` and refuse to enable an invalid or incomplete job.
 
-`schedule update` rewrites the generated drop-in, reloads systemd, preserves the timer's enabled or disabled state, verifies the result, and displays the next run.
+`schedule update` validates the staged units, rewrites the generated files, reloads systemd, preserves the timer's enabled or disabled state, and restarts an enabled timer. Use `schedule next` to display the next run.
 
-`schedule install` and `schedule update` write a temporary drop-in, validate it, atomically replace the final file, and restore the preceding file and enabled state when a later lifecycle operation fails.
+`schedule install` and `schedule update` stage generated files, validate them, and apply the change through the same transaction as bulk synchronization. A failure, including Ctrl-C, restores preceding generated files, file modes, the ownership registry, and timer enabled and active states. Restoration continues after individual errors and reports an incomplete rollback. Root-mode validation uses the installed shared templates with the staged instance drop-ins; user-mode validation uses staged complete units. Validation does not start services or install the staged files.
 
 `vaultkeep status` reports concise timer installation, health, enablement, next execution, and diagnostics in its Schedule section.
 
@@ -1797,7 +1796,9 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 
 Synchronization uses a plan-then-apply transaction. Any invalid job or ownership-registry error aborts before file or systemd state changes. During apply, drop-ins and the ownership registry use atomic replacement. A failed apply, including interruption with Ctrl-C, restores the previous generated files and registry, reloads systemd, restores timer enabled and active states, and exits with timer-management failure. Restoration continues after individual rollback errors and reports any incomplete rollback. Persistent timestamps cleared during apply are not restored. Deleted registered instances undergo disable and timestamp cleanup even when their generated timer file is absent; cleanup failures abort apply and trigger rollback.
 
-`schedules list` displays every configured job, its enabled setting, installed state, active state, next trigger, and configuration drift. `schedules validate` validates every job, renders every schedule, runs systemd calendar and unit verification, checks registry ownership, reports all independently detectable errors, and never mutates files or systemd state. `schedules sync --dry-run` displays the exact create, update, disable, remove, and unchanged plan without applying it.
+`schedules list` displays each selected job instance's enabled setting, managed-file installed state, systemd active state, next trigger, and configuration drift. Drift compares generated files and timer enablement with the job configuration and detects active timers for disabled jobs. Disabled jobs retain their preceding timer files, so their calendar is not compared. Operator-owned overrides are outside this comparison. Missing next triggers display as `n/a`; unavailable or incomplete systemd inspection fails the command. Listing never changes files or systemd state. Bulk commands report uninstalled parameterized templates as skipped, as described in the [user guide](../../README.md#manage-all-job-timers).
+
+`schedules validate` validates job configurations and generated calendars, checks registry ownership, and never mutates files or systemd state. `schedules sync --dry-run` displays the create, update, disable, and remove plan without applying it.
 
 Vaultkeep maintains an ownership registry:
 

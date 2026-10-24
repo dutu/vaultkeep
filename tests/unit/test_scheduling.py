@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,12 @@ from vaultkeep.schedule import (
     TimerPaths,
     render_schedule,
 )
+
+
+def _install_templates(paths: TimerPaths) -> None:
+    paths.units_root.mkdir(parents=True, exist_ok=True)
+    (paths.units_root / "vaultkeep@.timer").write_text(TIMER_TEMPLATE)
+    (paths.units_root / "vaultkeep@.service").write_text(SERVICE_TEMPLATE)
 
 
 @pytest.mark.parametrize(
@@ -74,6 +81,7 @@ def test_install_writes_owned_drop_in_and_registry(
     config_path = jobs / "app.yaml"
     YAML(typ="safe").dump(valid_config, config_path)
     paths = TimerPaths(jobs, tmp_path / "units", tmp_path / "state" / "instances.json")
+    _install_templates(paths)
     manager = TimerManager(paths)
     commands: list[tuple[str, ...]] = []
     monkeypatch.setattr(manager, "_run", lambda command, check=True: commands.append(command) or "")
@@ -99,6 +107,7 @@ def test_parameterized_install_derives_instance_and_writes_service_override(
     config_path = jobs / "app.yaml"
     YAML(typ="safe").dump(valid_config, config_path)
     paths = TimerPaths(jobs, tmp_path / "units", tmp_path / "state" / "instances.json")
+    _install_templates(paths)
     manager = TimerManager(paths)
     commands: list[tuple[str, ...]] = []
     monkeypatch.setattr(manager, "_run", lambda command, check=True: commands.append(command) or "")
@@ -208,10 +217,20 @@ def managed_timers(
     paths = TimerPaths(jobs, tmp_path / "units", tmp_path / "instances.json")
     paths.jobs_root.mkdir()
     manager = TimerManager(paths, user_mode=request.param)
+    if not manager.user_mode:
+        _install_templates(paths)
     commands: list[tuple[str, ...]] = []
 
     def run(command: tuple[str, ...], *, check: bool = True) -> str:
         commands.append(command)
+        if "show" in command:
+            instance = command[-1].removeprefix("vaultkeep@").removesuffix(".timer")
+            installed = manager._timer_drop_in_path(instance).is_file()
+            return (
+                f"LoadState={'loaded' if installed else 'not-found'}\n"
+                f"UnitFileState={'enabled' if installed else 'disabled'}\n"
+                "ActiveState=inactive\nNextElapseUSecRealtime=\n"
+            )
         return "enabled\n" if "is-enabled" in command else ""
 
     monkeypatch.setattr(manager, "_run", run)
@@ -251,9 +270,11 @@ def test_bulk_schedules_reuse_each_installed_parameter_selection(
     commands.clear()
 
     assert manager.list() == tuple(
-        f"{instance}: enabled=True installed=True" for instance in instances
+        f"{instance}: enabled=True installed=True active=inactive next=n/a drift=False"
+        for instance in instances
     )
-    assert commands == []
+    assert len(commands) == len(instances) and all("show" in command for command in commands)
+    commands.clear()
     assert manager.validate_all() == tuple(
         f"valid {instance}: *-*-* 01:00:00" for instance in instances
     )
@@ -280,8 +301,11 @@ def test_bulk_schedules_reuse_each_installed_parameter_selection(
     YAML(typ="safe").dump(valid_config, config_path)
     commands.clear()
     assert manager.list() == tuple(
-        f"{instance}: enabled=False installed=True" for instance in instances
+        f"{instance}: enabled=False installed=True active=inactive next=n/a drift=True"
+        for instance in instances
     )
+    assert all("show" in command for command in commands)
+    commands.clear()
     assert manager.validate_all() == tuple(f"valid disabled {instance}" for instance in instances)
     assert commands == []
     expected = tuple(f"disable {instance}" for instance in instances)
@@ -322,21 +346,29 @@ def test_bulk_schedules_skip_uninstalled_templates_and_continue(
     YAML(typ="safe").dump(valid_config, manager.paths.jobs_root / "app.yaml")
     skipped = "skip app: no installed parameter selection; use schedule install with --param"
 
-    assert manager.list() == (skipped, f"z_plain: enabled={enabled} installed=False")
-    assert commands == []
+    assert manager.list() == (
+        skipped,
+        f"z_plain: enabled={enabled} installed=False active=inactive next=n/a drift={enabled}",
+    )
+    assert len(commands) == 1 and "show" in commands[0]
+    commands.clear()
     ordinary_validation = "valid z_plain: *-*-* 01:00:00" if enabled else "valid disabled z_plain"
     assert manager.validate_all() == (skipped, ordinary_validation)
     commands.clear()
     expected = (skipped, "create z_plain" if enabled else "disable z_plain")
     assert manager.sync(dry_run=True) == expected
     assert commands == []
-    assert not manager.paths.units_root.exists()
+    assert not tuple(manager.paths.units_root.glob("vaultkeep@*.timer.d"))
+    assert not tuple(manager.paths.units_root.glob("vaultkeep@*.service.d"))
     assert not manager.paths.registry_path.exists()
 
     assert manager.sync() == expected
     assert not manager._timer_drop_in_path("app").exists()
     assert manager._timer_drop_in_path("z_plain").is_file() == enabled
-    assert manager.list() == (skipped, f"z_plain: enabled={enabled} installed={enabled}")
+    assert manager.list() == (
+        skipped,
+        f"z_plain: enabled={enabled} installed={enabled} active=inactive next=n/a drift=False",
+    )
 
 
 @pytest.mark.parametrize(
@@ -405,7 +437,8 @@ def test_bulk_schedules_reject_invalid_ownership_registry(
         with pytest.raises(TimerError, match="Invalid timer ownership registry"):
             operation()
     assert commands == []
-    assert not manager.paths.units_root.exists()
+    assert not tuple(manager.paths.units_root.glob("vaultkeep@*.timer.d"))
+    assert not tuple(manager.paths.units_root.glob("vaultkeep@*.service.d"))
 
 
 def test_bulk_sync_recreates_missing_parameterized_timer(
@@ -421,13 +454,19 @@ def test_bulk_sync_recreates_missing_parameterized_timer(
     manager._timer_drop_in_path(instance).unlink()
     commands.clear()
 
-    assert manager.list() == (f"{instance}: enabled=True installed=False",)
+    assert manager.list() == (
+        f"{instance}: enabled=True installed=False active=inactive next=n/a drift=True",
+    )
+    assert len(commands) == 1 and "show" in commands[0]
+    commands.clear()
     assert manager.sync(dry_run=True) == (f"create {instance}",)
     assert commands == []
     assert manager.sync() == (f"create {instance}",)
     prefix = ("systemctl", "--user") if manager.user_mode else ("systemctl",)
     assert (*prefix, "enable", "--now", f"vaultkeep@{instance}.timer") in commands
-    assert manager.list() == (f"{instance}: enabled=True installed=True",)
+    assert manager.list() == (
+        f"{instance}: enabled=True installed=True active=inactive next=n/a drift=False",
+    )
     assert not manager._timer_drop_in_path("app").exists()
 
 
@@ -451,7 +490,8 @@ def test_skipping_uninstalled_templates_does_not_hide_other_configuration_errors
         with pytest.raises(TimerError if damage == "filename" else ConfigurationError):
             operation()
     assert commands == []
-    assert not manager.paths.units_root.exists()
+    assert not tuple(manager.paths.units_root.glob("vaultkeep@*.timer.d"))
+    assert not tuple(manager.paths.units_root.glob("vaultkeep@*.service.d"))
 
 
 @pytest.mark.parametrize("action", ["list", "validate", "sync"])
@@ -486,7 +526,7 @@ def test_bulk_cli_handles_installed_and_uninstalled_parameterized_jobs(
     assert instance in output.out
     assert "skip z_template: no installed parameter selection" in output.out
     assert output.err == ""
-    assert all(command[0] == "systemd-analyze" for command in commands)
+    assert all(command[0] == "systemd-analyze" or "show" in command for command in commands)
 
 
 @pytest.fixture
@@ -540,6 +580,255 @@ def _sync_files(manager: TimerManager) -> dict[Path, tuple[bytes, int]]:
     if manager.paths.registry_path.exists():
         paths.append(manager.paths.registry_path)
     return {path: (path.read_bytes(), path.stat().st_mode & 0o777) for path in paths}
+
+
+@pytest.mark.parametrize("action", ["install", "update"])
+@pytest.mark.parametrize("failure", ["calendar", "verify"])
+def test_single_schedule_validation_precedes_live_changes(
+    managed_timers, valid_config, monkeypatch, action, failure
+):
+    manager, commands = managed_timers
+    valid_config["schedule"]["enabled"] = True
+    _parameterize_destination(valid_config, "both")
+    path = _save_sync_job(manager, valid_config, "app")
+    before = _sync_files(manager)
+    run = manager._run
+    staged = []
+
+    def fail(command, *, check=True):
+        if failure in command:
+            if failure == "verify":
+                timer, service = map(Path, command[-2:])
+                staged.extend((timer, service))
+                assert timer.is_file() and service.is_file()
+                if manager.user_mode:
+                    assert "OnCalendar=" in timer.read_text()
+                    assert "--param repo=nas-a" in service.read_text()
+                else:
+                    assert timer.read_text() == TIMER_TEMPLATE
+                    assert service.read_text() == SERVICE_TEMPLATE
+                    drop_in = timer.parent / f"{timer.name}.d" / "schedule.conf"
+                    override = service.parent / f"{service.name}.d" / "override.conf"
+                    assert "OnCalendar=*-*-* 01:00:00" in drop_in.read_text()
+                    assert "--param repo=nas-a" in override.read_text()
+            raise TimerError("injected validation failure")
+        return run(command, check=check)
+
+    monkeypatch.setattr(manager, "_run", fail)
+    with pytest.raises(TimerError, match="injected validation failure"):
+        getattr(manager, action)(path, runtime_params={"repo": "nas-a"})
+    assert _sync_files(manager) == before
+    assert all(command[0] == "systemd-analyze" for command in commands)
+    assert all(not path.exists() for path in staged)
+
+
+@pytest.mark.parametrize("parameterized", [False, True])
+def test_staged_units_pass_systemd_parser(managed_timers, valid_config, monkeypatch, parameterized):
+    if shutil.which("systemd-analyze") is None:
+        pytest.skip("systemd-analyze is required to verify staged schedule units")
+    manager, _ = managed_timers
+    runtime = manager.paths.jobs_root.parent / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("VAULTKEEP_BIN_LINK", "/usr/bin/true")
+    if not manager.user_mode:
+        (manager.paths.units_root / "vaultkeep@.service").write_text(
+            SERVICE_TEMPLATE.replace("/usr/local/bin/vaultkeep", "/usr/bin/true")
+        )
+    valid_config["schedule"]["enabled"] = True
+    if parameterized:
+        _parameterize_destination(valid_config, "both")
+    path = _save_sync_job(manager, valid_config, "app")
+    params = {"repo": "nas-a"} if parameterized else {}
+    run = TimerManager._run.__get__(manager)
+    commands = []
+
+    def validate(command, *, check=True):
+        commands.append(command)
+        if command[0] == "systemd-analyze":
+            return run(command, check=check)
+        # All systemctl commands stay mocked: this test never starts a timer.
+        return ""
+
+    monkeypatch.setattr(manager, "_run", validate)
+    try:
+        manager.install(path, runtime_params=params)
+    except TimerError as error:
+        if "SO_PASSCRED failed: Operation not permitted" in str(error):
+            pytest.skip("sandbox blocks systemd-analyze sockets; run outside that sandbox")
+        raise
+    assert any("calendar" in command for command in commands)
+    assert any("verify" in command for command in commands)
+    assert len(manager._registry()) == 1
+
+
+@pytest.mark.parametrize("action", ["install", "update"])
+@pytest.mark.parametrize("failure", ["reload", "lifecycle", "file", "registry", "interrupt"])
+def test_single_schedule_restores_files_registry_and_states(
+    syncing_timers, valid_config, monkeypatch, action, failure
+):
+    manager, commands, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    _parameterize_destination(valid_config, "both")
+    path = _save_sync_job(manager, valid_config, "app")
+    params = {"repo": "nas-a"}
+    instance = manager._instance_id(path, "app", params)
+    unit = manager._unit(instance)
+    if action == "update":
+        manager.install(path, runtime_params=params)
+        manager._timer_drop_in_path(instance).chmod(0o640)
+        valid_config["schedule"]["window"] = "02:00-04:00"
+        _save_sync_job(manager, valid_config, "app")
+    before = _sync_files(manager)
+    previous_state = states.get(unit, (False, False))
+    commands.clear()
+    run = manager._run
+    fired = False
+
+    def fail(command, *, check=True):
+        nonlocal fired
+        output = run(command, check=check)
+        operation = "enable" if action == "install" else "restart"
+        target = "daemon-reload" in command if failure == "reload" else operation in command
+        if failure in ("reload", "lifecycle", "interrupt") and target and not fired:
+            fired = True
+            if failure == "interrupt":
+                raise KeyboardInterrupt
+            raise TimerError("injected lifecycle failure")
+        return output
+
+    monkeypatch.setattr(manager, "_run", fail)
+    write = schedule_module._atomic_write
+
+    def fail_write(target, content, *, mode):
+        nonlocal fired
+        write(target, content, mode=mode)
+        if not fired and (
+            (failure == "registry" and target == manager.paths.registry_path)
+            or (failure == "file" and target == manager._service_drop_in_path(instance))
+        ):
+            fired = True
+            raise OSError("injected write failure")
+
+    monkeypatch.setattr(schedule_module, "_atomic_write", fail_write)
+    with pytest.raises(
+        TimerError, match="interrupted; rolled back" if failure == "interrupt" else "rolled back"
+    ):
+        getattr(manager, action)(path, runtime_params=params)
+    assert fired
+    assert _sync_files(manager) == before
+    assert states[unit] == previous_state
+    if action == "install" and not manager.user_mode:
+        assert not manager._timer_drop_in_path(instance).parent.exists()
+        assert not manager._service_drop_in_path(instance).parent.exists()
+
+
+@pytest.mark.parametrize(
+    "enabled,active", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_update_preserves_enablement_and_restores_activity_on_failure(
+    syncing_timers, valid_config, monkeypatch, enabled, active
+):
+    manager, _, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    path = _save_sync_job(manager, valid_config, "app")
+    manager.install(path)
+    unit = manager._unit("app")
+    states[unit] = (enabled, active)
+    manager.update(path)
+    assert states[unit] == (enabled, True if enabled else active)
+
+    states[unit] = (enabled, active)
+    before = _sync_files(manager)
+    write_registry = schedule_module._write_registry
+
+    def fail_registry(path, instances):
+        write_registry(path, instances)
+        raise TimerError("injected registry failure")
+
+    monkeypatch.setattr(schedule_module, "_write_registry", fail_registry)
+    with pytest.raises(TimerError, match="rolled back"):
+        manager.update(path)
+    assert states[unit] == (enabled, active)
+    assert _sync_files(manager) == before
+
+
+def test_single_schedule_reports_incomplete_rollback(syncing_timers, valid_config, monkeypatch):
+    manager, _, states = syncing_timers
+    valid_config["schedule"]["enabled"] = True
+    path = _save_sync_job(manager, valid_config, "app")
+    manager.install(path)
+    before = _sync_files(manager)
+    run = manager._run
+
+    def fail(command, *, check=True):
+        if "restart" in command:
+            raise TimerError("injected persistent restart failure")
+        return run(command, check=check)
+
+    monkeypatch.setattr(manager, "_run", fail)
+    with pytest.raises(TimerError, match=r"rollback incomplete:.*persistent restart failure"):
+        manager.update(path)
+    assert _sync_files(manager) == before
+    assert states[manager._unit("app")] == (True, False)
+
+
+@pytest.mark.parametrize("damage", [None, "calendar", "timer", "service", "enablement", "disabled"])
+def test_list_reports_live_state_next_trigger_and_drift(
+    managed_timers, valid_config, monkeypatch, damage
+):
+    manager, commands = managed_timers
+    valid_config["schedule"]["enabled"] = True
+    _parameterize_destination(valid_config, "both")
+    path = _save_sync_job(manager, valid_config, "app")
+    manager.install(path, runtime_params={"repo": "nas-a"})
+    instance = next(iter(manager._registry()))
+    if damage == "calendar":
+        valid_config["schedule"]["window"] = "02:00-04:00"
+        _save_sync_job(manager, valid_config, "app")
+    elif damage in ("timer", "service"):
+        target = (
+            manager._timer_drop_in_path(instance)
+            if damage == "timer"
+            else manager._service_drop_in_path(instance)
+        )
+        target.write_text(target.read_text() + "# modified\n")
+    elif damage == "disabled":
+        valid_config["schedule"] = {"enabled": False}
+        _save_sync_job(manager, valid_config, "app")
+    before = _sync_files(manager)
+    commands.clear()
+
+    def show(command, *, check=True):
+        commands.append(command)
+        assert "show" in command
+        return (
+            "LoadState=loaded\nActiveState=active\n"
+            f"UnitFileState={'disabled' if damage == 'enablement' else 'enabled'}\n"
+            "NextElapseUSecRealtime=Mon 2026-10-26 01:00:00 EET\n"
+        )
+
+    monkeypatch.setattr(manager, "_run", show)
+    assert manager.list() == (
+        f"{instance}: enabled={damage != 'disabled'} installed=True active=active "
+        f"next=Mon 2026-10-26 01:00:00 EET drift={damage is not None}",
+    )
+    assert _sync_files(manager) == before
+    assert len(commands) == 1
+    assert ("--user" in commands[0]) == manager.user_mode
+
+
+@pytest.mark.parametrize("response", ["", "LoadState=loaded\n"])
+def test_list_fails_on_unavailable_or_incomplete_systemd_response(
+    managed_timers, valid_config, monkeypatch, response
+):
+    manager, _ = managed_timers
+    _save_sync_job(manager, valid_config, "app")
+    before = _sync_files(manager)
+    monkeypatch.setattr(manager, "_run", lambda *args, **kwargs: response)
+    with pytest.raises(TimerError, match="incomplete systemd response"):
+        manager.list()
+    assert _sync_files(manager) == before
 
 
 @pytest.mark.parametrize("parameterized", [False, True])
@@ -658,7 +947,7 @@ def test_sync_rolls_back_files_registry_and_timer_states(
         monkeypatch.setattr(schedule_module, "_write_registry", fail_registry)
     commands.clear()
 
-    with pytest.raises(TimerError, match="(injected.*|interrupted); rolled back"):
+    with pytest.raises(TimerError, match=r"(injected.*|interrupted); rolled back"):
         manager.sync()
 
     assert fired
@@ -673,6 +962,7 @@ def test_sync_rolls_back_new_install_and_absent_registry_on_file_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager, commands, states = syncing_timers
+    before = _sync_files(manager)
     valid_config["schedule"]["enabled"] = True
     _save_sync_job(manager, valid_config, "a_first")
     _save_sync_job(manager, valid_config, "z_second")
@@ -687,7 +977,7 @@ def test_sync_rolls_back_new_install_and_absent_registry_on_file_failure(
     with pytest.raises(TimerError, match="injected timer file failure; rolled back"):
         manager.sync()
 
-    assert _sync_files(manager) == {}
+    assert _sync_files(manager) == before
     assert all(state == (False, False) for state in states.values())
     assert any("enable" in command and "--now" in command for command in commands)
 
@@ -700,6 +990,7 @@ def test_sync_rolls_back_new_install_on_interrupt(
     during_registry_write: bool,
 ) -> None:
     manager, commands, states = syncing_timers
+    before = _sync_files(manager)
     valid_config["schedule"]["enabled"] = True
     _save_sync_job(manager, valid_config, "app")
     if during_registry_write:
@@ -724,7 +1015,7 @@ def test_sync_rolls_back_new_install_on_interrupt(
     with pytest.raises(TimerError, match="interrupted; rolled back"):
         manager.sync()
 
-    assert _sync_files(manager) == {}
+    assert _sync_files(manager) == before
     assert not manager.paths.registry_path.exists()
     assert states[manager._unit("app")] == (False, False)
     assert any("disable" in command for command in commands)
@@ -752,7 +1043,7 @@ def test_sync_reports_rollback_failures_and_continues_restoring(
 
     monkeypatch.setattr(manager, "_run", fail)
     with pytest.raises(
-        TimerError, match="rollback incomplete:.*injected persistent restart failure"
+        TimerError, match=r"rollback incomplete:.*injected persistent restart failure"
     ):
         manager.sync()
     assert _sync_files(manager) == before
@@ -892,6 +1183,7 @@ def test_sync_renders_the_whole_plan_before_mutating(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager, commands, _ = syncing_timers
+    before = _sync_files(manager)
     valid_config["schedule"]["enabled"] = True
     _save_sync_job(manager, valid_config, "a_first")
     _save_sync_job(manager, valid_config, "z_second")
@@ -906,7 +1198,7 @@ def test_sync_renders_the_whole_plan_before_mutating(
     with pytest.raises(TimerError, match="injected rendering failure"):
         manager.sync()
     assert commands == []
-    assert _sync_files(manager) == {}
+    assert _sync_files(manager) == before
 
 
 def test_sync_snapshots_the_whole_plan_before_mutating(

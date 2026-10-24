@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import errno
 import json
 import os
@@ -191,32 +192,60 @@ class TimerManager:
     def install(
         self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
     ) -> RenderedSchedule:
-        parameters = dict(runtime_params or {})
-        config = self._load_managed(config_path, require_enabled=True, runtime_params=parameters)
-        rendered = render_schedule(config)
-        instance = self._instance_id(config_path, config.job.id, parameters)
-        self._write_timer_drop_in(instance, rendered)
-        self._write_service_drop_in(config_path, instance, parameters)
-        self._daemon_reload()
-        self._systemctl("enable", "--now", self._unit(instance))
-        self._register(instance)
-        return rendered
+        return self._install_or_update(config_path, runtime_params=runtime_params, install=True)
 
     def update(
         self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    ) -> RenderedSchedule:
+        return self._install_or_update(config_path, runtime_params=runtime_params, install=False)
+
+    def _install_or_update(
+        self,
+        config_path: Path,
+        *,
+        runtime_params: Mapping[str, str] | None,
+        install: bool,
     ) -> RenderedSchedule:
         parameters = dict(runtime_params or {})
         config = self._load_managed(config_path, require_enabled=True, runtime_params=parameters)
         rendered = render_schedule(config)
         instance = self._instance_id(config_path, config.job.id, parameters)
-        enabled = self._is_enabled(instance)
-        self._write_timer_drop_in(instance, rendered)
-        self._write_service_drop_in(config_path, instance, parameters)
-        self._daemon_reload()
-        if enabled:
-            self._systemctl("restart", self._unit(instance))
-        self._register(instance)
+        change = _SyncChange(
+            "create" if install else "update",
+            instance,
+            self._timer_content(instance, rendered),
+            self._service_content(config_path, instance, parameters),
+        )
+        self._validate_change(change, rendered)
+        self._apply_sync([change], operation="installation" if install else "update")
         return rendered
+
+    def _validate_change(self, change: _SyncChange, rendered: RenderedSchedule) -> None:
+        """Check the generated calendar and staged units before replacing live files."""
+        self._run(("systemd-analyze", "calendar", rendered.on_calendar))
+        try:
+            with tempfile.TemporaryDirectory(prefix="vaultkeep-schedule-") as directory:
+                root = Path(directory)
+                timer = root / self._unit(change.instance)
+                service = timer.with_suffix(".service")
+                if self.user_mode:
+                    timer.write_text(change.timer_content or "", encoding="utf-8")
+                    service.write_text(change.service_content or "", encoding="utf-8")
+                else:
+                    for unit in (timer, service):
+                        template = self.paths.units_root / f"vaultkeep@{unit.suffix}"
+                        unit.write_bytes(template.read_bytes())
+                    drop_in = root / f"{timer.name}.d" / "schedule.conf"
+                    drop_in.parent.mkdir()
+                    drop_in.write_text(change.timer_content or "", encoding="utf-8")
+                    if change.service_content is not None:
+                        override = root / f"{service.name}.d" / "override.conf"
+                        override.parent.mkdir()
+                        override.write_text(change.service_content, encoding="utf-8")
+                prefix = ("systemd-analyze", "--user") if self.user_mode else ("systemd-analyze",)
+                self._run((*prefix, "--man=no", "verify", str(timer), str(service)))
+        except OSError as error:
+            raise TimerError(f"Cannot stage timer validation: {error}") from error
 
     def disable(
         self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
@@ -315,7 +344,9 @@ class TimerManager:
             self._apply_sync(changes)
         return tuple(planned)
 
-    def _apply_sync(self, changes: list[_SyncChange]) -> None:
+    def _apply_sync(
+        self, changes: list[_SyncChange], *, operation: str = "synchronization"
+    ) -> None:
         registry = self._registry()
         files = {self.paths.registry_path}
         for change in changes:
@@ -378,7 +409,7 @@ class TimerManager:
             errors = self._rollback_sync(snapshots, touched)
             detail = f"; rollback incomplete: {'; '.join(errors)}" if errors else "; rolled back"
             reason = "interrupted" if isinstance(error, KeyboardInterrupt) else str(error)
-            raise TimerError(f"Schedule synchronization failed: {reason}{detail}") from error
+            raise TimerError(f"Schedule {operation} failed: {reason}{detail}") from error
 
     def _set_sync_file(self, path: Path, content: str | None) -> None:
         if content is not None:
@@ -416,7 +447,10 @@ class TimerManager:
                     attempt(self._systemctl, "disable", self._unit(instance))
         for path, snapshot in snapshots.items():
             if snapshot is None:
-                attempt(path.unlink, missing_ok=True)
+                if path == self.paths.registry_path:
+                    attempt(path.unlink, missing_ok=True)
+                else:
+                    attempt(self._set_sync_file, path, None)
             else:
                 content, mode = snapshot
                 attempt(path.parent.mkdir, mode=0o755, parents=True, exist_ok=True)
@@ -439,8 +473,58 @@ class TimerManager:
             installed = self._timer_drop_in_path(instance).is_file()
             if self.user_mode or parameters:
                 installed = installed and self._service_drop_in_path(instance).is_file()
-            result.append(f"{instance}: enabled={config.schedule.enabled} installed={installed}")
+            values = self._timer_properties(instance)
+            active = values.get("ActiveState", "inactive")
+            next_trigger = values.get("NextElapseUSecRealtime", "")
+            if not next_trigger or next_trigger in ("0", "infinity"):
+                next_trigger = "n/a"
+            timer_enabled = values.get("UnitFileState") in ("enabled", "enabled-runtime")
+            drift = timer_enabled != config.schedule.enabled
+            if config.schedule.enabled:
+                drift |= not installed or values["LoadState"] != "loaded"
+                drift |= not self._matches_file(
+                    self._timer_drop_in_path(instance),
+                    self._timer_content(instance, render_schedule(config)),
+                )
+            if (
+                self._timer_drop_in_path(instance).is_file()
+                or self._service_drop_in_path(instance).exists()
+            ):
+                drift |= not self._matches_file(
+                    self._service_drop_in_path(instance),
+                    self._service_content(config_path, instance, parameters),
+                )
+            if not config.schedule.enabled and active == "active":
+                drift = True
+            result.append(
+                f"{instance}: enabled={config.schedule.enabled} installed={installed} "
+                f"active={active} next={next_trigger} drift={drift}"
+            )
         return tuple(result)
+
+    def _timer_properties(self, instance: str) -> dict[str, str]:
+        output = self._systemctl(
+            "show",
+            "--property=LoadState,ActiveState,UnitFileState,NextElapseUSecRealtime",
+            self._unit(instance),
+            check=False,
+        )
+        values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if not values.get("LoadState") or (
+            values["LoadState"] != "not-found"
+            and any(not values.get(key) for key in ("ActiveState", "UnitFileState"))
+        ):
+            raise TimerError(f"Cannot inspect {self._unit(instance)}: incomplete systemd response")
+        return values
+
+    @staticmethod
+    def _matches_file(path: Path, content: str | None) -> bool:
+        if content is None:
+            return not (path.exists() or path.is_symlink())
+        try:
+            return path.read_bytes() == content.encode("utf-8")
+        except FileNotFoundError:
+            return False
 
     def validate_all(self) -> tuple[str, ...]:
         """Validate every managed job without writing files or changing systemd state."""
@@ -459,8 +543,8 @@ class TimerManager:
         return tuple(validated)
 
     def _managed_jobs(
-        self, *, deleted: list[str] | None = None
-    ) -> list[tuple[Path, JobConfig, dict[str, str] | None]]:
+        self, *, deleted: builtins.list[str] | None = None
+    ) -> builtins.list[tuple[Path, JobConfig, dict[str, str] | None]]:
         """Resolve all saved selections before any bulk operation changes timers."""
         registry = self._registry()
         templates = {
@@ -513,7 +597,7 @@ class TimerManager:
                 raise TimerError(f"Saved parameters do not match timer instance: {instance}")
             selections.setdefault(config_path, []).append(parameters)
 
-        jobs: list[tuple[Path, JobConfig, dict[str, str] | None]] = []
+        jobs: builtins.list[tuple[Path, JobConfig, dict[str, str] | None]] = []
         for config_path, template in templates.items():
             for parameters in selections.get(config_path, [{}]):
                 try:
@@ -578,11 +662,6 @@ class TimerManager:
             return self.paths.units_root / f"vaultkeep@{instance}.service"
         return self.paths.units_root / f"vaultkeep@{instance}.service.d" / "override.conf"
 
-    def _write_timer_drop_in(self, instance: str, rendered: RenderedSchedule) -> None:
-        destination = self._timer_drop_in_path(instance)
-        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        _atomic_write(destination, self._timer_content(instance, rendered), mode=0o644)
-
     def _timer_content(self, instance: str, rendered: RenderedSchedule) -> str:
         if self.user_mode:
             content = (
@@ -601,19 +680,6 @@ class TimerManager:
         else:
             content = rendered.drop_in()
         return content
-
-    def _write_service_drop_in(
-        self, config_path: Path, instance: str, runtime_params: Mapping[str, str]
-    ) -> None:
-        destination = self._service_drop_in_path(instance)
-        content = self._service_content(config_path, instance, runtime_params)
-        if content is None:
-            if destination.exists():
-                destination.unlink()
-                destination.parent.rmdir()
-            return
-        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        _atomic_write(destination, content, mode=0o644)
 
     def _service_content(
         self, config_path: Path, instance: str, runtime_params: Mapping[str, str]
@@ -679,12 +745,6 @@ class TimerManager:
             return dict(instances)
         except (OSError, KeyError, TypeError, ValueError) as error:
             raise TimerError(f"Invalid timer ownership registry: {error}") from error
-
-    def _register(self, instance: str) -> None:
-        registry = self._registry()
-        registry[instance] = str(self._timer_drop_in_path(instance))
-        self.paths.registry_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        _write_registry(self.paths.registry_path, registry)
 
     def _unregister(self, instance: str) -> None:
         registry = self._registry()

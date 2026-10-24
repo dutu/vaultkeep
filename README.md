@@ -1153,6 +1153,12 @@ Update the timer after changing the job schedule:
 vaultkeep [--user] --config <job.yaml> schedule update
 ```
 
+Install and update validate the generated calendar and staged service/timer units
+before replacing the managed files. Update preserves timer enablement and restarts
+an enabled timer. If applying either command fails or is interrupted with Ctrl-C,
+Vaultkeep restores the preceding managed files, ownership registry, and timer
+enablement/activity. Restoration errors are reported as an incomplete rollback.
+
 Inspect the timer:
 
 ```text
@@ -1229,6 +1235,14 @@ vaultkeep [--user] schedules validate
 vaultkeep [--user] schedules sync --dry-run
 vaultkeep [--user] schedules sync
 ```
+
+`schedules list` shows each selected job instance's configured `enabled` setting,
+managed-file `installed` state, systemd `active` state, `next` trigger (`n/a` when
+unavailable), and `drift`. Drift reports missing or changed generated files,
+timer enablement that differs from the job setting, or a timer still active for
+a disabled schedule. Disabled jobs retain their timer files, so their previous
+calendar is not compared. Operator-owned overrides are outside this comparison.
+Listing is read-only and fails if systemd cannot be inspected.
 
 `schedules sync` creates or updates timers for jobs with `schedule.enabled: true`
 and disables timers for jobs with `schedule.enabled: false`. It also stops,
