@@ -60,10 +60,19 @@ def safe_text(text: str, stream: TextIO) -> str:
 
 
 def format_table(
-    headings: tuple[str, ...], rows: Sequence[tuple[str, ...]], *, stream: TextIO
+    headings: tuple[str, ...],
+    rows: Sequence[tuple[str, ...]],
+    *,
+    stream: TextIO,
+    details: Sequence[str] | None = None,
 ) -> list[str]:
     """Use aligned columns or labeled records on narrow terminals; never truncate."""
     table = [tuple(safe_text(value, stream) for value in row) for row in rows]
+    detail_lines = (
+        [safe_text(value, stream) for value in details]
+        if details is not None
+        else [""] * len(table)
+    )
     widths = [
         max(text_cells(row[index]) for row in [headings, *table]) for index in range(len(headings))
     ]
@@ -71,12 +80,14 @@ def format_table(
     if stream.isatty() and table_width >= terminal_columns(stream):
         lines = []
         label_width = max(len(label) for label in headings[1:])
-        for row in table:
+        for row, detail in zip(table, detail_lines, strict=True):
             lines += [row[0]]
             lines += [
                 f"  {label + ':':<{label_width + 2}}{value}"
                 for label, value in zip(headings[1:], row[1:], strict=True)
             ]
+            if detail:
+                lines += [detail]
             lines += [""]
         return lines
 
@@ -86,12 +97,14 @@ def format_table(
             for value, width in zip(row, widths, strict=True)
         ).rstrip()
 
-    return [
-        format_row(headings),
-        "─" * table_width,
-        *(format_row(row) for row in table),
-        "─" * table_width,
-    ]
+    lines = [format_row(headings), "─" * table_width]
+    for index, (row, detail) in enumerate(zip(table, detail_lines, strict=True)):
+        lines += [format_row(row)]
+        if detail:
+            lines += [detail]
+            if index < len(table) - 1:
+                lines += [""]
+    return [*lines, "─" * table_width]
 
 
 def format_size(size: int, *, byte_unit: str = "B") -> str:

@@ -410,7 +410,9 @@ independent copy of the passphrase for restoration.
 ## Retention
 
 Set all five counts: `hourly`, `daily`, `weekly`, `monthly`, and `yearly`. Counts are
-integers at least zero; zero disables a tier and at least one tier must be enabled.
+integers at least zero; zero disables a tier and at least one tier must be enabled
+for validation, backup execution, and pruning. Read-only `list` can inspect an
+all-zero policy as disabled without assigning retention decisions.
 This is count-based calendar retention, rather than a file-age deletion rule.
 
 Vaultkeep retains the newest backup in each selected bucket, evaluating

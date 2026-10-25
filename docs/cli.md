@@ -17,7 +17,7 @@ vaultkeep --version
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] run
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json] [--verbose]
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list [--verbose]
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify [--verbose]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
 
@@ -242,40 +242,58 @@ backup is using them; later runs do not remove older partial directories.
 ## List job backups
 
 ```text
-vaultkeep [--user] --config <job.yaml> list [--verbose]
+vaultkeep [--user] --config <job.yaml> list
 ```
 
-`list` prints a `Vaultkeep — Backups` inventory with the destination, UTC creation
-times, actual archive sizes, encryption (`yes` or `no`), and archive paths relative
-to that destination. Backups appear newest first. Creation and encryption facts
-come from stored manifests, including backups in either supported format after a
-change to the current archive settings. For `per_file` jobs, paths include each
-file history directory and sorting covers all histories.
+`list` prints a `Vaultkeep — Backups` inventory with the job ID, destination,
+and configured retention counts. Rows show `Created (UTC)`, compressed archive
+`Size`, `Enc` (`yes` or `no`), `Decision`, and `Retained by`, newest first. Creation
+and encryption facts come from stored manifests, including backups in either
+supported format after an archive-setting change. Each row is followed by
+`  Backup: <directory>` with the complete directory path relative to the destination.
+For `per_file` jobs, this includes the file history directory.
 
-The table uses the same formatting as `verify`, switching to labeled records on
-narrow terminals. Paths are never truncated; control characters and characters
-unsupported by the output encoding are escaped. The final summary counts listed
-backups; an empty inventory says `No backups found.` There are no elapsed-time
-or redundant success messages.
+Retention decisions reuse the existing pruning planner, calculated independently
+for each file history:
 
-Matching entries with missing or invalid manifests or archive layouts appear under
-`Warnings`, followed by an `Invalid entries` count. They are excluded from the
-backup count. A manifest missing required encryption metadata is invalid rather
-than being assigned encryption from the current configuration. Unrelated entries
+- `KEEP`: selected by at least one retention tier. `Retained by` lists every tier
+  that actually selects this backup, rather than all calendar buckets it belongs to.
+- `PRUNE`: eligible for removal under the current policy and inventory. Listing
+  never deletes anything; pruning performs its own checks before deletion.
+- `UNKNOWN`: a reliable plan cannot be established, for example because matching
+  invalid entries or duplicate backup IDs make that history incomplete.
+
+Selections use the manifest's recorded local calendar time, while the table shows
+UTC. They are recalculated when the available backups or current policy change.
+The final summary gives total backups and Keep/Prune counts, plus Unknown when
+needed. An empty inventory says `No backups found.`
+
+All-zero retention counts are shown as `Retention: disabled`, with `—` in both
+retention columns and no Keep/Prune/Unknown counts. This is supported for read-only
+inspection with `list`; validation, `run`, and `prune` still require an enabled tier.
+
+Missing or invalid metadata and archive layouts appear under `Warnings`, with
+available diagnostics and a separate `Invalid entries` count. Invalid entries are
+excluded from inventory rows. Affected histories have `UNKNOWN` decisions; other
+file histories retain their independently calculated selections. Matching invalid
+entries continue to block actual pruning. A missing required encryption field is
+invalid, rather than inferred from the current job configuration. Unrelated entries
 and partial backup directories are ignored.
 
-`--verbose` shows absolute archive paths in place of relative paths, followed by
-backup directories, manifest paths and metadata, stored digests, and full warning
-diagnostics. Stored digests are reported as metadata, not verified results.
+The compact table uses the same formatting and narrow-terminal fallback as `verify`.
+Backup directory lines do not widen the columns and wrap naturally on terminals.
+Names are never truncated; control characters and characters unsupported by the
+output encoding are escaped. There are no additional options, elapsed-time messages,
+per-backup archive paths, or verbose metadata sections.
 
 Listing reads manifests and filesystem metadata, requires the archive and checksum
 sidecar to exist as regular files, and checks the expected directory layout. It
-does not read archive contents or checksum sidecar contents, calculate SHA-256,
-load encryption passwords, require the original sources, or modify backup or local
-state. **Being listed does not establish archive integrity**; use `verify` to check
-contents and checksums. A completed inventory exits zero, including empty inventories
-and inventories with invalid-entry warnings. Configuration and destination failures
-retain the [core exit codes](#exit-codes).
+does not read archive or checksum sidecar contents, calculate SHA-256, load encryption
+passwords, require original sources, or modify backup or local state. **Being listed
+does not establish archive integrity**; use `verify` to check contents and checksums.
+A completed inventory exits zero, including empty inventories and incomplete previews
+with warnings. Configuration and destination failures retain the
+[core exit codes](#exit-codes).
 
 ## Verify job backups
 

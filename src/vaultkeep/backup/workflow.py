@@ -28,7 +28,7 @@ from vaultkeep.archive import (
 from vaultkeep.backup.execution import Execution
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
 from vaultkeep.backup.results import failure_reason
-from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
+from vaultkeep.config import JobConfig, RetentionConfig, load_config, resolve_runtime_config
 from vaultkeep.destination import (
     allocate_job_backup_paths,
     build_prune_plan,
@@ -41,7 +41,10 @@ from vaultkeep.destination import (
 from vaultkeep.destination.discovery import DiscoveredBackup, MalformedDestinationEntry
 from vaultkeep.errors import (
     ArchiveVerificationError,
+    ConfigurationError,
     DestinationError,
+    PruneError,
+    RetentionError,
     SourceDiscoveryError,
     VaultkeepError,
 )
@@ -55,6 +58,7 @@ from vaultkeep.file_backups import (
 from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_shell
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.progress import VerificationProgress, report_progress
+from vaultkeep.retention.planner import RetentionTier
 from vaultkeep.sources import (
     SourceEntryType,
     calculate_config_fingerprint,
@@ -104,6 +108,10 @@ class BackupInventory:
     destination: Path
     backups: tuple[DiscoveredBackup, ...]
     malformed: tuple[MalformedDestinationEntry, ...]
+    job: str
+    retention: RetentionConfig
+    retained_by: dict[Path, tuple[RetentionTier, ...] | None]
+    retention_warnings: tuple[tuple[Path, str], ...]
 
 
 class _HookRunKwargs(TypedDict, total=False):
@@ -114,12 +122,23 @@ class _HookRunKwargs(TypedDict, total=False):
 
 
 def load_validated_config(
-    config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+    config_path: Path,
+    *,
+    runtime_params: Mapping[str, str] | None = None,
+    allow_disabled_retention: bool = False,
 ) -> JobConfig:
     """Load one configuration and run all non-environment validation."""
     parameters = dict(runtime_params or {})
     config = resolve_runtime_config(load_config(config_path), parameters)
-    validate_semantics(config, config_path=config_path, runtime_params=parameters)
+    try:
+        validate_semantics(config, config_path=config_path, runtime_params=parameters)
+    except ConfigurationError as error:
+        if not allow_disabled_retention:
+            raise
+        # Listing an all-zero policy is safe; other commands still reject it.
+        issues = tuple(issue for issue in error.issues if issue.code != "retention_empty")
+        if issues:
+            raise ConfigurationError(issues) from error
     return config
 
 
@@ -151,7 +170,9 @@ def list_backups(
     report = progress if progress is not None else lambda message: None
     parameters = dict(runtime_params or {})
     report("Loading and validating configuration")
-    config = load_validated_config(config_path, runtime_params=parameters)
+    config = load_validated_config(
+        config_path, runtime_params=parameters, allow_disabled_retention=True
+    )
     report("Checking destination")
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
     report("Listing backup metadata")
@@ -160,6 +181,26 @@ def list_backups(
         discover_backups(destination, runtime_params=parameters, metadata_only=True)
         for destination in destinations
     )
+    retained_by: dict[Path, tuple[RetentionTier, ...] | None] = {}
+    retention_warnings: list[tuple[Path, str]] = []
+    for destination, history in zip(destinations, discovered, strict=True):
+        if not any(config.retention.model_dump().values()):
+            continue
+        try:
+            plan = build_prune_plan(history, config.retention).retention
+        except (PruneError, RetentionError) as error:
+            retained_by.update((backup.directory, None) for backup in history.backups)
+            retention_warnings.append((Path(destination.destination.root), str(error)))
+            continue
+        tiers_by_directory: dict[Path, list[RetentionTier]] = {
+            backup.directory: [] for backup in history.backups
+        }
+        for tier, selected in reversed(plan.selections.items()):
+            for backup in selected:
+                tiers_by_directory[backup.directory].append(tier)
+        retained_by.update(
+            (directory, tuple(tiers)) for directory, tiers in tiers_by_directory.items()
+        )
     backups = tuple(
         sorted(
             (backup for result in discovered for backup in result.backups),
@@ -173,7 +214,15 @@ def list_backups(
             key=lambda entry: str(entry.path),
         )
     )
-    return BackupInventory(Path(config.destination.root), backups, malformed)
+    return BackupInventory(
+        Path(config.destination.root),
+        backups,
+        malformed,
+        config.job.id,
+        config.retention,
+        retained_by,
+        tuple(retention_warnings),
+    )
 
 
 def prune_backups(

@@ -123,7 +123,7 @@ def _dispatch(
             elapsed = monotonic() - started
         elif namespace.command == "list":
             inventory = list_backups(namespace.config, runtime_params=runtime_params)
-            print_inventory(inventory, output=output, verbose=namespace.verbose)
+            print_inventory(inventory, output=output)
             return 0
         elif namespace.command == "verify":
             with CliProgress(animate=sys.stdout.isatty()) as verification_progress:

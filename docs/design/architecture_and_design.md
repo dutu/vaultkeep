@@ -2696,9 +2696,11 @@ A failed run reports:
 
 - validates configuration without requiring source paths;
 - discovers valid and matching-but-malformed backup entries;
-- renders a newest-first inventory of stored UTC creation times, filesystem archive sizes, stored encryption, and paths relative to the displayed destination;
+- renders a newest-first inventory of stored UTC creation times, filesystem archive sizes, stored encryption, and retention decisions, with the job, destination, and policy above the table;
 - reports matching malformed entries as warnings and counts them separately;
-- shares table formatting and narrow-terminal fallback with `verify`, with full paths and stored metadata under `--verbose`;
+- shows current retention selections from the existing prune planner independently per history, with `UNKNOWN` for incomplete histories;
+- shares compact table formatting and narrow-terminal fallback with `verify`, placing complete relative backup directories beneath each row;
+- supports all-zero retention counts for read-only listing without relaxing validation for other commands;
 - reads manifests and filesystem metadata for either supported archive format, without reading archive or checksum sidecar contents;
 - skips unrelated destination entries;
 - never verifies full archive content, modifies state, or applies retention.

@@ -220,8 +220,9 @@ if needed.
 
 A created backup directory contains `<base>.tar.zst` (or `.tar.7z`), its `.sha256`,
 and `<base>.json`. Terminal runs show the new archive path. `list` shows backups
-newest first with UTC dates, sizes, encryption, relative archive paths, and warnings
-for invalid entries; `list --verbose` adds full paths and stored metadata.
+newest first with UTC dates, archive sizes, encryption, and retention decisions.
+Each row includes the complete backup directory relative to the displayed destination.
+Invalid entries appear as warnings; affected histories have `UNKNOWN` decisions.
 `verify` checks archive contents and checksums without requiring original sources.
 `run` and `verify` show an in-place spinner with elapsed time on interactive
 terminals. Redirected stderr uses plain stage messages and a heartbeat every 10 seconds
@@ -360,12 +361,40 @@ See [CLI output and options](docs/cli.md#terminal-output) for report conventions
 | Read activity, previous result, and automation | `vaultkeep --user --config "$job_config" status` |
 | Detailed diagnostics or script-readable status | Append `--verbose` or `--json` to `status` |
 | Run now | `vaultkeep --user --config "$job_config" run` |
-| <a id="list-job-backups"></a>List stored backups | `vaultkeep --user --config "$job_config" list` |
+| <a id="list-job-backups"></a>List backups and preview retention | `vaultkeep --user --config "$job_config" list` |
 | <a id="verify-job-backups"></a>Verify contents | `vaultkeep --user --config "$job_config" verify` |
 | <a id="prune-job-backups"></a>Check retention plan without deleting | `vaultkeep --user --config "$job_config" prune --dry-run` |
 | Apply retention | `vaultkeep --user --config "$job_config" prune` |
 | <a id="manage-all-job-timers"></a>Inspect all timers in this scope | `vaultkeep --user schedules list` |
 | Preview bulk schedule changes | `vaultkeep --user schedules sync --dry-run` |
+
+`list` shows which tiers select each backup without deleting anything. For example,
+with one hourly and one daily recovery point configured:
+
+```text
+Vaultkeep — Backups
+
+Job:         app
+Destination: /mnt/backups/app
+Retention:   1 hourly, 1 daily, 0 weekly, 0 monthly, 0 yearly
+
+Created (UTC)        Size       Enc  Decision  Retained by
+────────────────────────────────────────────────────────────
+2026-10-25 08:00:00  756.7 MiB  no   KEEP      hourly, daily
+  Backup: backup-app-20261025T080000Z
+
+2026-10-25 07:00:00  756.7 MiB  no   PRUNE     —
+  Backup: backup-app-20261025T070000Z
+────────────────────────────────────────────────────────────
+
+Backups: 2 · Keep: 1 · Prune: 1
+
+PRUNE indicates eligibility under the current retention policy.
+No backups are deleted.
+```
+
+Inspect warnings before pruning; `UNKNOWN` means the retention preview is incomplete.
+See [inventory and retention decisions](docs/cli.md#list-job-backups).
 
 `status` is read-only and works without mounted destinations or available sources.
 Exit 0 means the report was readable, including a previous failure. Read Backup
