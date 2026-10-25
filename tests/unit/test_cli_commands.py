@@ -198,9 +198,9 @@ def test_verify_cli_passes_mode_and_reports_verified_archives(
 
     assert main([*(["--user"] if user_mode else []), "--config", str(local_job), "verify"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == "verify: verified\n"
-    assert f"Archive | Archive verification: OK | {archive}\n" in captured.err
-    assert captured.err.endswith("SUCCESS: Verification complete\n")
+    assert "Backup" in captured.out and "Archive" in captured.out
+    assert "SUCCESS:" not in captured.err
+    assert "verify: verified" not in captured.out
 
 
 def test_runtime_validation_checks_marker_before_writing_probe(
@@ -374,7 +374,7 @@ def test_shared_lifecycle_actions_provide_help(command, capsys):
 def test_verify_empty_destination_reports_zero_counts(local_job, capsys):
     assert main(["--config", str(local_job), "verify"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == "verify: verified\n"
     assert "Found 0 backups" in captured.err
-    assert "Backups:  0/0 validated\nArchives: 0/0 verified\nResult:   VERIFIED\n" in captured.err
+    assert "Verified:  0/0 backups\nDuration:" in captured.out
+    assert "Result:    VERIFIED\n" in captured.out
     assert "%" not in captured.err

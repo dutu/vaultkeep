@@ -21,6 +21,11 @@ class VerificationProgress:
     bytes_processed: int | None = None
     bytes_total: int | None = None
     error: str | None = None
+    backup_directory: Path | None = None
+    created_at: str | None = None
+    backup_id: str | None = None
+    candidates: tuple[Path, ...] = ()
+    detail: str | None = None
 
 
 def report_progress(

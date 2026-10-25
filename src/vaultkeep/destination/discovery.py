@@ -99,17 +99,38 @@ def discover_backups(
     )
     report_progress(
         on_progress,
-        VerificationProgress("discovery", "Backup discovery", "ok", root, total=len(candidates)),
+        VerificationProgress(
+            "discovery",
+            "Backup discovery",
+            "ok",
+            root,
+            total=len(candidates),
+            candidates=candidates,
+        ),
     )
     for index, child in enumerate(candidates, start=1):
         operation = "Manifest/directory validation"
         current_path: Path | None = child
+        created_at: str | None = None
+        backup_id: str | None = None
 
-        def report(event: VerificationProgress, *, index: int = index) -> None:
-            nonlocal operation, current_path
+        def report(event: VerificationProgress, *, index: int = index, child: Path = child) -> None:
+            nonlocal operation, current_path, created_at, backup_id
             operation = event.operation
             current_path = event.path
-            report_progress(on_progress, replace(event, index=index, total=len(candidates)))
+            created_at = event.created_at or created_at
+            backup_id = event.backup_id or backup_id
+            report_progress(
+                on_progress,
+                replace(
+                    event,
+                    index=index,
+                    total=len(candidates),
+                    backup_directory=child,
+                    created_at=created_at,
+                    backup_id=backup_id,
+                ),
+            )
 
         report(VerificationProgress("backup", operation, path=child))
         try:
@@ -190,7 +211,14 @@ def _validate_backup_directory(
     _require_exact_artifacts(path, {archive_path.name, checksum_path.name, manifest_path.name})
     report_progress(
         on_progress,
-        VerificationProgress("backup", "Manifest/directory validation", "ok", path),
+        VerificationProgress(
+            "backup",
+            "Manifest/directory validation",
+            "ok",
+            path,
+            created_at=manifest.created_at,
+            backup_id=manifest.backup_id,
+        ),
     )
     operation = "SHA-256" if verify_archives else "Checksum metadata"
     report_progress(on_progress, VerificationProgress("backup", operation, path=archive_path))
@@ -202,9 +230,27 @@ def _validate_backup_directory(
         )
     except Exception as error:  # Archive errors are malformed destination facts here.
         raise DestinationDiscoveryError(f"Invalid archive checksum in {path}: {error}") from error
+    report_progress(
+        on_progress,
+        VerificationProgress(
+            "backup",
+            operation,
+            path=archive_path,
+            detail=f"Manifest SHA-256: {manifest.archive_digest}; sidecar SHA-256: sha256:{digest}",
+        ),
+    )
     if manifest.archive_digest != f"sha256:{digest}":
         raise DestinationDiscoveryError(f"Manifest archive digest does not match checksum: {path}")
-    report_progress(on_progress, VerificationProgress("backup", operation, "ok", archive_path))
+    report_progress(
+        on_progress,
+        VerificationProgress(
+            "backup",
+            operation,
+            "ok",
+            archive_path,
+            detail=f"Manifest and sidecar SHA-256: {digest}",
+        ),
+    )
     return DiscoveredBackup(path, archive_path, checksum_path, manifest_path, base_name, manifest)
 
 

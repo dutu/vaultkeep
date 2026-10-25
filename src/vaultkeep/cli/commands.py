@@ -127,24 +127,28 @@ def _dispatch(
                 )
                 progress.succeed("Backup listing complete")
         elif namespace.command == "verify":
-            with CliProgress() as verification_progress:
-                display = VerificationDisplay(verification_progress)
+            with CliProgress(animate=sys.stdout.isatty()) as verification_progress:
+                display = VerificationDisplay(verification_progress, verbose=namespace.verbose)
                 try:
                     result = verify_backups(
                         namespace.config,
                         runtime_params=runtime_params,
                         user_mode=namespace.user_mode,
-                        progress=verification_progress.update,
+                        progress=display.stage,
                         on_progress=display.report,
                     )
-                except (VaultkeepError, OSError):
+                except (VaultkeepError, OSError) as error:
                     with suppress(Exception):
-                        verification_progress.fail("Verification failed")
                         display.summary(success=False)
+                    output.issue(error)
+                    return failure_exit_code(error)
+                except BaseException as error:
+                    with suppress(Exception):
+                        display.summary(success=False, error=error)
                     raise
                 with suppress(Exception):
-                    verification_progress.succeed("Verification complete")
-                    display.summary(success=True)
+                    display.summary(success=result.result != "failed")
+            return 7 if result.result == "failed" else 0
         elif namespace.command == "prune":
             result = prune_backups(
                 namespace.config, dry_run=namespace.dry_run, runtime_params=runtime_params

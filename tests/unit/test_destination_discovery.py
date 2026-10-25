@@ -450,6 +450,7 @@ def test_discovery_progress_tracks_backups_bytes_and_manifest_failure(
     assert len(discovered.backups) == 2
     assert len(discovered.malformed) == 1
     assert events[0].total == 3
+    assert set(events[0].candidates) == set(directories)
     assert len(reads) == 2 and set(reads) == archives
     starts = [
         e
@@ -469,6 +470,17 @@ def test_discovery_progress_tracks_backups_bytes_and_manifest_failure(
     assert failures[0].path == directories[-1]
     assert failures[0].error
     assert len([e for e in events if e.operation == "SHA-256" and e.status == "ok"]) == 2
+    for backup in discovered.backups:
+        successful_checks = [
+            event
+            for event in events
+            if event.backup_directory == backup.directory and event.status == "ok"
+        ]
+        assert len(successful_checks) == 2
+        assert all(event.created_at == backup.manifest.created_at for event in successful_checks)
+        assert all(event.backup_id == backup.manifest.backup_id for event in successful_checks)
+    assert failures[0].backup_directory == directories[-1]
+    assert failures[0].created_at is None and failures[0].backup_id is None
 
 
 @pytest.mark.parametrize("damage", ["content", "manifest-digest", "sidecar"])

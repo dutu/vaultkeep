@@ -117,7 +117,6 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
     ("command", "handler", "result", "stage"),
     [
         ("list", "list_backups", "listed", "Listing backup metadata"),
-        ("verify", "verify_backups", "verified", "Verifying archives"),
     ],
 )
 def test_terminal_read_only_command_animates_and_preserves_stdout(
@@ -158,7 +157,6 @@ def test_terminal_read_only_command_animates_and_preserves_stdout(
     [
         ("run", "run_backup", "created"),
         ("list", "list_backups", "listed"),
-        ("verify", "verify_backups", "verified"),
     ],
 )
 def test_captured_command_logs_progress_and_heartbeat_without_escapes(
@@ -225,7 +223,11 @@ def test_failed_or_interrupted_command_stops_progress_before_error_handling(
         assert commands.main(["--config", "app.yaml", command]) == 5
         assert output.getvalue().endswith("unavailable\n")
 
-    assert capsys.readouterr().out == ""
+    captured = capsys.readouterr()
+    if command == "verify":
+        assert "Result:    FAILED" in captured.out
+    else:
+        assert captured.out == ""
     assert not progress_threads[0].is_alive()
 
 

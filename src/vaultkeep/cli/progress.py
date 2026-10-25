@@ -7,10 +7,12 @@ import sys
 import unicodedata
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import TracebackType
-from typing import TextIO
+from typing import ClassVar, TextIO
 
 from vaultkeep.backup.progress import HEARTBEAT_SECONDS
 from vaultkeep.progress import VerificationProgress
@@ -56,11 +58,16 @@ class CliProgress:
     or emits log heartbeats; it is always joined before leaving the context.
     """
 
-    def __init__(self, *, stream: TextIO | None = None) -> None:
+    def __init__(self, *, stream: TextIO | None = None, animate: bool = True) -> None:
         self._stream = sys.stderr if stream is None else stream
-        self._interactive = self._stream.isatty() and os.environ.get("TERM", "dumb") not in (
-            "",
-            "dumb",
+        self._interactive = (
+            animate
+            and self._stream.isatty()
+            and os.environ.get("TERM", "dumb")
+            not in (
+                "",
+                "dumb",
+            )
         )
         self._frames = "|/-\\"
         try:
@@ -79,6 +86,9 @@ class CliProgress:
         self._frame = 0
         self._visible = False
         self._disabled = False
+        self._lines: tuple[str, ...] = ()
+        self._detail: str | None = None
+        self._visible_lines: tuple[str, ...] = ()
 
     def __enter__(self) -> CliProgress:
         return self
@@ -104,7 +114,13 @@ class CliProgress:
         self.update(description, metrics=metrics)
 
     def update(
-        self, description: str | None = None, *, metrics: ProgressMetrics | None = None
+        self,
+        description: str | None = None,
+        *,
+        metrics: ProgressMetrics | None = None,
+        lines: tuple[str, ...] | None = None,
+        detail: str | None = None,
+        log: bool = True,
     ) -> None:
         """Report stages immediately; coalesce metric-only updates between frames."""
         with self._lock:
@@ -118,9 +134,12 @@ class CliProgress:
                 self._metrics = ProgressMetrics()
             if metrics is not None:
                 self._metrics = metrics
+            if lines is not None:
+                self._lines = lines
+            self._detail = detail
             if self._description is None:
                 return
-            if changed:
+            if changed and (self._interactive or log):
                 self._render()
                 self._last_logged = monotonic()
             if self._worker is None and not self._disabled:
@@ -135,13 +154,14 @@ class CliProgress:
             if self._description is not None and not self._stopped.is_set() and self._interactive:
                 self._render()
 
-    def checkpoint(self, message: str) -> None:
+    def checkpoint(self, message: str, *, log_only: bool = False) -> None:
         """Finish the current stage with a timestamped line, keeping the timer alive."""
         with self._lock:
             self._clear()
             self._description = None
             self._metrics = ProgressMetrics()
-            self._write(f"{self._elapsed()} {self._safe_text(message)}\n")
+            if not log_only or not self._interactive:
+                self._write(f"{self._elapsed()} {self._safe_text(message)}\n")
 
     def succeed(self, message: str | None = None) -> None:
         self._finish("SUCCESS", message)
@@ -199,36 +219,63 @@ class CliProgress:
         if self._interactive:
             text = f"{self._frames[self._frame % len(self._frames)]} {text}"
             self._frame += 1
-            try:
-                columns = os.get_terminal_size(self._stream.fileno()).columns
-            except (OSError, ValueError):
-                columns = 80
-            # Leave the final column unused so the terminal cannot wrap the line.
-            remaining = max(0, columns - 1)
-            fitted = ""
-            for char in text:
-                width = (
-                    0
-                    if unicodedata.combining(char)
-                    else (2 if unicodedata.east_asian_width(char) in ("W", "F") else 1)
-                )
-                if width > remaining:
-                    break
-                fitted += char
-                remaining -= width
-            self._write("\r\033[2K" + fitted)
+            columns = self.columns
+            lines = (*self._lines, text)
+            if self._detail:
+                lines += (f"    {self._detail}",)
+            fitted = tuple(self._fit(self._safe_text(line), columns - 1) for line in lines)
+            self._clear()
+            self._write("\r\033[2K" + "\n".join(fitted))
+            self._visible_lines = fitted
             self._visible = True
         else:
+            if heartbeat and self._detail:
+                text += " | " + self._safe_text(self._detail)
             self._write(text + (" (still running)" if heartbeat else "") + "\n")
 
     def _clear(self) -> None:
         if self._visible:
             self._write("\r\033[2K")
+            # A resize may have reflowed previously drawn lines. Clear their
+            # physical rows using the current width before drawing the next frame.
+            columns = self.columns
+            rows = sum(
+                max(1, (self._cells(line) + columns - 1) // columns) for line in self._visible_lines
+            )
+            for _ in range(rows - 1):
+                self._write("\033[1A\r\033[2K")
             self._visible = False
+            self._visible_lines = ()
 
-    def _safe_text(self, text: str) -> str:
+    @property
+    def columns(self) -> int:
+        return _terminal_columns(self._stream)
+
+    @staticmethod
+    def _cells(text: str) -> int:
+        return sum(
+            0
+            if unicodedata.combining(char)
+            else 2
+            if unicodedata.east_asian_width(char) in ("W", "F")
+            else 1
+            for char in text
+        )
+
+    @classmethod
+    def _fit(cls, text: str, width: int) -> str:
+        fitted = ""
+        for char in text:
+            cells = cls._cells(char)
+            if cells > width:
+                break
+            fitted += char
+            width -= cells
+        return fitted
+
+    def _safe_text(self, text: str, *, stream: TextIO | None = None) -> str:
         text = "".join(char if char.isprintable() else " " for char in text)
-        encoding = self._stream.encoding or "ascii"
+        encoding = (self._stream if stream is None else stream).encoding or "ascii"
         return text.encode(encoding, errors="replace").decode(encoding)
 
     def _write(self, text: str) -> None:
@@ -242,68 +289,267 @@ class CliProgress:
                 self._stopped.set()
 
 
+@dataclass
+class _VerificationRow:
+    directory: Path
+    created_at: str | None = None
+    backup_id: str | None = None
+    manifest: str = "NOT CHECKED"
+    checksum: str = "NOT CHECKED"
+    archive: str = "NOT CHECKED"
+
+
 class VerificationDisplay:
-    """Translate verification facts into stages, checkpoints, and a final summary."""
+    """Present only executed checks, using validated metadata for backup labels."""
 
-    def __init__(self, progress: CliProgress) -> None:
+    _PHASES: ClassVar[dict[int, str]] = {1: "Manifests & SHA-256", 2: "Archive integrity"}
+
+    def __init__(
+        self, progress: CliProgress, *, verbose: bool = False, stream: TextIO | None = None
+    ) -> None:
         self._progress = progress
-        self._current: tuple[str, int | None] | None = None
-        self._backups: tuple[int, int | None] | None = None
-        self._archives: tuple[int, int | None] | None = None
+        self._stream = sys.stdout if stream is None else stream
+        self._verbose = verbose
+        self._started = monotonic()
+        self._destination: Path | None = None
+        self._rows: dict[Path, _VerificationRow] = {}
+        self._phase = 0
+        self._completed: dict[int, str] = {}
+        self._failures: list[tuple[Path | None, str, str, Path | None]] = []
+        self._unknown_total = False
+        self._last_operation: tuple[Path | None, str] | None = None
 
-    @staticmethod
-    def _count(completed: int, total: int | None) -> str:
-        return str(completed) if total is None else f"{completed}/{total}"
+    def stage(self, description: str) -> None:
+        self._progress.update(description, lines=self._header())
+
+    def _header(self) -> tuple[str, ...]:
+        lines: tuple[str, ...] = ("Vaultkeep — Verify", "")
+        if self._destination is not None:
+            lines += (f"Destination: {self._destination}",)
+        count = str(len(self._rows)) if self._phase else "?"
+        lines += (f"Backups:     {count}", "")
+        return lines + tuple(self._completed.values())
+
+    def _labels(self) -> dict[Path, str]:
+        labels = {}
+        for index, row in enumerate(self._rows.values(), 1):
+            labels[row.directory] = (
+                datetime.fromisoformat(row.created_at).strftime("%Y-%m-%d %H:%M")
+                if row.created_at
+                else f"Unknown #{index}"
+            )
+        groups: dict[str, list[Path]] = {}
+        for path, label in labels.items():
+            groups.setdefault(label, []).append(path)
+        for paths in groups.values():
+            if len(paths) < 2:
+                continue
+            identifiers = {path: self._rows[path].backup_id or "unknown" for path in paths}
+            suffixes = {path: value[:8] for path, value in identifiers.items()}
+            if len(set(suffixes.values())) < len(paths):
+                suffixes = {path: value[-8:] for path, value in identifiers.items()}
+            for index, path in enumerate(paths, 1):
+                suffix = suffixes[path]
+                if len(set(suffixes.values())) < len(paths):
+                    suffix += f"-{index}"
+                labels[path] += f" [{suffix}]"
+        return labels
+
+    def _row(self, event: VerificationProgress) -> _VerificationRow | None:
+        directory = event.backup_directory
+        if directory is None and event.path is not None:
+            # Older callers can identify a backup by its directory or archive.
+            directory = (
+                event.path
+                if event.operation == "Manifest/directory validation"
+                else event.path.parent
+            )
+        if directory is None:
+            return None
+        row = self._rows.setdefault(directory, _VerificationRow(directory))
+        row.created_at = event.created_at or row.created_at
+        row.backup_id = event.backup_id or row.backup_id
+        return row
+
+    def _snapshot(self, event: VerificationProgress | None = None, *, log: bool = False) -> None:
+        phase = self._phase
+        if not phase:
+            return
+        rows = list(self._rows.values())
+        eligible = [row for row in rows if row.manifest == row.checksum == "OK"]
+        passed = len(eligible) if phase == 1 else sum(row.archive == "OK" for row in rows)
+        total: int | str = len(rows) if phase == 1 else len(eligible)
+        if phase == 1 and self._unknown_total:
+            total = "?"
+        if phase == 2 and event is not None and event.total is not None:
+            total = event.total
+        description = f"Phase {phase}/2: {self._PHASES[phase]} | {passed}/{total} verified"
+        detail = None
+        if event is not None:
+            row = self._row(event)
+            label = self._labels().get(row.directory, "Unknown") if row else "Unknown"
+            operation = event.operation if self._verbose or phase == 1 else "Verifying"
+            index = "?" if event.index is None else str(event.index)
+            event_total = "?" if event.total is None else str(event.total)
+            detail = f"{label} | {index}/{event_total} | {operation}"
+            if event.bytes_processed is not None:
+                detail += f" | {_verification_size(event.bytes_processed)}"
+                if event.bytes_total is not None:
+                    detail += f" / {_verification_size(event.bytes_total)}"
+                    if event.bytes_total:
+                        detail += f" ({100 * event.bytes_processed / event.bytes_total:.0f}%)"
+        self._progress.update(description, lines=self._header(), detail=detail, log=log)
 
     def report(self, event: VerificationProgress) -> None:
+        phase = 2 if event.phase == "archive" else 1
         if event.status == "complete":
-            counts = (event.completed or 0, event.total)
-            if event.phase == "discovery":
-                self._backups = counts
-            else:
-                self._archives = counts
-            self._progress.checkpoint(f"{event.operation} ({self._count(*counts)} passed)")
-            self._current = None
+            if self._phase != phase:
+                self._phase = phase
+                self._snapshot(log=True)
+            completed = event.completed or 0
+            total = "?" if event.total is None else str(event.total)
+            marker = "✓" if event.completed == event.total and event.total is not None else "!"
+            self._completed[phase] = (
+                f"[{marker}] {phase}/2  {self._PHASES[phase]}  {completed}/{total} passed"
+            )
+            self._progress.checkpoint(f"Phase {phase}/2: {completed}/{total} passed", log_only=True)
             return
+
         if event.phase == "discovery":
-            self._current = None
+            if event.operation == "Verification destination":
+                self._destination = event.path
+                return
             if event.status == "failed":
-                self._progress.checkpoint(
-                    f"{event.operation}: FAILED | {event.path}: {event.error}"
-                )
-            else:
-                self._progress.checkpoint(f"Found {event.total} backups in {event.path}")
+                self._unknown_total = True
+                self._failure(None, "Discovery", event)
+                return
+            if self._destination is None:
+                self._destination = event.path
+            for directory in event.candidates:
+                self._rows.setdefault(directory, _VerificationRow(directory))
+            self._progress.checkpoint(f"Found {event.total} backups", log_only=True)
+            changed = self._phase != 1
+            self._phase = 1
+            self._snapshot(log=changed)
             return
 
-        label = "Backup" if event.phase == "backup" else "Archive"
-        if event.index is not None:
-            label += f" {self._count(event.index, event.total)}"
-        description = f"{label} | {event.operation}"
-        if event.status in ("ok", "failed"):
-            result = "OK" if event.status == "ok" else "FAILED"
-            details = f": {event.error}" if event.error else ""
-            self._progress.checkpoint(f"{description}: {result} | {event.path}{details}")
-            return
-
-        current = (event.phase, event.index)
-        if current != self._current:
-            self._progress.checkpoint(f"{label}: {event.path}")
-            self._current = current
-        percent = None
-        if event.bytes_processed is not None and event.bytes_total:
-            percent = 100 * event.bytes_processed / event.bytes_total
-        self._progress.update(
-            description,
-            metrics=ProgressMetrics(
-                percent=percent,
-                bytes_processed=event.bytes_processed,
-                bytes_total=event.bytes_total,
-            ),
+        phase = 1 if event.phase == "backup" else 2
+        changed = self._phase != phase
+        self._phase = phase
+        row = self._row(event)
+        check = (
+            "Archive" if phase == 2 else ("SHA-256" if event.operation == "SHA-256" else "Manifest")
         )
+        if row is not None and event.status in ("ok", "failed"):
+            status = "OK" if event.status == "ok" else "FAILED"
+            if check == "Manifest":
+                row.manifest = status
+                if status == "FAILED":
+                    row.checksum = row.archive = "SKIPPED"
+            elif check == "SHA-256":
+                row.checksum = status
+                if status == "FAILED":
+                    row.archive = "SKIPPED"
+            elif event.status == "failed" or event.operation == "Archive verification":
+                # Passing a stream test alone does not prove TAR integrity.
+                row.archive = status
+        if event.status == "failed":
+            self._failure(row.directory if row else None, check, event)
+        if self._verbose:
+            current = (event.path, event.operation)
+            if event.status != "running" or current != self._last_operation or event.detail:
+                self._progress.message(
+                    f"{event.operation}: {event.status.upper()} | {event.path}"
+                    + (f" | {event.detail}" if event.detail else "")
+                )
+            self._last_operation = current
+        self._snapshot(event, log=changed)
 
-    def summary(self, *, success: bool) -> None:
-        if self._backups is not None and self._archives is not None:
-            self._progress.message("")
-            self._progress.message(f"Backups:  {self._count(*self._backups)} validated")
-            self._progress.message(f"Archives: {self._count(*self._archives)} verified")
-            self._progress.message(f"Result:   {'VERIFIED' if success else 'FAILED'}")
+    def _failure(self, directory: Path | None, check: str, event: VerificationProgress) -> None:
+        error = event.error or event.operation
+        self._failures.append((directory, check, error, event.path))
+        label = self._labels().get(directory, "Unknown") if directory else "Destination"
+        self._progress.checkpoint(f"FAILED: {label} | {check} | {error} | {event.path}")
+
+    def summary(self, *, success: bool, error: BaseException | None = None) -> None:
+        self._progress.close()
+        labels = self._labels()
+        rows = sorted(
+            self._rows.values(), key=lambda row: (row.created_at or "~", labels[row.directory])
+        )
+        lines = ["Vaultkeep — Verify", ""]
+        if self._destination is not None:
+            lines += [f"Destination: {self._destination}", ""]
+        table: list[tuple[str, ...]] = [
+            (labels[row.directory], row.manifest, row.checksum, row.archive) for row in rows
+        ]
+        headings = ("Backup", "Manifest", "SHA-256", "Archive")
+        table = [
+            tuple(self._progress._safe_text(value, stream=self._stream) for value in row)
+            for row in table
+        ]
+        widths = [max(len(row[index]) for row in [headings, *table]) for index in range(4)]
+        table_width = sum(widths) + 6
+        if self._stream.isatty() and table_width >= _terminal_columns(self._stream):
+            for label, manifest, checksum, archive in table:
+                lines += [
+                    label,
+                    f"  Manifest: {manifest}",
+                    f"  SHA-256:  {checksum}",
+                    f"  Archive:  {archive}",
+                    "",
+                ]
+        else:
+
+            def format_row(row: tuple[str, ...]) -> str:
+                return "  ".join(
+                    value.ljust(width) for value, width in zip(row, widths, strict=True)
+                ).rstrip()
+
+            lines += [format_row(headings), "─" * table_width]
+            lines += [format_row(row) for row in table]
+            lines += ["─" * table_width]
+        verified = sum(row.manifest == row.checksum == row.archive == "OK" for row in rows)
+        elapsed = max(0, int(monotonic() - self._started))
+        minutes, seconds = divmod(elapsed, 60)
+        total = f"{len(rows)} backups"
+        if self._unknown_total or 1 not in self._completed:
+            total = f"{len(rows)} known backups (total unknown)"
+        complete = all(row.manifest == row.checksum == row.archive == "OK" for row in rows)
+        result = "VERIFIED" if success and complete and not self._unknown_total else "FAILED"
+        lines += [
+            f"Verified:  {verified}/{total}",
+            f"Duration:  {minutes:02d}:{seconds:02d}",
+            f"Result:    {result}",
+        ]
+        for directory, check, reason, path in self._failures:
+            lines += [
+                "",
+                "Failure:",
+                f"  Backup: {labels.get(directory, 'Unknown') if directory else 'Destination'}",
+                f"  Check:  {check}",
+                f"  Error:  {reason}",
+                f"  Path:   {path}",
+            ]
+        if error is not None:
+            message = str(error) or type(error).__name__
+            lines += ["", f"Error: {message}"]
+        for line in lines:
+            self._stream.write(self._progress._safe_text(line, stream=self._stream) + "\n")
+        self._stream.flush()
+
+
+def _terminal_columns(stream: TextIO) -> int:
+    try:
+        return max(1, os.get_terminal_size(stream.fileno()).columns)
+    except (OSError, ValueError):
+        return 80
+
+
+def _verification_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if value < 1024 or unit == "PiB":
+            return f"{size} bytes" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    raise AssertionError("Unreachable size unit")

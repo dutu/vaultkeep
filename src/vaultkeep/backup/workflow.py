@@ -202,6 +202,12 @@ def verify_backups(
     report("Checking destination")
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
     report("Verifying backup manifests, checksums, and archive contents")
+    report_progress(
+        on_progress,
+        VerificationProgress(
+            "discovery", "Verification destination", path=Path(config.destination.root)
+        ),
+    )
     destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
     owner_uid, owner_gid = _runtime_owner(user_mode)
     loaded_password = (
@@ -256,10 +262,25 @@ def verify_backups(
         for index, backup in enumerate(backups, start=1):
             operation = "Archive verification"
 
-            def archive_progress(event: VerificationProgress, *, index: int = index) -> None:
+            def archive_progress(
+                event: VerificationProgress,
+                *,
+                index: int = index,
+                backup: DiscoveredBackup = backup,
+            ) -> None:
                 nonlocal operation
                 operation = event.operation
-                report_progress(on_progress, replace(event, index=index, total=len(backups)))
+                report_progress(
+                    on_progress,
+                    replace(
+                        event,
+                        index=index,
+                        total=len(backups),
+                        backup_directory=backup.directory,
+                        created_at=backup.manifest.created_at,
+                        backup_id=backup.manifest.backup_id,
+                    ),
+                )
 
             if on_progress is None:
                 report(f"Verifying archive {str(backup.archive_path)!r}")

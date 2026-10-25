@@ -138,7 +138,7 @@ observers and can produce duplicate or competing backups.
    ```
 
    Expect `Result: OK`, then `run: created` (or `run: unchanged` for an existing
-   baseline), and `verify: verified`. Confirm an archive exists for the selected
+   baseline), and verification `Result: VERIFIED`. Confirm an archive exists for the selected
    data; verification can succeed with zero archives. An unchanged run does not
    apply retention. Keep sources stable for this manual test.
 

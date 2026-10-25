@@ -451,7 +451,7 @@ For each combination, create a fixture containing:
   Acceptable result:
 
   - Both commands exit `0`.
-  - `verify` reports `verify: verified`.
+  - `verify` reports a results table ending with `Result: VERIFIED`.
   - `list` completes successfully; inspect the destination and confirm at least one archive exists.
 
 - [ ] Restore with standard Debian tools, not Vaultkeep internals.

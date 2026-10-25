@@ -144,8 +144,8 @@ vaultkeep --user --config "$job_config" verify
 
 Expect `Result: OK`, then `run: created` for a new baseline (or
 `run: unchanged` if the sources already match a successful backup), and
-`verify: verified`. **Confirm that the expected backup archive actually exists
-at the destination**: verification can succeed even if there are zero archives.
+verification `Result: VERIFIED`. **Confirm that the expected backup archive
+actually exists at the destination**: verification can succeed even if there are zero archives.
 An unchanged run neither creates a new archive nor applies retention.
 
 Do not enable automatic backups until this manual test succeeds with the

@@ -164,16 +164,15 @@ def test_verify_real_archives_without_sources_preserves_backups_and_state(
     assert main(["--user", "--config", str(job), "verify"]) == 0
 
     output = capsys.readouterr()
-    assert output.out == "verify: verified\n"
-    assert "Backups:  2/2 validated\nArchives: 2/2 verified\nResult:   VERIFIED" in output.err
-    operation = (
-        "Zstandard stream test"
-        if load_validated_config(job).archive.format == "tar.zst"
-        else "7-Zip archive test"
+    assert "Verified:  2/2 backups" in output.out
+    assert "Result:    VERIFIED" in output.out
+    assert "verify: verified" not in output.out
+    assert output.err.index("Phase 1/2: 2/2 passed") < output.err.index(
+        "Phase 2/2: Archive integrity"
     )
-    assert output.err.index("SHA-256 verification complete") < output.err.index(operation)
-    for archive in archives:
-        assert f"Archive verification: OK | {archive}" in output.err
+    for number, archive in enumerate(archives, 1):
+        assert f"2026-10-24 {number:02d}:00  OK        OK       OK" in output.out
+        assert str(archive) not in output.err + output.out
     assert _files(job.parent) == before
 
 
@@ -196,11 +195,12 @@ def test_verify_rejects_invalid_tar_with_matching_checksums(
     assert main(["--user", "--config", str(job), "verify"]) == 7
 
     output = capsys.readouterr()
-    assert output.out == ""
+    assert "Result:    FAILED" in output.out
     assert str(bad) in output.err
     assert reason in output.err
-    assert f"Archive verification: OK | {good}" in output.err
-    assert "Backups:  2/2 validated\nArchives: 1/2 verified\nResult:   FAILED" in output.err
+    assert "2026-10-24 02:00  OK        OK       OK" in output.out
+    assert str(good) not in output.out + output.err
+    assert "Verified:  1/2 backups" in output.out
     assert _files(job.parent) == before
 
 
@@ -260,3 +260,64 @@ def test_verify_requires_one_named_tar_and_encrypted_headers(
     output = capsys.readouterr()
     assert str(archive) in output.err
     assert reason in output.err
+
+
+@pytest.mark.parametrize("damage", ["manifest", "content", "sidecar", "manifest-digest"])
+def test_verify_table_separates_metadata_and_checksum_failures(job, capsys, damage):
+    bad = _backup(job, _tar("app/bad"))
+    good = _backup(job, _tar("app/good"), number=2)
+    manifest_path = next(bad.parent.glob("*.json"))
+    if damage == "manifest":
+        manifest_path.write_text("{invalid JSON")
+    elif damage == "content":
+        bad.write_bytes(b"changed archive bytes")
+    elif damage == "sidecar":
+        bad.with_suffix(bad.suffix + ".sha256").write_text("invalid sidecar")
+    else:
+        manifest = json.loads(manifest_path.read_text())
+        manifest["archive_digest"] = "sha256:" + "0" * 64
+        manifest_path.write_text(json.dumps(manifest))
+    before = _files(job.parent)
+
+    assert main(["--user", "--config", str(job), "verify"]) == 5
+
+    output = capsys.readouterr()
+    bad_row = next(
+        line for line in output.out.splitlines() if "FAILED" in line and "Result:" not in line
+    )
+    assert bad_row.split()[2:] == (
+        ["FAILED", "SKIPPED", "SKIPPED"] if damage == "manifest" else ["OK", "FAILED", "SKIPPED"]
+    )
+    assert "2026-10-24 02:00  OK" in output.out
+    assert "Verified:  1/2 backups" in output.out
+    assert "Result:    FAILED" in output.out
+    assert str(bad.parent) in output.err
+    assert str(good) not in output.out + output.err
+    assert _files(job.parent) == before
+
+
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
+def test_verify_labels_use_metadata_and_disambiguate_across_histories(job, capsys, backup_mode):
+    config = json.loads(job.read_text())
+    config["backup_mode"] = backup_mode
+    job.write_text(json.dumps(config))
+    archives = [_backup(job, _tar("app/data"), number=n) for n in (1, 2)]
+    for archive in archives:
+        path = next(archive.parent.glob("*.json"))
+        manifest = json.loads(path.read_text())
+        manifest["created_at"] = "2030-01-01T03:30:00+03:30"
+        manifest["created_at_utc"] = "2030-01-01T00:00:00Z"
+        path.write_text(json.dumps(manifest))
+    before = _files(job.parent)
+
+    assert main(["--user", "--config", str(job), "verify", "--verbose"]) == 0
+
+    output = capsys.readouterr()
+    assert "2030-01-01 03:30 [00000001]" in output.out
+    assert "2030-01-01 03:30 [00000002]" in output.out
+    assert "Verified:  2/2 backups" in output.out
+    for archive in archives:
+        assert str(archive) in output.err
+    assert "Sidecar SHA-256:" in output.err and "calculated SHA-256:" in output.err
+    assert "Manifest and sidecar SHA-256:" in output.err
+    assert _files(job.parent) == before

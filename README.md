@@ -213,7 +213,8 @@ if needed.
 
 3. Expect validation `Result: OK` with automation disabled. A successful run reports
    `run: created` or `run: unchanged`; the latter creates no archive and applies no
-   retention. Verification reports each archive and ends with `verify: verified`.
+   retention. Verification ends with a table for manifest, SHA-256, and archive
+   checks, followed by verified counts, duration, and `Result: VERIFIED` on success.
    On the first run with selected files, confirm an archive was actually created;
    an empty `per_file` selection is unchanged and verification can find zero archives.
 
@@ -222,7 +223,9 @@ and `<base>.json`. Terminal runs show the new archive path. `list` inspects meta
 `verify` checks archive contents and checksums without requiring original sources.
 `run`, `list`, and `verify` show an in-place spinner with elapsed time on interactive
 terminals. Redirected stderr uses plain stage messages and a heartbeat every 10 seconds
-during long stages. See [progress display](docs/cli.md#progress-display).
+during long stages. Redirecting stdout also disables verification animation. Use
+`verify --verbose` for full paths and individual checks. See
+[progress display](docs/cli.md#progress-display).
 <a id="validate-a-job-configuration"></a>
 Full validation writes/renames/removes a temporary destination probe; schema-only
 validation skips runtime checks and does not establish readiness.

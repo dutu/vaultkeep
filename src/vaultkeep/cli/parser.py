@@ -56,7 +56,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
     commands.add_parser("run", help="run this job's backup now")
     commands.add_parser("list", help="list this job's stored backups")
-    commands.add_parser("verify", help="verify this job's stored backups")
+    verify = commands.add_parser("verify", help="verify this job's stored backups")
+    verify.add_argument(
+        "--verbose",
+        action="store_true",
+        help="include full paths and individual verification checks",
+    )
     prune = commands.add_parser("prune", help="apply this job's retention policy")
     prune.add_argument("--dry-run", action="store_true")
     schedule = commands.add_parser("schedule", help="manage this job's scheduled backups")

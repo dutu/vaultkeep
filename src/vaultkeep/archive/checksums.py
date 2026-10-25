@@ -117,6 +117,15 @@ def verify_checksum_sidecar(
         )
     except ArchiveCreationError as error:
         raise ArchiveVerificationError(f"Cannot verify archive checksum: {error}") from error
+    report_progress(
+        on_progress,
+        VerificationProgress(
+            "backup",
+            "SHA-256",
+            path=archive_path,
+            detail=f"Sidecar SHA-256: {declared}; calculated SHA-256: {actual}",
+        ),
+    )
     if declared != actual:
         raise ArchiveVerificationError("Archive checksum does not match archive content")
     return actual

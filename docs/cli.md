@@ -18,7 +18,7 @@ vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] validate [--schem
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] run
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json] [--verbose]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify [--verbose]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
 
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] schedule install
@@ -190,9 +190,10 @@ can change afterward.
 ## Progress display
 
 `run`, `list`, and `verify` report progress on stderr. On an interactive terminal,
-they show an animated spinner, elapsed time, and the current stage on one line.
-Completion messages remain as permanent lines. The status fits the terminal width
-and uses an ASCII spinner when the terminal encoding cannot display Unicode.
+they show an animated spinner, elapsed time, and the current stage. `run` and `list`
+use one line with permanent completion messages. `verify` uses a compact panel with
+completed phase summaries and replaces it with a final results table on stdout.
+The status fits the terminal width and uses an ASCII spinner when the terminal encoding cannot display Unicode.
 Elapsed time is for the whole operation. Percentages appear only when measured byte
 totals are available; stage names do not imply an overall completion percentage.
 
@@ -201,7 +202,9 @@ progress uses plain timestamped lines with immediate stage changes and a
 `still running` heartbeat every 10 seconds during long stages. This also applies
 to systemd, cron, and SSH sessions without a terminal; SSH sessions with a suitable
 terminal use the spinner. `--no-color` and `NO_COLOR` disable colors but allow
-animation on suitable terminals. Final command result markers remain on stdout.
+animation on suitable terminals. `verify` also requires stdout to be a terminal
+for animation; redirecting stdout disables its ANSI output. Final command results
+remain on stdout; verification uses the results table instead of a result marker.
 
 ## Run a job manually
 
@@ -253,7 +256,7 @@ and elapsed time. The final result remains on stdout as `list: listed`.
 ## Verify job backups
 
 ```text
-vaultkeep [--user] --config <job.yaml> verify
+vaultkeep [--user] --config <job.yaml> verify [--verbose]
 ```
 
 Verification checks:
@@ -270,33 +273,63 @@ Verification works without the original sources and never changes backups, local
 state, or retention. Encrypted jobs require a password file containing the archive's
 passphrase, with the same ownership and permissions required by `run`.
 
-Each verified archive is reported on stderr. Verification continues after individual
-backup failures and reports their paths and reasons; any failure produces a nonzero
-exit status.
+Verification continues after individual backup failures. Invalid backups are excluded
+from archive verification. Failures are reported immediately with their full paths
+and reasons; exit codes are unchanged.
 
-`verify` uses the shared [progress display](#progress-display). First it reports each
-backup's path, index, manifest/directory validation, and SHA-256 calculation. SHA-256
-shows compressed archive bytes read, total bytes, and percentage when the size is
-available. Without a size, it shows bytes read. These measurements use the existing
-checksum read; they do not require another archive scan.
+The shared [progress display](#progress-display) shows two phases:
 
-After discovery and SHA-256 checks finish, archive verification reports the archive
-path, index, and current operation. For `.tar.zst`, the Zstandard stream test and
-TAR inspection during decompression are separate operations. For `.tar.7z`, it
-reports the archive test, header/member validation, and TAR inspection during
-decryption. Archive operations do not have byte percentages.
+1. **Manifests & SHA-256** validates backup directories, manifests, and compressed
+   archive checksums against both the sidecar and manifest.
+2. **Archive integrity** checks the compressed stream and TAR members, including
+   path safety. Encrypted archives also undergo password, header, and member checks.
 
-Paths, validation results, failures, and phase completion remain as permanent lines.
-Plain-text logs coalesce byte updates into the regular 10-second heartbeats.
-For `per_file` jobs, discovery indices and totals apply to each file's backup history;
-archive indices cover all backups that passed discovery across those histories.
+The active operation shows the backup timestamp, index/total, and elapsed time.
+SHA-256 displays bytes read and percentage when the compressed size is known,
+using the existing checksum read. Archive operations have no byte percentages.
+Successful checks update the display without adding permanent lines. Noninteractive
+logs print concise phase transitions and coalesce updates into 10-second heartbeats.
+For `per_file` jobs, discovery indices apply to each file's history; archive indices
+cover all eligible backups across those histories.
 
-The final stderr summary counts `Backups` that passed manifest/directory and SHA-256
-validation, and `Archives` that passed archive and TAR verification. Invalid backups
-are excluded from the archive phase. Unknown totals are omitted; an empty destination
-shows `0/0`. `Result` is `VERIFIED` only when every check succeeds, otherwise `FAILED`.
-The successful stdout marker remains `verify: verified`; failures retain their existing
-exit codes and have no success marker.
+The final stdout table reports `Manifest`, `SHA-256`, and `Archive` separately:
+
+```text
+Backup            Manifest  SHA-256  Archive
+────────────────────────────────────────────
+2026-10-22 23:57  OK        OK       OK
+2026-10-23 00:50  OK        OK       OK
+────────────────────────────────────────────
+Verified:  2/2 backups
+Duration:  04:22
+Result:    VERIFIED
+```
+
+Labels use validated manifest creation times in their recorded local time zone,
+displayed to the minute. Backups sharing a displayed timestamp receive a
+short distinguishing identifier. Entries without validated metadata use `Unknown #N`;
+their full paths remain in failure diagnostics. Narrow terminals use stacked results
+when the table cannot fit.
+
+`OK` means the check completed successfully. `FAILED` identifies a failed check;
+`SKIPPED` means an earlier failure made it ineligible. `NOT CHECKED` marks checks
+that did not finish, including unvisited backups after interruption. A successful
+compressed stream test alone does not make the combined `Archive` result `OK`.
+`Verified` counts backups that passed all three checks. Unknown discovery totals are
+identified explicitly, and an empty destination shows `0/0`. `Result` is `VERIFIED`
+only when verification succeeds; failures and interruptions show `FAILED` with
+accurate partial results. These checks do not restore files or compare their contents
+with a live filesystem.
+
+Use detailed output when troubleshooting:
+
+```sh
+vaultkeep --user --config /absolute/path/job.yaml verify --verbose
+```
+
+Verbose output includes full backup/archive paths, individual operations, and
+checksum diagnostics. Normal output omits successful per-backup messages and the
+former `verify: verified` and `SUCCESS: Verification complete` lines.
 
 ## Prune job backups
 
