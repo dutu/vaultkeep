@@ -324,7 +324,9 @@ Use `vaultkeep --user --config /absolute/path/job.yaml schedule <action>`, repla
 `<action>` with the table entry; substitute `trigger` for monitor actions. For root
 schedules, omit `--user`, use the root YAML path, and prefix the command with `sudo`.
 Disable/remove preserve jobs, archives, and state and leave running backups/workers
-alone. Editing YAML does not stop existing automation. Before switching mechanisms,
+alone. Monitor stop is refused while a backup is active or Trigger recovery/safety
+state needs reconciliation; wait and review the reported state before retrying.
+Editing YAML does not stop existing automation. Before switching mechanisms,
 disable the previous timer/monitor and drain its workers and queued work. Moving a
 Trigger job or changing its ID/parameters creates a new identity; retire the old one
 separately and preserve [recovery evidence](docs/trigger/recovery.md).
@@ -476,6 +478,15 @@ jobs, omit `--user` and prefix commands with `sudo`:
 vaultkeep --user --config /absolute/path/job.yaml validate
 vaultkeep --user --config /absolute/path/job.yaml status --verbose
 ```
+
+If a newer or broken job schema prevents validation, `status` still reports available
+diagnostics when job identity is recognizable. Stop the existing automation with
+`trigger disable` or `schedule disable` using the same options and YAML path. These
+commands tolerate unrelated configuration errors, including unsupported properties,
+while retaining identity, ownership, and runtime safety checks. They do not edit the
+YAML. Malformed/unreadable YAML or invalid identity fields must be repaired before
+disabling. See [Trigger recovery commands](docs/cli.md#service-management) and
+[schedule recovery](docs/cli.md#configure-a-job-timer).
 
 Read `Previous backup`, `Reason`, and the displayed `Log` path. Review logs before sharing.
 For scheduled user jobs use `journalctl --user -u vaultkeep@app.service`;

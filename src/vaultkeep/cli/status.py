@@ -10,12 +10,16 @@ from typing import Any
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
 from vaultkeep.backup.status import backup_status
 from vaultkeep.cli.output import Console
-from vaultkeep.config import load_config, resolve_runtime_config
+from vaultkeep.config import resolve_runtime_config
+from vaultkeep.config.identity import resolve_job_identity
+from vaultkeep.config.loader import load_document, validate_document
+from vaultkeep.config.models import JobConfig
 from vaultkeep.diagnostics import concise, duration, timestamp
+from vaultkeep.errors import ConfigurationError, TimerError
 from vaultkeep.schedule.status import schedule_status
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.config import load_config as load_trigger_config
-from vaultkeep.trigger.status import trigger_status
+from vaultkeep.trigger.status import recovery_status, trigger_status
 
 
 def collect_status(
@@ -25,7 +29,36 @@ def collect_status(
     runtime_params: Mapping[str, str],
     verbose: bool = False,
 ) -> dict[str, Any]:
-    raw = load_config(config_path)
+    document = load_document(config_path)
+    try:
+        result = _collect_valid_status(
+            config_path,
+            validate_document(document),
+            user_mode=user_mode,
+            runtime_params=runtime_params,
+            verbose=verbose,
+        )
+    except ConfigurationError as error:
+        return _collect_recovery_status(
+            config_path,
+            document,
+            error,
+            user_mode=user_mode,
+            runtime_params=runtime_params,
+            verbose=verbose,
+        )
+    result["configuration"] = {"status": "VALID", "errors": []}
+    return result
+
+
+def _collect_valid_status(
+    config_path: Path,
+    raw: JobConfig,
+    *,
+    user_mode: bool,
+    runtime_params: Mapping[str, str],
+    verbose: bool,
+) -> dict[str, Any]:
     parameters = dict(raw.trigger.params) if raw.trigger.enabled else {}
     parameters.update(runtime_params)
     config = resolve_runtime_config(raw, parameters)
@@ -64,9 +97,120 @@ def collect_status(
     return result
 
 
+def _collect_recovery_status(
+    config_path: Path,
+    document: dict[str, Any],
+    error: ConfigurationError,
+    *,
+    user_mode: bool,
+    runtime_params: Mapping[str, str],
+    verbose: bool,
+) -> dict[str, Any]:
+    from vaultkeep.schedule import TimerManager
+
+    trigger = document.get("trigger")
+    identity = resolve_job_identity(
+        config_path,
+        document,
+        runtime_params=runtime_params,
+        trigger_defaults=isinstance(trigger, dict) and trigger.get("enabled") is True,
+    )
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "job_id": identity.job_id,
+        "configuration": {
+            "status": "INVALID",
+            "errors": [
+                {"path": issue.dotted_path, "message": issue.message} for issue in error.issues
+            ],
+        },
+        "backup": backup_status(
+            user_workflow_paths() if user_mode else WorkflowPaths(),
+            identity.job_id,
+            identity.scope,
+            verbose=verbose,
+        ),
+    }
+    if user_mode:
+        try:
+            monitor_identity = resolve_job_identity(
+                config_path, document, runtime_params=runtime_params, trigger_defaults=True
+            )
+            result["trigger"] = recovery_status(monitor_identity)
+        except ConfigurationError as identity_error:
+            result["trigger"] = {
+                "enabled": None,
+                "monitor": "UNKNOWN",
+                "application": "UNKNOWN",
+                "dispatch": "UNKNOWN",
+                "diagnostics": [str(identity_error)],
+                "read_error": True,
+            }
+    elif trigger is not None:
+        result["trigger"] = {
+            "enabled": None,
+            "monitor": "UNKNOWN",
+            "application": "UNKNOWN",
+            "dispatch": "UNKNOWN",
+            "diagnostics": ["Inspect Trigger as the application owner with --user"],
+        }
+    manager = TimerManager(user_mode=user_mode)
+    instance = manager._instance_id(config_path, identity.job_id, identity.params)
+    schedule: dict[str, Any] = {
+        "enabled": None,
+        "timer": manager._unit(instance),
+        "installed": None,
+        "health": "UNKNOWN",
+        "next_execution": None,
+        "diagnostics": [],
+    }
+    result["schedule"] = schedule
+    try:
+        # A schedule identity must retain the normal managed-path/filename rules.
+        resolved = manager._managed_path(config_path)
+        if resolved.stem != identity.job_id:
+            raise TimerError("Timer configuration filename must match job.id")
+        values = manager.inspect_instance(resolved, instance, identity.params)
+        missing = values["LoadState"] == "not-found"
+        schedule["enabled"] = not missing and values["UnitFileState"] in (
+            "enabled",
+            "enabled-runtime",
+        )
+        schedule["timer_enabled"] = schedule["enabled"]
+        schedule["installed"] = not missing
+        schedule["health"] = (
+            "NOT INSTALLED"
+            if missing
+            else "FAILED"
+            if values["ActiveState"] == "failed"
+            else "RUNNING"
+            if values["ActiveState"] == "active"
+            else "STOPPED"
+            if values["ActiveState"] == "inactive"
+            else "UNKNOWN"
+        )
+        next_time = values.get("NextElapseUSecRealtime")
+        if next_time and next_time not in ("n/a", "infinity", "0"):
+            schedule["next_execution"] = next_time
+    except (TimerError, OSError) as inspection_error:
+        schedule["diagnostics"].append(str(inspection_error))
+        schedule["read_error"] = True
+    return result
+
+
 def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False) -> None:
     output.heading("Job status")
     output.fields([("Job", data["job_id"])])
+    configuration = data.get("configuration")
+    if configuration:
+        output.fields(
+            [("Status", configuration["status"])]
+            + [
+                ("Problem", concise(f"{issue['path']}: {issue['message']}"))
+                for issue in configuration["errors"]
+            ],
+            section="Configuration",
+        )
     backup = data["backup"]
     activity = output.status(backup["activity"])
     current = backup["current"]
@@ -107,7 +251,7 @@ def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False
         age = trigger.get("monitor_updated_seconds_ago")
         monitor += f" (updated {duration(age)} ago)" if age is not None else " (updated unknown)"
         rows = [
-            ("Status", "ENABLED" if trigger["enabled"] else "DISABLED"),
+            ("Status", _enablement(trigger["enabled"])),
             ("Monitor", monitor),
             (
                 "Application",
@@ -115,6 +259,8 @@ def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False
             ),
             ("Dispatch", trigger["dispatch"]),
         ]
+        if trigger.get("last_exit") is not None:
+            rows.append(("Last exit", str(trigger["last_exit"])))
         if trigger.get("pending_request_id"):
             rows.append(
                 (
@@ -161,7 +307,7 @@ def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False
     if "schedule" in data:
         schedule = data["schedule"]
         rows = [
-            ("Status", "ENABLED" if schedule["enabled"] else "DISABLED"),
+            ("Status", _enablement(schedule["enabled"])),
             ("Timer", schedule["health"]),
         ]
         if schedule["installed"] is not None:
@@ -172,6 +318,10 @@ def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False
             rows.append(("Next execution", schedule["next_execution"]))
         rows.extend(("Detail", concise(item)) for item in schedule["diagnostics"])
         output.fields(rows, section="Schedule")
+
+
+def _enablement(enabled: bool | None) -> str:
+    return "UNKNOWN" if enabled is None else "ENABLED" if enabled else "DISABLED"
 
 
 def status_command(
@@ -195,5 +345,7 @@ def status_command(
         if any(
             data.get(section, {}).get("read_error") for section in ("backup", "trigger", "schedule")
         )
+        else 3
+        if data.get("configuration", {}).get("status") == "INVALID"
         else 0
     )

@@ -110,6 +110,8 @@ def job_lock_execution(path: Path) -> str | None:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             return None
         value = os.read(descriptor, 33).decode("ascii")
+        if not value:
+            return ""
         return value if len(value) == 32 and all(c in "0123456789abcdef" for c in value) else None
     except (OSError, UnicodeError):
         return None

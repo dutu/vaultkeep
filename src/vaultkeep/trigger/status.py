@@ -6,17 +6,64 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vaultkeep.config.identity import JobIdentity
 from vaultkeep.diagnostics import concise, elapsed_seconds
 from vaultkeep.locking import job_lock_owner
 from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.config import TriggerConfig
-from vaultkeep.trigger.errors import BlockedError, StateError
-from vaultkeep.trigger.models import InstanceState, Receipt, parse_utc
+from vaultkeep.trigger.errors import BlockedError, StateError, TriggerError
+from vaultkeep.trigger.models import Receipt, parse_utc
 from vaultkeep.trigger.monitor import unit_name_for
 from vaultkeep.trigger.paths import monitor_lock_path, state_root
-from vaultkeep.trigger.service import service_name
+from vaultkeep.trigger.service import inspect_service, service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController, UnitState
+
+
+def recovery_status(identity: JobIdentity) -> dict[str, Any]:
+    """Inspect an existing monitor without trusting execution settings in the YAML."""
+    result: dict[str, Any] = {
+        "enabled": None,
+        "monitor": "UNKNOWN",
+        "application": "UNKNOWN",
+        "dispatch": "UNKNOWN",
+        "diagnostics": [],
+        "details": {"monitor_service": service_name(identity)},
+    }
+    try:
+        values = inspect_service(identity)
+        if values["LoadState"] == "not-found":
+            result.update(enabled=False, monitor="NOT INSTALLED")
+        else:
+            result["enabled"] = values["UnitFileState"] in ("enabled", "enabled-runtime")
+            result["monitor"] = (
+                "RESTARTING"
+                if values["SubState"] == "auto-restart"
+                else "FAILED"
+                if values["ActiveState"] == "failed"
+                else "RUNNING"
+                if values["ActiveState"] == "active"
+                else "STARTING"
+                if values["ActiveState"] == "activating"
+                else "STOPPED"
+                if values["ActiveState"] == "inactive"
+                else "UNKNOWN"
+            )
+            exit_status = values.get("ExecMainStatus", "")
+            if exit_status.isdecimal():
+                result["last_exit"] = int(exit_status)
+        store = StateStore(state_root(identity.scope))
+        blocked = store.read_blocked(identity.job_id)
+        state = store.read_instance(identity.job_id)
+        activity, attempt = store.dispatch_activity(identity.job_id, state, blocked)
+        result["dispatch"] = "BLOCKED" if blocked else activity.upper()
+        result["active_attempt_id"] = attempt
+        if blocked:
+            result["diagnostics"].append(blocked)
+    except (TriggerError, OSError) as error:
+        result["diagnostics"].append(str(error))
+        result["read_error"] = True
+    return result
 
 
 def _monitor_status(scope: str | None) -> str:
@@ -35,37 +82,6 @@ def _monitor_started_at(scope: str | None) -> str | None:
         return datetime.fromtimestamp(written, UTC).isoformat()
     except (BlockedError, OSError, ValueError, OverflowError):
         return None
-
-
-def _dispatch_activity(
-    store: StateStore,
-    instance_id: str,
-    state: InstanceState | None,
-    blocked_reason: str | None,
-) -> tuple[str, str | None]:
-    """Read persisted dispatch activity, including attempts awaiting recovery association."""
-    recovery_state = state or InstanceState(instance_id=instance_id)
-    active_attempt_id = recovery_state.active_attempt_id
-    for attempt_id in store.list_attempt_ids():
-        _validate_attempt_id(attempt_id)
-        request = store.read_request(attempt_id)
-        if request is None:
-            if store.read_launch(attempt_id) or store.read_receipt(attempt_id):
-                raise StateError(f"attempt {attempt_id} has no request")
-            continue
-        if request.instance_id != instance_id:
-            continue
-        if request.attempt_id != attempt_id:
-            raise StateError(f"attempt {attempt_id} has contradictory request ownership")
-        if store.attempt_is_protected(recovery_state, attempt_id, request):
-            if active_attempt_id is not None and active_attempt_id != attempt_id:
-                raise StateError(f"instance {instance_id} has multiple unreconciled attempts")
-            active_attempt_id = attempt_id
-    if active_attempt_id is not None:
-        return "active", active_attempt_id
-    if state is not None and blocked_reason is None:
-        return ("pending" if state.pending_request is not None else "idle"), None
-    return "unknown", None
 
 
 def _worker_status(worker: UnitState | None) -> str:
@@ -149,7 +165,7 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
             )
         state = store.read_instance(config.job_id)
         runtime = _monitor_status(config.scope).upper()
-        activity, attempt_id = _dispatch_activity(store, config.job_id, state, blocked)
+        activity, attempt_id = store.dispatch_activity(config.job_id, state, blocked)
         configured = (
             configured
             or state is not None
@@ -165,7 +181,9 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
             if unit:
                 configured = configured or unit.load_state != "not-found"
                 monitor = (
-                    "FAILED"
+                    "RESTARTING"
+                    if unit.sub_state == "auto-restart"
+                    else "FAILED"
                     if unit.active_state == "failed"
                     else "NOT INSTALLED"
                     if unit.load_state == "not-found"

@@ -21,9 +21,10 @@ from vaultkeep.config import (
     parse_runtime_parameters,
     resolve_runtime_config,
 )
+from vaultkeep.config.identity import load_job_identity
 from vaultkeep.errors import ConfigurationError, TimerError
 from vaultkeep.installation import installation_path, systemd_argument
-from vaultkeep.maintenance import command_selection
+from vaultkeep.maintenance import command_selection, require_generated
 from vaultkeep.validation import validate_semantics
 
 _WEEKDAYS = {
@@ -251,10 +252,87 @@ class TimerManager:
         self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
     ) -> None:
         parameters = dict(runtime_params or {})
-        config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
-        instance = self._instance_id(config_path, config.job.id, parameters)
-        self._systemctl("disable", "--now", self._unit(instance), check=False)
-        self._systemctl("clean", "--what=state", self._unit(instance), check=False)
+        resolved = self._managed_path(config_path)
+        identity = load_job_identity(resolved, runtime_params=parameters)
+        if identity.job_id != resolved.stem:
+            raise TimerError("Timer configuration filename must match job.id")
+        instance = self._instance_id(resolved, identity.job_id, identity.params)
+        try:
+            values = self.inspect_instance(resolved, instance, identity.params)
+        except (OSError, UnicodeError) as error:
+            raise TimerError(
+                f"Cannot verify managed timer {self._unit(instance)}: {error}; "
+                "review its installed files and ownership registry"
+            ) from error
+        if values["LoadState"] == "not-found":
+            return
+        self._systemctl("disable", "--now", self._unit(instance))
+        self._systemctl("clean", "--what=state", self._unit(instance))
+
+    def inspect_instance(
+        self, config_path: Path, instance: str, parameters: Mapping[str, str]
+    ) -> dict[str, str]:
+        """Verify registered timer ownership and its effective systemd unit."""
+        from vaultkeep.schedule.status import unit_properties
+
+        timer = self._timer_drop_in_path(instance)
+        service = self._service_drop_in_path(instance)
+        registry = self._registry()
+        values = unit_properties(self._unit(instance), user_mode=self.user_mode)
+        if (
+            instance not in registry
+            and not timer.exists()
+            and not timer.is_symlink()
+            and not service.exists()
+            and not service.is_symlink()
+            and values["LoadState"] == "not-found"
+        ):
+            return values
+        if registry.get(instance) != str(timer):
+            raise TimerError(f"Cannot verify timer ownership registry for {self._unit(instance)}")
+        expected_uid = os.geteuid() if self.user_mode else 0
+        owned_files = [timer]
+        if self.user_mode or parameters or service.exists() or service.is_symlink():
+            owned_files.append(service)
+        if not self.user_mode:
+            owned_files.append(self.paths.units_root / "vaultkeep@.timer")
+        for path in owned_files:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid:
+                raise TimerError(f"Not a regular timer file owned by the requested user: {path}")
+        try:
+            require_generated(
+                timer.read_text(encoding="utf-8"),
+                self._timer_content(instance, RenderedSchedule("", 0, False, False)),
+                variable=("OnCalendar", "RandomizedDelaySec", "FixedRandomDelay", "Persistent"),
+            )
+            if not self.user_mode:
+                require_generated(
+                    owned_files[-1].read_text(encoding="utf-8"), TIMER_TEMPLATE, variable=()
+                )
+        except (UnicodeError, ValueError) as error:
+            raise TimerError(f"Cannot verify managed timer {timer}: {error}") from error
+        if self.user_mode or parameters or service.exists() or service.is_symlink():
+            try:
+                source, saved = command_selection(
+                    service.read_text(encoding="utf-8"), monitor=False, user=self.user_mode
+                )
+            except (OSError, UnicodeError, ValueError) as error:
+                raise TimerError(f"Cannot verify timer command {service}: {error}") from error
+            if source.resolve() != config_path.resolve() or saved != parameters:
+                raise TimerError("Timer command conflicts with the requested job identity")
+        fragment = timer if self.user_mode else self.paths.units_root / "vaultkeep@.timer"
+        expected_drop_ins = "" if self.user_mode else str(timer)
+        if (
+            values.get("FragmentPath") != str(fragment)
+            or values.get("DropInPaths") != expected_drop_ins
+            or values.get("NeedDaemonReload") != "no"
+        ):
+            raise TimerError(
+                f"Effective timer ownership is unverified: {self._unit(instance)}; "
+                "review systemctl cat and local overrides"
+            )
+        return values
 
     def remove(self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None) -> None:
         parameters = dict(runtime_params or {})
@@ -626,14 +704,18 @@ class TimerManager:
         return jobs
 
     def _load_template(self, config_path: Path) -> JobConfig:
-        resolved = config_path.resolve()
-        jobs_root = self.paths.jobs_root.resolve()
-        if resolved.parent != jobs_root or resolved.suffix != ".yaml":
-            raise TimerError(f"Timer configuration must be directly below {jobs_root}: {resolved}")
+        resolved = self._managed_path(config_path)
         config = load_config(resolved)
         if config.job.id != resolved.stem:
             raise TimerError("Timer configuration filename must match job.id")
         return config
+
+    def _managed_path(self, config_path: Path) -> Path:
+        resolved = config_path.resolve()
+        jobs_root = self.paths.jobs_root.resolve()
+        if resolved.parent != jobs_root or resolved.suffix != ".yaml":
+            raise TimerError(f"Timer configuration must be directly below {jobs_root}: {resolved}")
+        return resolved
 
     def _load_managed(
         self,

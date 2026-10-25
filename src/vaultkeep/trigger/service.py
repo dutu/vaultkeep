@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
 
+from vaultkeep.config.identity import JobIdentity
 from vaultkeep.installation import installation_path, systemd_argument
+from vaultkeep.maintenance import command_selection, require_generated
 from vaultkeep.trigger.config import TriggerConfig
 from vaultkeep.trigger.errors import BlockedError, ConfigurationError
 from vaultkeep.trigger.paths import account_home, validate_scope
 
 
-def service_name(config: TriggerConfig) -> str:
+def service_name(config: TriggerConfig | JobIdentity) -> str:
     assert config.scope is not None
     return f"vaultkeep-trigger@{config.job_id}-{validate_scope(config.scope)}.service"
 
@@ -50,7 +53,7 @@ def _quote_systemd_argument(value: str, *, executable: bool = False) -> str:
         raise ConfigurationError(str(error)) from error
 
 
-def render_service(config: TriggerConfig) -> str:
+def render_service(config: TriggerConfig | JobIdentity) -> str:
     # Always use the stable installed entry point, matching timer services.
     args = [
         str(installation_path("VAULTKEEP_BIN_LINK")),
@@ -77,9 +80,99 @@ def render_service(config: TriggerConfig) -> str:
     )
 
 
-def manage_service(config: TriggerConfig, action: str) -> None:
+def inspect_service(config: TriggerConfig | JobIdentity) -> dict[str, str]:
+    """Verify the on-disk and effective unit selection before trusting its state."""
+    from vaultkeep.errors import TimerError
+    from vaultkeep.schedule.status import unit_properties
+
     unit = service_name(config)
     destination = units_root() / unit
+    try:
+        values = unit_properties(unit, user_mode=True)
+        if (
+            values["LoadState"] == "not-found"
+            and not destination.exists()
+            and not destination.is_symlink()
+        ):
+            return values
+        info = destination.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            raise ValueError("monitor unit must be a regular file owned by the current user")
+        content = destination.read_text(encoding="utf-8")
+        if not content.startswith(f"# Managed by Vaultkeep: {unit}\n"):
+            raise ValueError("unmanaged monitor service")
+        if destination.with_name(unit + ".d").exists():
+            raise ValueError("monitor service has local overrides; review them first")
+        source, params = command_selection(content, monitor=True, user=True)
+        if source.resolve() != config.source_path or params != config.params:
+            raise ValueError("monitor command conflicts with the requested job identity")
+        require_generated(content, render_service(config), variable=("ExecStart",))
+        if values.get("FragmentPath") != str(destination) or values.get("DropInPaths") != "":
+            raise ValueError("effective monitor unit ownership is unverified; review systemctl cat")
+        if values.get("NeedDaemonReload") != "no":
+            raise ValueError(
+                "monitor unit changed or cannot be verified; review and daemon-reload first"
+            )
+        return values
+    except (OSError, UnicodeError, ValueError, TimerError) as error:
+        raise ConfigurationError(f"Cannot verify managed monitor {unit}: {error}") from error
+
+
+def _require_safe_stop(config: TriggerConfig | JobIdentity) -> None:
+    from vaultkeep.trigger.paths import state_root
+    from vaultkeep.trigger.state import StateStore
+
+    store = StateStore(state_root(config.scope))
+    state = store.read_instance(config.job_id)
+    blocked = store.read_blocked(config.job_id)
+    _, attempt = store.dispatch_activity(config.job_id, state, blocked)
+    if (
+        blocked
+        or attempt
+        or (state and (state.active_review_required or state.blocking_attempt_id))
+    ):
+        raise BlockedError(
+            "Cannot stop monitor with active or unreconciled backup/safety state; "
+            "inspect status and review Trigger recovery records before retrying"
+        )
+
+
+def manage_service(config: TriggerConfig | JobIdentity, action: str) -> None:
+    unit = service_name(config)
+    destination = units_root() / unit
+    if action in ("disable", "remove"):
+        from vaultkeep.backup.paths import user_workflow_paths
+        from vaultkeep.errors import LockError
+        from vaultkeep.locking import JobLock, job_lock_path
+
+        values = inspect_service(config)
+        if values["LoadState"] == "not-found":
+            raise ConfigurationError(
+                f"managed monitor service not found: {unit}; "
+                "use the original configuration path, job.id, and parameters"
+            )
+        assert config.scope is not None
+        lock = JobLock(
+            job_lock_path(
+                root=user_workflow_paths().lock_root,
+                job_id=config.job_id,
+                identity_hash=config.scope,
+            )
+        )
+        try:
+            lock.acquire()
+            _require_safe_stop(config)
+            _systemctl("disable", "--now", unit)
+        except LockError as error:
+            raise BlockedError(
+                f"Cannot stop monitor: {error}; wait for the backup to finish"
+            ) from error
+        finally:
+            lock.release()
+        if action == "remove":
+            destination.unlink()
+            _systemctl("daemon-reload")
+        return
     marker = f"# Managed by Vaultkeep: {unit}\n"
     if destination.is_symlink() or (
         destination.exists() and not destination.read_text().startswith(marker)
@@ -87,14 +180,7 @@ def manage_service(config: TriggerConfig, action: str) -> None:
         raise ConfigurationError(f"refusing to replace an unmanaged monitor service: {destination}")
     if destination.with_name(unit + ".d").exists():
         raise ConfigurationError(f"monitor service has local overrides; review them first: {unit}")
-    if action in ("disable", "remove"):
-        if not destination.exists():
-            raise ConfigurationError(f"managed monitor service not found: {unit}")
-        _systemctl("disable", "--now", unit)
-        if action == "remove":
-            destination.unlink()
-            _systemctl("daemon-reload")
-        return
+    assert isinstance(config, TriggerConfig)
     if not config.enabled_instances():
         raise ConfigurationError("monitor installation requires trigger.enabled: true")
     if action == "update" and not destination.exists():

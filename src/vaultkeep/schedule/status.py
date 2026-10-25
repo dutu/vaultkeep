@@ -21,7 +21,8 @@ def unit_properties(unit: str, *, user_mode: bool) -> dict[str, str]:
             "show",
             "--all",
             "--no-pager",
-            "--property=LoadState,ActiveState,SubState,UnitFileState,NextElapseUSecRealtime,Result",
+            "--property=LoadState,ActiveState,SubState,UnitFileState,NextElapseUSecRealtime,"
+            "Result,ExecMainStatus,FragmentPath,DropInPaths,NeedDaemonReload",
             unit,
         ]
     )

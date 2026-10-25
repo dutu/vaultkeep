@@ -88,7 +88,7 @@ def test_schema_collects_independent_errors(
 
 
 def test_missing_file_is_configuration_error(tmp_path: Path) -> None:
-    with pytest.raises(ConfigurationError, match="Unable to parse"):
+    with pytest.raises(ConfigurationError, match="Configuration file does not exist"):
         load_config(tmp_path / "missing.yaml")
 
 

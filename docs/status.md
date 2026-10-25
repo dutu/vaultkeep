@@ -19,6 +19,27 @@ no files, takes no execution or monitor locks, changes no timestamps, and never
 reconciles requests or repairs records. Reports are snapshots; execution can change
 during or after inspection. An idle report is not permission to start a writer.
 
+## Invalid configurations
+
+The `Configuration` section reports installed-schema and runtime-parameter validation
+as `VALID` or `INVALID`, with individual error paths and messages. It does not check
+runtime backup prerequisites; use `validate` for that.
+
+With invalid job settings, status still inspects resources when `job.id`, the original
+YAML path, and the parameter selection remain recognizable. It reports available
+backup evidence and checks existing monitor/timer ownership before trusting systemd
+state. Recovery reports include both automation sections so installed resources remain
+visible even if their YAML settings were removed. In these reports, automation
+`Status` is actual systemd enablement, with `UNKNOWN` for unverified ownership or
+unavailable systemd. Application observations remain `UNKNOWN`. A monitor waiting for
+automatic restart is `RESTARTING`; `Last exit` shows the service exit code when available.
+
+Unknown properties, obsolete fields, and missing backup settings can be diagnosed
+without repairing the configuration first. Malformed YAML, missing/unreadable files,
+or invalid identity fields fail safely; filenames alone never select a resource.
+Use [recovery disable commands](cli.md#service-management) to stop verified automation,
+then fix and validate the job before enabling it again.
+
 ## Backup
 
 Backup is always present. Manual `run`, systemd timers, and Trigger workers all use
@@ -129,9 +150,10 @@ The human report and JSON use the same collected interpretation. The JSON object
 | --- | --- |
 | `schema_version` | `1` for this job-status schema. |
 | `job_id` | Selected YAML job ID. The YAML path, mode, and runtime parameters select the storage namespace. |
+| `configuration` | `status` (`VALID` or `INVALID`) and `errors`, each with `path` and `message`. |
 | `backup` | Always present: `activity`, `current`, `previous`, and `diagnostics`. |
-| `trigger` | Present only when configured; enablement, monitor and application state, dispatch, request/attempt IDs, diagnostics, and safety annotations. |
-| `schedule` | Present only when configured; enablement, `timer`, `installed`, `health`, `timer_enabled`, `next_execution`, and diagnostics. |
+| `trigger` | Present when configured/retained or during user-mode recovery inspection; enablement, monitor and application state, dispatch, diagnostics, and available safety annotations. |
+| `schedule` | Present when configured or during recovery inspection; enablement, `timer`, `installed`, `health`, `timer_enabled`, `next_execution`, and diagnostics. |
 
 `backup.current` is null without verified live progress. Otherwise it contains
 `execution_id`, `phase`, `started_at`, `phase_started_at`, `phase_elapsed_seconds`,
@@ -149,6 +171,10 @@ Trigger fields include `enabled`, `monitor`, `monitor_updated_seconds_ago`,
 `active_attempt_id`, `diagnostics`, and `safety`. A root-mode inspection reports
 Trigger as unknown with an instruction to inspect the owner's user-mode job.
 Worker and dispatch-age fields are included when observed.
+Recovery inspection adds `last_exit` when systemd provides it. Its automation `enabled`
+fields reflect actual systemd enablement and are null when unverified. Normal reports
+retain configured enablement. Recovery reports can omit unavailable observation and
+safety fields; available backup history remains independent of configuration validity.
 The `safety` array always retains detailed warnings, including attempt IDs and
 execution periods when available. Each warning's `current` flag separates current
 safety concerns from historical review requirements. `safety_action` and
@@ -159,7 +185,8 @@ Missing/unavailable next-execution information is null. A subsystem inspection e
 sets its `read_error` field to true and retains diagnostics. Exit 0 means collection
 was readable, even with a failed previous backup, blocked dispatch, or unknown
 activity from missing evidence. Inspection errors return 15 while preserving the
-available JSON report. Invalid job configuration or parameters return 3. Check the
+available JSON report. Invalid job configuration or parameters return 3, retaining
+the available report when identity can be resolved. Check the
 section fields to decide operational health rather than treating exit 0 as a
 successful backup.
 

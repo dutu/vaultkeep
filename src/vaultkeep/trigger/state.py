@@ -255,6 +255,37 @@ class StateStore:
             return True
         return self.read_launch(attempt_id) is not None or self.read_receipt(attempt_id) is not None
 
+    def dispatch_activity(
+        self,
+        instance_id: str,
+        state: InstanceState | None,
+        blocked_reason: str | None,
+    ) -> tuple[str, str | None]:
+        """Read persisted dispatch activity, including attempts awaiting recovery association."""
+        recovery_state = state or InstanceState(instance_id=instance_id)
+        active_attempt_id = recovery_state.active_attempt_id
+        for attempt_id in self.list_attempt_ids():
+            if not attempt_id or Path(attempt_id).name != attempt_id or attempt_id in (".", ".."):
+                raise StateError(f"invalid attempt ID: {attempt_id!r}")
+            request = self.read_request(attempt_id)
+            if request is None:
+                if self.read_launch(attempt_id) or self.read_receipt(attempt_id):
+                    raise StateError(f"attempt {attempt_id} has no request")
+                continue
+            if request.instance_id != instance_id:
+                continue
+            if request.attempt_id != attempt_id:
+                raise StateError(f"attempt {attempt_id} has contradictory request ownership")
+            if self.attempt_is_protected(recovery_state, attempt_id, request):
+                if active_attempt_id is not None and active_attempt_id != attempt_id:
+                    raise StateError(f"instance {instance_id} has multiple unreconciled attempts")
+                active_attempt_id = attempt_id
+        if active_attempt_id is not None:
+            return "active", active_attempt_id
+        if state is not None and blocked_reason is None:
+            return ("pending" if state.pending_request is not None else "idle"), None
+        return "unknown", None
+
     def write_diagnostics(self, attempt_id: str, data: bytes) -> tuple[str, bool]:
         """Store capped raw diagnostics; returns (reference, truncated)."""
         truncated = len(data) > DIAGNOSTICS_CAP_BYTES

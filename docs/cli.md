@@ -362,6 +362,13 @@ managed instance. Neither stops a backup already running. For a temporary pause,
 use [maintenance stop/start instructions](maintenance.md#pause-and-resume-for-maintenance).
 Manual, scheduled, and triggered execution share the same per-job backup lock.
 
+`schedule disable` requires readable, well-formed YAML and a valid `job.id`, but
+ignores unrelated schema errors, including unsupported properties and missing backup
+settings. The managed jobs directory, filename, parameter selection, ownership registry,
+and installed unit must still agree. It refuses unverified or locally overridden units
+and reports service-manager failures. Repeated disabling succeeds. `install`, `update`,
+`next`, and `remove` continue to require a fully valid configuration.
+
 ## Manage all job timers
 
 Commands covering every job:
@@ -472,14 +479,28 @@ managed service, refreshes its command, enables it, and restarts the monitor. Bo
 `vaultkeep-trigger@<job-id>-<identity>.service`; `status --verbose` includes the exact
 unit name in diagnostics.
 
-`disable` stops and disables this monitor. `remove` also removes its generated unit.
-Both preserve recovery state and leave workers running. Drain workers and review
-outcomes before switching to scheduled execution. For maintenance pauses that should
+`disable` stops and disables this monitor, including failed monitors and monitors
+waiting for automatic restart. It requires readable, well-formed YAML with a valid
+`job.id` and `trigger.params` selection; unrelated unknown, obsolete, or missing
+backup settings do not prevent recovery. Explicit `--param` values override the
+trigger defaults. Use the original path, ID, parameter selection, and application
+owner so the installed identity still matches. Disabling an already-disabled monitor
+succeeds without deleting its unit or editing the YAML.
+
+`remove` also removes the generated unit and continues to require a fully valid job.
+Both commands preserve recovery state and never stop workers. Stopping the monitor
+is refused during an active backup or with unreconciled attempts, blocked/corrupt
+recovery state, or a current safety warning. Wait for completion, inspect `status`,
+and follow [Trigger recovery](trigger/recovery.md) before retrying. Drain workers and
+review outcomes before switching to scheduled execution. For maintenance pauses that should
 preserve enablement, use `systemctl --user stop <monitor-unit>` directly.
 
 Service management refuses an unrelated file, symlink, or locally overridden monitor
 unit rather than adopting or overwriting it. Job changes require explicit validation
-and `update`; there is no automatic reload. Identity changes require retiring the old
+and `update`; there is no automatic reload. Disable also verifies the installed command,
+file owner, and effective systemd fragment and overrides. Changed unit files requiring
+`daemon-reload` must be reviewed first; configuration errors alone do not require a reload.
+Identity changes require retiring the old
 service separately. See [service operation](trigger/service-operation.md).
 
 ### Job status
@@ -518,7 +539,14 @@ vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json] [
 Status reads local execution evidence and systemd without accessing source contents
 or requiring destination mounts. It never repairs or reconciles state. Exit zero means
 the report was readable, including failed previous executions or unknown activity;
-inspect its fields for health. Inspection errors return 15; configuration errors 3.
+inspect its fields for health. When full validation fails but identity remains
+recognizable, status still prints the configuration errors, available backup evidence,
+and verified systemd monitor/timer state, including monitor automatic restarts and
+last exit code. In this recovery report, automation `Status` describes actual systemd
+enablement; unverified facts are `UNKNOWN`. No configurations or services are changed.
+Malformed/unreadable YAML or unrecognizable identity fails safely without guessing a unit.
+Inspection errors return 15; an invalid configuration returns 3 with the available
+report. A configuration-valid status report is not a substitute for `validate`.
 `--verbose` adds diagnostics and paths; it can be combined with JSON.
 See the [status reference](status.md) for all fields, freshness, and uncertainty.
 

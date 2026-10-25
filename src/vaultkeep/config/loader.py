@@ -76,6 +76,11 @@ _HOOK_PHASES = frozenset(_FIELD_NAMES[("hooks",)])
 
 def load_config(path: Path) -> JobConfig:
     """Load one file through safe YAML parsing and strict schema validation."""
+    return validate_document(load_document(path))
+
+
+def load_document(path: Path) -> dict[str, Any]:
+    """Parse a mapping without imposing the installed job schema."""
     document = _parse_yaml(path)
     if not isinstance(document, dict):
         raise ConfigurationError(
@@ -88,6 +93,11 @@ def load_config(path: Path) -> JobConfig:
             )
         )
 
+    return document
+
+
+def validate_document(document: dict[str, Any]) -> JobConfig:
+    """Apply the complete installed schema to an already parsed document."""
     try:
         return JobConfig.model_validate(document)
     except ValidationError as error:
@@ -102,7 +112,19 @@ def _parse_yaml(path: Path) -> Any:
     try:
         with path.open("r", encoding="utf-8") as stream:
             return yaml.load(stream)
-    except (OSError, UnicodeError, YAMLError) as error:
+    except FileNotFoundError as error:
+        raise ConfigurationError(
+            (ValidationIssue((), f"Configuration file does not exist: {path}", "yaml_missing"),)
+        ) from error
+    except (OSError, UnicodeError) as error:
+        raise ConfigurationError(
+            (
+                ValidationIssue(
+                    (), f"Unable to read YAML configuration {path}: {error}", "yaml_read"
+                ),
+            )
+        ) from error
+    except YAMLError as error:
         raise ConfigurationError(
             (
                 ValidationIssue(

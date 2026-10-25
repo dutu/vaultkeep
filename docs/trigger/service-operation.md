@@ -25,6 +25,10 @@ file at execution time, as described below.
 Installing Vaultkeep starts/enables no monitor. The explicit per-job `trigger install`
 command creates and enables that job's monitor; `update` refreshes and restarts it.
 `disable` and `remove` preserve recovery evidence and never stop workers.
+Monitor stop requires a free backup lock and no active/unreconciled attempt, blocked
+recovery state, or current safety warning. `disable` can recover from unrelated YAML
+schema errors using the original job identity; see the
+[CLI recovery behavior](../cli.md#service-management).
 
 ## State and runtime locations
 

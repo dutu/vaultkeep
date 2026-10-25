@@ -10,6 +10,7 @@ from types import FrameType
 
 from vaultkeep.cli.output import Console, configure_logging
 from vaultkeep.config import parse_runtime_parameters
+from vaultkeep.config.identity import JobIdentity, load_job_identity
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
 from vaultkeep.notifications.notifier import build_notifier
 from vaultkeep.trigger.config import (
@@ -109,17 +110,26 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return cmd_monitor(args)
         if command == "exec-worker":
             return cmd_exec_worker(args)
-        config = _load(args)
-        if command in ("install", "update"):
-            validate_vaultkeep_executable(config)
-            runtime_preflight(
-                config,
-                RealSystemdController(),
-                state_root(config.scope),
-                warning=lambda message: Console(no_color=args.no_color).issue(
-                    message, warning=True
-                ),
+        config: TriggerConfig | JobIdentity
+        if command == "disable":
+            config = load_job_identity(
+                args.config,
+                runtime_params=parse_runtime_parameters(args.param),
+                trigger_defaults=True,
             )
+        else:
+            full_config = _load(args)
+            config = full_config
+            if command in ("install", "update"):
+                validate_vaultkeep_executable(full_config)
+                runtime_preflight(
+                    full_config,
+                    RealSystemdController(),
+                    state_root(full_config.scope),
+                    warning=lambda message: Console(no_color=args.no_color).issue(
+                        message, warning=True
+                    ),
+                )
         manage_service(config, command)
         _LOG.info("Monitor service unit: %s", service_name(config))
         Console(no_color=args.no_color).fields(
@@ -131,6 +141,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     except TriggerError as error:
         Console(no_color=args.no_color).issue(f"{type(error).__name__}: {error}")
         return error.exit_code
+    except JobConfigurationError as error:
+        Console(no_color=args.no_color).issue(f"ConfigurationError: {error}")
+        return EXIT_CONFIG
     except OSError as error:
         Console(no_color=args.no_color).issue(f"Trigger filesystem error: {error}")
         return EXIT_CONFIG

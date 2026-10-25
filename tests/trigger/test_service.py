@@ -20,6 +20,25 @@ from vaultkeep.trigger.paths import monitor_lock_path, state_root
 from vaultkeep.trigger.preflight import runtime_preflight
 
 
+@pytest.fixture(autouse=True)
+def isolated_services(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr("vaultkeep.trigger.paths.account_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "vaultkeep.schedule.status.unit_properties",
+        lambda unit, **_: {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "UnitFileState": "disabled",
+            "FragmentPath": str(service.units_root() / unit),
+            "DropInPaths": "",
+            "NeedDaemonReload": "no",
+        },
+    )
+
+
 def config(tmp_path: Path, valid_config: dict):
     valid_config["trigger"] = {
         "enabled": True,
