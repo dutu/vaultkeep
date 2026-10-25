@@ -407,7 +407,18 @@ def test_invalid_systemd_executable_path_fails_before_installation(host, tmp_pat
 
 
 @pytest.mark.usefixtures("installer_wheelhouse")
-def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> None:
+def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str], valid_config) -> None:
+    examples = sorted((CANDIDATE_SOURCE / "examples").glob("*.yaml"))
+    assert len(examples) == 4
+    jobs = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "jobs"
+    jobs.mkdir(parents=True)
+    for example in examples:
+        (jobs / f"{example.name}.example").write_text("outdated template\n")
+    job = jobs / "vaultkeep-schedule.yaml"
+    valid_config["job"]["id"] = job.stem
+    job.write_text(json.dumps(valid_config))
+    job_before = job.read_bytes(), job.stat().st_mode, job.stat().st_mtime_ns
+
     result = run_installer(host, "install")
     assert result.stdout.startswith("Vaultkeep — Installation\n\n")
     assert "Result: INSTALLED" in result.stdout
@@ -437,9 +448,54 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str]) -> N
     assert "PartOf=" not in worker.read_text()
     assert "vaultkeep --user trigger exec-worker %i" in worker.read_text()
     assert not Path(host["VAULTKEEP_TRIGGER_BIN_LINK"]).exists()
+    for example in examples:
+        template = jobs / f"{example.name}.example"
+        assert template.read_bytes() == example.read_bytes()
+        assert template.stat().st_mode & 0o777 == 0o640
+    assert list(jobs.glob("*.yaml")) == [job]
+    assert (job.read_bytes(), job.stat().st_mode, job.stat().st_mtime_ns) == job_before
     first = snapshot(host)
     run_installer(host, "update")
     assert snapshot(host) == first
+
+
+@pytest.mark.parametrize("mode", ["install", "update"])
+@pytest.mark.parametrize("changed_source", [False, True])
+def test_maintenance_refreshes_examples_without_overwriting_jobs(
+    installed, valid_config, tmp_path, mode, changed_source
+):
+    source = candidate_source(tmp_path, mode) if changed_source else CANDIDATE_SOURCE
+    examples = sorted((source / "examples").glob("*.yaml"))
+    assert len(examples) == 4
+    if changed_source:
+        for example in examples:
+            example.write_text(example.read_text() + "\n## Updated release template.\n")
+
+    jobs = Path(installed["VAULTKEEP_CONFIG_ROOT"]) / "jobs"
+    for example in examples:
+        (jobs / f"{example.name}.example").write_text("locally edited template\n")
+    (jobs / f"{examples[0].name}.example").unlink()
+    job = jobs / "vaultkeep-schedule.yaml"
+    valid_config["job"]["id"] = job.stem
+    job.write_text(json.dumps(valid_config))
+    job.chmod(0o600)
+    job_before = job.read_bytes(), job.stat().st_mode, job.stat().st_mtime_ns
+    deployment_before = manifest(installed)
+
+    before = snapshot(installed)
+    run_installer(installed, mode, "--dry-run", source=source)
+    assert snapshot(installed) == before
+    result = run_installer(installed, mode, source=source)
+
+    for example in examples:
+        template = jobs / f"{example.name}.example"
+        assert template.read_bytes() == example.read_bytes()
+        assert template.stat().st_mode & 0o777 == 0o640
+    assert list(jobs.glob("*.yaml")) == [job]
+    assert (job.read_bytes(), job.stat().st_mode, job.stat().st_mtime_ns) == job_before
+    if not changed_source:
+        assert "no deployment changes required" in diagnostic_log(result).read_text()
+        assert manifest(installed) == deployment_before
 
 
 @pytest.mark.usefixtures("installer_wheelhouse")

@@ -117,10 +117,14 @@ checkout. Custom paths, installed files, and recovery are described in the
 
    | Job | Complete example | Application preparation |
    | --- | --- | --- |
-   | Manual or Schedule | [General job](examples/vaultkeep-schedule.yaml.example) | Steps below |
-   | <a id="back-up-directory-files-separately"></a>Electrum | [Electrum job](examples/electrum-trigger.yaml.example) | [Electrum guide](docs/trigger/apps/electrum.md), including separate wallet archives |
-   | Bisq 1 GUI/API daemon | [Bisq job](examples/bisq-trigger.yaml.example) | [Bisq guide](docs/trigger/apps/bisq.md); explicit `--appDataDir` required |
-   | Wasabi GUI/daemon | [Wasabi job](examples/wasabi-trigger.yaml.example) | [Wasabi guide](docs/trigger/apps/wasabi.md) |
+   | Manual or Schedule | [General job](examples/vaultkeep-schedule.yaml) | Steps below |
+   | <a id="back-up-directory-files-separately"></a>Electrum | [Electrum job](examples/electrum-trigger.yaml) | [Electrum guide](docs/trigger/apps/electrum.md), including separate wallet archives |
+   | Bisq 1 GUI/API daemon | [Bisq job](examples/bisq-trigger.yaml) | [Bisq guide](docs/trigger/apps/bisq.md); explicit `--appDataDir` required |
+   | Wasabi GUI/daemon | [Wasabi job](examples/wasabi-trigger.yaml) | [Wasabi guide](docs/trigger/apps/wasabi.md) |
+
+   Repository examples use `.yaml`. The installer copies them into
+   `/etc/vaultkeep/jobs/` as `.yaml.example` and overwrites those templates on each
+   installation or update. Copy a template to your own job YAML before editing it.
 
 2. For a **user-owned job**, copy the installed general example without overwriting
    an existing job, then edit it as that user:
@@ -130,13 +134,13 @@ checkout. Custom paths, installed files, and recovery are described in the
    install -d -m 700 "$jobs_dir"
    job_config="$jobs_dir/app.yaml"
    if [ ! -e "$job_config" ]; then
-       install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml.example "$job_config"
+       install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
    fi
    nano "$job_config"
    ```
 
-   For an application job, substitute `electrum-trigger.yaml.example`,
-   `bisq-trigger.yaml.example`, or `wasabi-trigger.yaml.example` and name the YAML
+   For an application job, substitute `electrum-trigger.yaml`,
+   `bisq-trigger.yaml`, or `wasabi-trigger.yaml` and name the YAML
    to match its `job.id`, such as `electrum-main.yaml`.
 
    For a **root-owned job**, use:

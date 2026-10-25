@@ -408,7 +408,7 @@ def verify_environment(release: Path, version: str, components: list[str], sourc
             fail(f"incorrect console script interpreter: {executable}")
         if execute([str(executable), "--version"]).strip() != version:
             fail(f"incorrect command version: {executable}")
-    for example in (source / "examples").glob("*.example"):
+    for example in (source / "examples").glob("*.yaml"):
         execute(
             [
                 str(release / "venv/bin/vaultkeep"),

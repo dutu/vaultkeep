@@ -46,7 +46,7 @@ OS account home, independent of `XDG_STATE_HOME`. See
    install -d -m 700 "$jobs_dir"
    job_config="$jobs_dir/app.yaml"
    if [ ! -e "$job_config" ]; then
-       install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml.example "$job_config"
+       install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
    fi
    nano "$job_config"
    ```

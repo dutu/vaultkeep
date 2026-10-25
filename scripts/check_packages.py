@@ -101,10 +101,10 @@ def check() -> None:
             "src/vaultkeep/maintenance.py",
             "systemd/vaultkeep-trigger-exec@.service",
             "install.sh",
-            "examples/vaultkeep-schedule.yaml.example",
-            "examples/electrum-trigger.yaml.example",
-            "examples/bisq-trigger.yaml.example",
-            "examples/wasabi-trigger.yaml.example",
+            "examples/vaultkeep-schedule.yaml",
+            "examples/electrum-trigger.yaml",
+            "examples/bisq-trigger.yaml",
+            "examples/wasabi-trigger.yaml",
         ):
             assert (extracted / required).is_file(), required
         build(extracted, output / "rebuilt", "wheel")
@@ -150,7 +150,7 @@ def check() -> None:
         )
         command = str(venv / "bin/vaultkeep")
         assert run(command, "--version").strip() == version
-        for example in (ROOT / "examples").glob("*.example"):
+        for example in (ROOT / "examples").glob("*.yaml"):
             run(command, "--config", str(example), "validate", "--schema-only")
             run(command, "--user", "--config", str(example), "validate", "--schema-only")
         assert not (venv / "bin/vaultkeep-trigger").exists()

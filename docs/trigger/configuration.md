@@ -24,10 +24,10 @@ trigger:
 ```
 
 This fragment supplements a complete job. Copy and customize one of the complete,
-disabled examples: [Electrum](../../examples/electrum-trigger.yaml.example),
-[Bisq](../../examples/bisq-trigger.yaml.example), or
-[Wasabi](../../examples/wasabi-trigger.yaml.example). Use the
-[schedule example](../../examples/vaultkeep-schedule.yaml.example) for other jobs.
+disabled examples: [Electrum](../../examples/electrum-trigger.yaml),
+[Bisq](../../examples/bisq-trigger.yaml), or
+[Wasabi](../../examples/wasabi-trigger.yaml). Use the
+[schedule example](../../examples/vaultkeep-schedule.yaml) for other jobs.
 Process support and directory-identification limitations are documented in
 [process detection](process-detection.md); examples do not certify installed app versions.
 

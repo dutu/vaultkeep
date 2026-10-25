@@ -6,7 +6,7 @@ Electrum data directory.
 
 Keep the trigger disabled until the installed process model and all backup
 writers have been verified. The shipped
-[Electrum example](../../../examples/electrum-trigger.yaml.example) is a
+[Electrum example](../../../examples/electrum-trigger.yaml) is a
 template, not a verified preset.
 
 ## Prerequisites
@@ -31,7 +31,7 @@ jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
 install -d -m 700 "$jobs_dir"
 job_config="$jobs_dir/electrum-main.yaml"
 if [ ! -e "$job_config" ]; then
-    install -m 600 /opt/vaultkeep/current/src/examples/electrum-trigger.yaml.example "$job_config"
+    install -m 600 /opt/vaultkeep/current/src/examples/electrum-trigger.yaml "$job_config"
 fi
 nano "$job_config"
 ```

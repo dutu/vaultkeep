@@ -47,7 +47,7 @@ def test_validate_colors_and_levels_reach_cli(monkeypatch, no_color):
     monkeypatch.setattr(sys, "stdout", stream)
     monkeypatch.setenv("TERM", "xterm")
     monkeypatch.delenv("NO_COLOR", raising=False)
-    config = Path(__file__).parents[2] / "examples/vaultkeep-schedule.yaml.example"
+    config = Path(__file__).parents[2] / "examples/vaultkeep-schedule.yaml"
 
     assert (
         main(
@@ -165,7 +165,7 @@ def test_cli_logging_does_not_change_host_logging(caplog):
 
     logger = logging.getLogger("vaultkeep")
     before = (logger.handlers[:], logger.level, logger.propagate)
-    config = Path(__file__).parents[2] / "examples/vaultkeep-schedule.yaml.example"
+    config = Path(__file__).parents[2] / "examples/vaultkeep-schedule.yaml"
     assert main(["--config", str(config), "validate", "--schema-only"]) == 0
     assert (logger.handlers, logger.level, logger.propagate) == before
     logger.warning("host diagnostics still propagate")

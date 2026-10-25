@@ -4,7 +4,7 @@ Configure one Vaultkeep job to back up a specific Bisq 1 data directory after
 its application stops. A job can recognize the Bisq GUI, the API daemon, or
 both, provided their launches identify the same explicit data directory.
 
-The [Bisq job example](../../../examples/bisq-trigger.yaml.example) is a
+The [Bisq job example](../../../examples/bisq-trigger.yaml) is a
 starting template, not a verified configuration for your installation. Bisq 2
 uses a different process and configuration model and is not supported by this
 guide.
@@ -75,7 +75,7 @@ jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
 install -d -m 700 "$jobs_dir"
 job_config="$jobs_dir/bisq-main.yaml"
 if [ ! -e "$job_config" ]; then
-    install -m 600 /opt/vaultkeep/current/src/examples/bisq-trigger.yaml.example "$job_config"
+    install -m 600 /opt/vaultkeep/current/src/examples/bisq-trigger.yaml "$job_config"
 fi
 nano "$job_config"
 ```

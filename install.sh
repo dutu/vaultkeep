@@ -416,7 +416,7 @@ ensure_checkout() {
         die "built-in Trigger source or service templates are missing"
     local found_example=0
     local example
-    for example in "$SOURCE_DIR"/examples/*.example; do
+    for example in "$SOURCE_DIR"/examples/*.yaml; do
         [[ -f "$example" ]] || continue
         found_example=1
         break
@@ -481,9 +481,9 @@ prepare_registry() {
 install_examples() {
     local installed=0
     local example destination
-    for example in "$SOURCE_DIR"/examples/*.example; do
+    for example in "$SOURCE_DIR"/examples/*.yaml; do
         [[ -f "$example" ]] || continue
-        destination="$VK_JOBS/${example##*/}"
+        destination="$VK_JOBS/${example##*/}.example"
         run install -o root -g root -m 0640 "$example" "$destination"
         installed=1
     done
@@ -928,6 +928,7 @@ install_or_update() {
         daemon_reload
         maintenance validate
         refuse_active_services
+        install_examples
         finish_commit_transaction
         stage_start "Resume schedules"
         resume_schedules

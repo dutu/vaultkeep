@@ -65,7 +65,7 @@ Installation does not start a backup. Example files are copied to the root-mode 
 /etc/vaultkeep/jobs/*.example
 ```
 
-The installer copies every `examples/*.example` file from the release. Updates overwrite existing `.example` files so packaged examples stay current. User-created `.yaml` job files are not overwritten.
+The installer copies every `examples/*.yaml` file from the release into the root-mode jobs directory, appending `.example` to its filename. Every successful installation or update, including a same-version refresh, overwrites these `.yaml.example` files with the current release templates and restores missing copies. User-created `.yaml` job files are not overwritten; copy an example to a job YAML before customizing it.
 
 ## Pause and resume for maintenance
 

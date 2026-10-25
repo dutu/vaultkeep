@@ -2100,13 +2100,13 @@ The example is safe by default:
 
 - it must not point to sensitive real sources;
 - it contains no future-enhancement fields;
-- it is stored with the inactive `.example` extension;
+- its installed copy has the inactive `.yaml.example` extension;
 - it passes schema-only validation.
 
 Repository file:
 
 ```text
-examples/vaultkeep-schedule.yaml.example
+examples/vaultkeep-schedule.yaml
 ```
 
 Installed path:
@@ -2452,10 +2452,10 @@ vaultkeep/
 │   ├── trigger/
 │   └── fixtures/
 ├── examples/
-│   ├── vaultkeep-schedule.yaml.example
-│   ├── electrum-trigger.yaml.example
-│   ├── bisq-trigger.yaml.example
-│   └── wasabi-trigger.yaml.example
+│   ├── vaultkeep-schedule.yaml
+│   ├── electrum-trigger.yaml
+│   ├── bisq-trigger.yaml
+│   └── wasabi-trigger.yaml
 ├── systemd/
 │   ├── vaultkeep@.service
 │   ├── vaultkeep@.timer
