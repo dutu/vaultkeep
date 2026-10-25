@@ -17,6 +17,7 @@ job:
 sources:
   - path: /path/to/source                # Absolute file or directory
     archive_path_mode: prefix           # prefix | preserve
+    ## With preserve, omit archive_prefix.
     archive_prefix: source              # Prefix; "" places files at archive root
     # exclude:                          # Source-only gitwildmatch patterns
     #   - cache/
@@ -62,6 +63,7 @@ retention:
 schedule:
   enabled: false                        # Enable the systemd timer
   interval: daily                       # hourly | daily | weekly | monthly
+  ## Hourly schedules require hour 00; use e.g. window: "00:10-00:50".
   window: "01:00-05:00"                 # Local-time range; alternative to at
   # at: "03:30"                         # Fixed local time; alternative to window
   # day: sunday                         # Required for weekly; monday–sunday
@@ -105,7 +107,7 @@ hooks:
 ## Desktop notifications (backup and trigger are independent)
 notifications:
   command: notify-send                   # Notification command
-  timeout_ms: 5000                      # Display timeout
+  timeout_ms: 5000                      # Delivery timeout in milliseconds
   backup:
     enabled: false
   trigger:
