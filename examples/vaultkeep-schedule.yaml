@@ -89,20 +89,27 @@ trigger:
   # deadline_seconds: 3600              # Advisory; never terminates backup
   # params: {}                          # String runtime parameters
 
-## Hooks (null = disabled; commands run with /bin/sh -c)
-hooks:
-  before_check: null
-  before_archive: null
-  after_archive: null
-  on_success: null
-  on_failure: null
-  on_unchanged: null
-
-  ## Hook example: replace a null phase above to enable it.
-  ## Timeout: 1–3600 seconds (default 300).
-  # before_check:
-  #   command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
-  #   timeout_seconds: 300
+## Lifecycle hooks (optional; commands run via /bin/sh -c)
+## Requires telegram-notify to be installed and configured.
+# hooks:
+#   before_check:
+#     command: 'telegram-notify --level info "Checking backup sources for {job} on {hostname}"'
+#     timeout_seconds: 60                # Allowed: 1–3600 (default 300)
+#   before_archive:
+#     command: 'telegram-notify --level info "Creating backup for {job} on {hostname}"'
+#     timeout_seconds: 60
+#   after_archive:
+#     command: 'telegram-notify --level info "Finished reading backup sources for {job} on {hostname}"'
+#     timeout_seconds: 60
+#   on_success:
+#     command: 'telegram-notify --level info "Backup completed for {job} on {hostname}"'
+#     timeout_seconds: 60
+#   on_failure:
+#     command: 'telegram-notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
+#     timeout_seconds: 60
+#   on_unchanged:
+#     command: 'telegram-notify --level info "Backup sources unchanged for {job} on {hostname}"'
+#     timeout_seconds: 60
 
 ## Desktop notifications (backup and trigger are independent)
 notifications:
