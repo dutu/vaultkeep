@@ -206,6 +206,12 @@ checksum:  <backup-base-name>.<archive-format>.sha256
 manifest:  <backup-base-name>.json
 ```
 
+If `run` detects a content checksum mismatch while checking an unchanged source,
+it preserves these three artifacts, adds a `.vaultkeep-damaged` marker inside the
+backup directory, and creates a fresh backup. Marked backups appear as `DAMAGED`
+in `list` and are excluded from automatic deletion and retention counts. See
+[run recovery behavior](cli.md#run-a-job-manually).
+
 The supported placeholders are exactly:
 
 | Placeholder | Meaning | Formatting |

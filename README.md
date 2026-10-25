@@ -224,6 +224,15 @@ newest first with UTC dates, archive sizes, encryption, and retention decisions.
 Each row includes the complete backup directory relative to the displayed destination.
 Invalid entries appear as warnings; affected histories have `UNKNOWN` decisions.
 `verify` checks archive contents and checksums without requiring original sources.
+Before reporting `run: unchanged`, `run` checks the newest matching backup's SHA-256
+checksum; it does not read older archive contents for that decision. A checksum
+mismatch marks that backup as damaged and creates a fresh verified backup.
+`list` labels marked backups `DAMAGED`; retention preserves them without counting
+them toward healthy backup retention. After creating a backup, retention checks
+still verify checksums across the unmarked matching history.
+`verify` continues to report preserved damaged backups as failures. Inspect their
+`list` warnings before manually moving or removing the affected directories; see
+[damage recovery details](docs/cli.md#run-a-job-manually).
 `run` and `verify` show an in-place spinner with elapsed time on interactive
 terminals. `run` keeps completed stages listed with a tick. Redirected stderr uses
 plain stage messages and a heartbeat every 10 seconds

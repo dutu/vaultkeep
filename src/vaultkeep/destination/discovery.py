@@ -12,9 +12,10 @@ from pathlib import Path
 
 from vaultkeep.archive.checksums import read_checksum_sidecar, verify_checksum_sidecar
 from vaultkeep.config.models import JobConfig
+from vaultkeep.destination.damage import DAMAGE_MARKER_NAME, read_damage_marker
 from vaultkeep.destination.manifest import BackupManifest, load_manifest
 from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
-from vaultkeep.errors import DestinationDiscoveryError, ManifestError
+from vaultkeep.errors import DestinationDiscoveryError, DestinationError, ManifestError
 from vaultkeep.progress import VerificationProgress, report_progress
 from vaultkeep.state.models import BackupStateRecord
 
@@ -42,6 +43,8 @@ class DiscoveredBackup:
     base_name: str
     manifest: BackupManifest
     archive_size: int
+    damage_reason: str | None = None
+    replacement_backup_id: str | None = None
 
     @property
     def state_record(self) -> BackupStateRecord:
@@ -67,7 +70,7 @@ class DiscoveryResult:
 
     @property
     def state_records(self) -> tuple[BackupStateRecord, ...]:
-        return tuple(backup.state_record for backup in self.backups)
+        return tuple(backup.state_record for backup in self.backups if backup.damage_reason is None)
 
 
 def discover_backups(
@@ -240,7 +243,14 @@ def _validate_backup_directory(
     archive_status = _require_regular_file(archive_path)
     _require_regular_file(checksum_path)
     _require_regular_file(manifest_path)
-    _require_exact_artifacts(path, {archive_path.name, checksum_path.name, manifest_path.name})
+    try:
+        damage = read_damage_marker(path)
+    except DestinationError as error:
+        raise DestinationDiscoveryError(str(error)) from error
+    artifacts = {archive_path.name, checksum_path.name, manifest_path.name}
+    if damage is not None:
+        artifacts.add(DAMAGE_MARKER_NAME)
+    _require_exact_artifacts(path, artifacts)
     backup = DiscoveredBackup(
         path,
         archive_path,
@@ -249,6 +259,8 @@ def _validate_backup_directory(
         base_name,
         manifest,
         archive_status.st_size,
+        damage.reason if damage else None,
+        damage.replacement_backup_id if damage else None,
     )
     if metadata_only:
         return backup
@@ -264,6 +276,18 @@ def _validate_backup_directory(
         ),
     )
     operation = "SHA-256" if verify_archives else "Checksum metadata"
+    if damage is not None:
+        report_progress(
+            on_progress,
+            VerificationProgress(
+                "backup",
+                operation,
+                "failed",
+                archive_path,
+                error=f"Marked damaged: {damage.reason}",
+            ),
+        )
+        return backup
     report_progress(on_progress, VerificationProgress("backup", operation, path=archive_path))
     try:
         digest = (

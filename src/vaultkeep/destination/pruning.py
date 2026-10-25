@@ -27,7 +27,8 @@ def build_prune_plan(
     """Create a side-effect-free plan, refusing destructive work around malformed entries."""
     if discovery.malformed:
         raise PruneError("Matching malformed destination entries block destructive pruning")
-    by_id = {backup.manifest.backup_id: backup for backup in discovery.backups}
+    healthy = tuple(backup for backup in discovery.backups if backup.damage_reason is None)
+    by_id = {backup.manifest.backup_id: backup for backup in healthy}
     plan = plan_retention(
         tuple(
             RetentionBackup(
@@ -36,7 +37,7 @@ def build_prune_plan(
                 created_at=backup.manifest.created_datetime,
                 created_at_utc=backup.manifest.created_datetime_utc,
             )
-            for backup in discovery.backups
+            for backup in healthy
         ),
         retention,
     )
@@ -50,6 +51,8 @@ def execute_prune_plan(plan: DestinationPrunePlan, discovery: DiscoveryResult) -
     discovered = {backup.directory: backup for backup in discovery.backups}
     removed: list[Path] = []
     for backup in plan.backups_to_delete:
+        if backup.damage_reason is not None:
+            raise PruneError(f"Damaged backups must be preserved: {backup.directory}")
         if discovered.get(backup.directory) != backup:
             raise PruneError("Prune plan does not match the complete discovery result")
         _remove_valid_backup(backup)

@@ -233,6 +233,25 @@ Possible successful results:
 - `unchanged`: the current source and backup-relevant configuration match the last successful backup.
 
 An unchanged run does not create an archive or apply retention.
+Change detection validates backup metadata and compares the sources against the
+newest matching backup, ordered by manifest UTC creation time and then backup ID.
+Before returning `unchanged`, it reads only that archive to verify its SHA-256
+checksum. A content checksum mismatch marks the backup as damaged and creates a
+fresh verified backup, reporting `created` on success. It does not skip creation
+based on an older backup after detecting damage. Permission and read errors still
+fail the run, without marking the archive as corrupt.
+
+Damage is recorded in a `.vaultkeep-damaged` JSON file inside the affected backup
+directory. The archive, checksum sidecar, and manifest are preserved. After the
+new backup is committed and its checksum verified, the marker records its backup
+ID. If replacement creation fails, a later run retries creation. Marked backups
+are excluded from unchanged checks and retention counts, and are never
+automatically deleted. Failure to persist a marker or replacement record fails
+the run; a replacement already committed remains on disk.
+
+Use `verify` to check the entire history. After creating a backup, the
+finalized-backup and retention checks still verify all unmarked matching archive
+checksums.
 
 Temporary backups use `~$.partial-vaultkeep-<job>-<backup-id>` directory names.
 On destinations managed by synchronization software, verify that temporary
@@ -257,6 +276,9 @@ and configured retention counts. Rows show `Created (UTC)`, compressed archive
 and encryption facts come from stored manifests, including backups in either
 supported format after an archive-setting change. Each row is followed by
 `  Backup: <directory>` with the complete directory path relative to the destination.
+Marked damaged backups show `DAMAGED` with the recorded diagnostic in the warnings.
+They are preserved outside the retention policy; their presence does not make
+healthy backup retention decisions unknown.
 For `per_file` jobs, this includes the file history directory.
 
 Retention decisions reuse the existing pruning planner, calculated independently
@@ -320,6 +342,11 @@ Verification checks:
 Verification works without the original sources and never changes backups, local
 state, or retention. Encrypted jobs require a password file containing the archive's
 passphrase, with the same ownership and permissions required by `run`.
+Marked damaged backups are reported as failures without rereading their archive
+contents. Verification continues checking the remaining backups and exits nonzero
+while marked backups remain in the destination. A successful replacement run does
+not clear a damage marker; inspect the preserved backup before manually moving or
+removing its directory.
 
 Verification continues after individual backup failures. Invalid backups are excluded
 from archive verification. Failures are reported immediately with their full paths
@@ -400,6 +427,9 @@ paths. Applying it prints `prune: pruned` and probes destination writability bef
 deletion. Matching malformed backups block plan calculation in both dry-run and
 apply modes; use `verify` to identify them. In `per_file` mode, every discovered
 history is validated before any deletion, and policy is applied separately per file.
+Backups with valid damage markers are preserved, excluded from retention counts,
+and do not block pruning of healthy backups. Malformed markers and unexpected
+artifacts still block pruning.
 
 ## Configure a job timer
 

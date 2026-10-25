@@ -17,6 +17,7 @@ from vaultkeep import hooks
 from vaultkeep.backup import workflow
 from vaultkeep.backup.results import classify_command
 from vaultkeep.cli.commands import main
+from vaultkeep.destination.damage import DAMAGE_MARKER_NAME
 from vaultkeep.errors import ArchiveCreationError, DestinationError, LockError
 from vaultkeep.file_backups import file_key
 from vaultkeep.locking import JobLock, job_lock_path
@@ -61,6 +62,34 @@ def file_job(tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.M
 
 def _run(job: Path) -> workflow.CommandResult:
     return workflow.run_backup(job, user_mode=True)
+
+
+def test_damaged_wallet_backup_is_replaced_with_a_restorable_archive(file_job: Path) -> None:
+    first = _run(file_job)
+    damaged = first.files[0].archive_path
+    assert damaged is not None
+    damaged.write_bytes(b"corrupted compressed archive")
+
+    result = _run(file_job)
+
+    assert [outcome.result for outcome in result.files] == ["created", "unchanged"]
+    replacement = result.files[0].archive_path
+    assert replacement is not None and replacement != damaged
+    assert damaged.read_bytes() == b"corrupted compressed archive"
+    assert (damaged.parent / DAMAGE_MARKER_NAME).is_file()
+    restored = subprocess.run(
+        [
+            "/usr/bin/tar",
+            "--zstd",
+            "-xOf",
+            str(replacement),
+            f"wallets/{result.files[0].source.name}",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert restored.stdout == result.files[0].source.read_bytes()
+    assert _run(file_job).result == "unchanged"
 
 
 def test_per_file_notifications_report_one_job_result_with_partial_failure(file_job, monkeypatch):

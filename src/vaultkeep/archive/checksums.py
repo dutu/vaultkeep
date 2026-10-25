@@ -8,7 +8,11 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
-from vaultkeep.errors import ArchiveCreationError, ArchiveVerificationError
+from vaultkeep.errors import (
+    ArchiveChecksumMismatchError,
+    ArchiveCreationError,
+    ArchiveVerificationError,
+)
 from vaultkeep.progress import VerificationProgress, report_progress
 
 _CHUNK_SIZE = 1024 * 1024
@@ -127,5 +131,5 @@ def verify_checksum_sidecar(
         ),
     )
     if declared != actual:
-        raise ArchiveVerificationError("Archive checksum does not match archive content")
+        raise ArchiveChecksumMismatchError("Archive checksum does not match archive content")
     return actual

@@ -14,6 +14,7 @@ from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum
 from vaultkeep.backup import workflow
 from vaultkeep.backup.workflow import list_backups, prune_backups, verify_backups
 from vaultkeep.config.models import JobConfig
+from vaultkeep.destination.damage import DAMAGE_MARKER_NAME, mark_backup_damaged
 from vaultkeep.destination.discovery import discover_backups
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
 from vaultkeep.destination.pruning import build_prune_plan, execute_prune_plan
@@ -85,6 +86,92 @@ def test_discovery_returns_valid_records_and_ignores_unrelated(
     assert len(discovered.backups) == 1
     assert discovered.malformed == ()
     assert discovered.state_records[0].job_id == "app"
+
+
+@pytest.mark.parametrize("metadata_only", [False, True])
+def test_marked_damage_is_listed_but_never_hashed_reused_or_pruned(
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_only: bool,
+) -> None:
+    config = _config(tmp_path, valid_config)
+    directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    archive = next(directory.glob("*.tar.zst"))
+    archive.write_bytes(b"damaged archive")
+    mark_backup_damaged(directory, "checksum mismatch")
+
+    def forbidden(*args: Any, **kwargs: Any) -> str:
+        pytest.fail("Known damaged backups must not be hashed")
+
+    monkeypatch.setattr(checksums_module, "calculate_archive_sha256", forbidden)
+
+    discovered = discover_backups(config, metadata_only=metadata_only)
+
+    assert discovered.malformed == ()
+    assert discovered.state_records == ()
+    assert len(discovered.backups) == 1
+    assert "checksum mismatch" in discovered.backups[0].damage_reason
+    plan = build_prune_plan(discovered, config.retention)
+    assert plan.backups_to_delete == ()
+    assert execute_prune_plan(plan, discovered) == ()
+    assert archive.read_bytes() == b"damaged archive"
+
+
+@pytest.mark.parametrize("marker_kind", ["symlink", "directory", "oversized", "invalid-encoding"])
+def test_invalid_damage_markers_block_pruning(
+    tmp_path: Path, valid_config: dict[str, Any], marker_kind: str
+) -> None:
+    config = _config(tmp_path, valid_config)
+    directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    marker = directory / DAMAGE_MARKER_NAME
+    if marker_kind == "symlink":
+        marker.symlink_to(tmp_path / "absent")
+    elif marker_kind == "directory":
+        marker.mkdir()
+    elif marker_kind == "oversized":
+        marker.write_bytes(b"x" * 4097)
+    else:
+        marker.write_bytes(b"\xff")
+
+    discovered = discover_backups(config)
+
+    assert discovered.backups == ()
+    assert len(discovered.malformed) == 1
+    with pytest.raises(PruneError, match="malformed"):
+        build_prune_plan(discovered, config.retention)
+
+
+def test_damage_marker_does_not_hide_unrelated_artifacts(
+    tmp_path: Path, valid_config: dict[str, Any]
+) -> None:
+    config = _config(tmp_path, valid_config)
+    directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    mark_backup_damaged(directory, "checksum mismatch")
+    (directory / "unrelated-data").write_bytes(b"preserve")
+
+    discovered = discover_backups(config)
+
+    assert discovered.backups == ()
+    assert len(discovered.malformed) == 1
+    assert "unexpected or missing artifacts" in discovered.malformed[0].reason
+
+
+def test_damage_marker_preserves_first_diagnostic_and_rejects_symlinks(
+    tmp_path: Path,
+) -> None:
+    mark_backup_damaged(tmp_path, "first checksum mismatch")
+    marker = tmp_path / DAMAGE_MARKER_NAME
+    original = marker.read_bytes()
+    mark_backup_damaged(tmp_path, "later checksum mismatch")
+    assert marker.read_bytes() == original
+    marker.unlink()
+    target = tmp_path / "unrelated-file"
+    target.write_bytes(b"preserve")
+    marker.symlink_to(target)
+    with pytest.raises(DestinationError, match="regular file"):
+        mark_backup_damaged(tmp_path, "checksum mismatch")
+    assert target.read_bytes() == b"preserve"
 
 
 @pytest.mark.parametrize("backup_mode", ["combined", "per_file"])

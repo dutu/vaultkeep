@@ -25,6 +25,7 @@ from vaultkeep.archive import (
     verify_tar_7z,
     verify_tar_zstd,
 )
+from vaultkeep.archive.checksums import verify_checksum_sidecar
 from vaultkeep.backup.execution import Execution
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
 from vaultkeep.backup.results import failure_reason
@@ -38,8 +39,10 @@ from vaultkeep.destination import (
     execute_prune_plan,
     probe_destination_writability,
 )
+from vaultkeep.destination.damage import mark_backup_damaged, record_damage_replacement
 from vaultkeep.destination.discovery import DiscoveredBackup, MalformedDestinationEntry
 from vaultkeep.errors import (
+    ArchiveChecksumMismatchError,
     ArchiveVerificationError,
     ConfigurationError,
     DestinationError,
@@ -313,7 +316,12 @@ def verify_backups(
                 continue
             if backup_total is not None:
                 backup_total += len(discovered.backups) + len(discovered.malformed)
-            backups.extend(discovered.backups)
+            backups.extend(backup for backup in discovered.backups if backup.damage_reason is None)
+            failures.extend(
+                f"{backup.directory}: marked damaged: {backup.damage_reason}"
+                for backup in discovered.backups
+                if backup.damage_reason is not None
+            )
             failures.extend(
                 f"{entry.path}: malformed backup: {entry.reason}" for entry in discovered.malformed
             )
@@ -576,7 +584,47 @@ def _run_single_backup(
         failure_context = replace(failure_context, source_digest=source_digest)
         config_fingerprint = calculate_config_fingerprint(config, runtime_params=parameters)
         report("Checking existing backups")
-        discovered = discover_backups(config, runtime_params=parameters)
+        discovered = discover_backups(config, runtime_params=parameters, verify_archives=False)
+        newest = max(
+            (backup for backup in discovered.backups if backup.damage_reason is None),
+            key=lambda backup: (backup.manifest.created_datetime_utc, backup.manifest.backup_id),
+            default=None,
+        )
+        replacement_required = any(
+            backup.damage_reason is not None and backup.replacement_backup_id is None
+            for backup in discovered.backups
+        )
+        if replacement_required:
+            report("Damaged backup needs replacement; creating fresh backup")
+        if (
+            newest is not None
+            and not replacement_required
+            and newest.manifest.source_digest == source_digest
+            and newest.manifest.config_fingerprint == config_fingerprint
+        ):
+            report("Verifying latest backup checksum")
+            try:
+                verify_checksum_sidecar(newest.archive_path, newest.checksum_path)
+            except ArchiveChecksumMismatchError as error:
+                report("Latest backup damaged; creating replacement")
+                mark_backup_damaged(newest.directory, str(error))
+                logging.getLogger(__name__).warning(
+                    "Backup %s is damaged and will be preserved; creating a fresh backup: %s",
+                    newest.archive_path,
+                    error,
+                )
+                replacement_required = True
+                discovered = replace(
+                    discovered,
+                    backups=tuple(
+                        replace(backup, damage_reason=str(error)) if backup == newest else backup
+                        for backup in discovered.backups
+                    ),
+                )
+            except ArchiveVerificationError as error:
+                raise ArchiveVerificationError(
+                    f"Latest backup checksum verification failed for {newest.archive_path}: {error}"
+                ) from error
         loaded_password = (
             load_password_file(
                 Path(config.encryption.password_file),
@@ -610,7 +658,10 @@ def _run_single_backup(
         )
         now = datetime.now().astimezone()
         failure_context = replace(failure_context, timestamp=now)
-        if decision.unchanged:
+        if decision.unchanged and not replacement_required:
+            previous = reconciliation.state.last_successful_backup
+            if previous is None:
+                raise AssertionError("Unchanged state has no successful backup")
             report("Sources unchanged; skipping archive creation")
             terminal_hook_failed = True
             _run_configured_hook(
@@ -640,9 +691,6 @@ def _run_single_backup(
                 state_path,
                 latest_state,
             )
-            previous = reconciliation.state.last_successful_backup
-            if previous is None:
-                raise AssertionError("Unchanged state has no successful backup")
             return CommandResult("run", "unchanged", archive_path=Path(previous.backup_path))
         report("Preparing archive destination")
         backup_id = uuid.uuid4().hex
@@ -749,6 +797,9 @@ def _run_single_backup(
             state_path,
             latest_state,
         )
+        for backup in discovered.backups:
+            if backup.damage_reason is not None and backup.replacement_backup_id is None:
+                record_damage_replacement(backup.directory, record.backup_id)
         report("Applying retention")
         plan = build_prune_plan(committed, config.retention)
         removed = execute_prune_plan(plan, committed)

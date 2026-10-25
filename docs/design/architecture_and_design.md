@@ -907,7 +907,7 @@ Discovery rules:
 8. warn about malformed matching entries;
 9. never apply retention to unrelated content.
 
-Matching-but-malformed entries are never automatically deleted. Their presence blocks retention plan calculation, including `prune --dry-run`. `verify` reports their paths and reasons; `list` performs metadata discovery but currently prints only its completion marker.
+Matching-but-malformed entries are never automatically deleted. Their presence blocks retention plan calculation, including `prune --dry-run`. `verify` reports their paths and reasons; `list` displays the metadata inventory with warnings. Backups with valid damage markers are listed as `DAMAGED` and excluded from state reconstruction and pruning without blocking healthy retention.
 
 ---
 
@@ -1017,6 +1017,14 @@ After a successful new backup, Vaultkeep sets `last_unchanged_at_utc` to null. A
 
 Before returning `unchanged`, Vaultkeep verifies that the state matches the current configuration fingerprint, matches the current credential-generation fingerprint for a password-protected job, and references a valid backup in the current destination. Missing, corrupt, incompatible, or stale local state is reconstructed from destination manifests. Because manifests contain no credential-generation fingerprint, reconstruction for a password-protected job tests the newest valid encrypted backup with the current password before recording the current local fingerprint.
 
+Run change detection discovers history with manifest, directory, and checksum-sidecar metadata validation, without reading archive contents. It selects the newest unmarked matching backup by manifest UTC creation time, breaking ties by backup ID. If the source and configuration match, the run verifies only that selected archive's SHA-256 before state reconciliation, `on_unchanged`, or recording an unchanged result. A confirmed content checksum mismatch marks the backup as damaged and forces a fresh verified backup. Read and permission errors fail the run without marking damage. Damage detection precedes credential recovery so an unusable encrypted archive is not used to test password continuity.
+
+The `.vaultkeep-damaged` JSON marker records the detection timestamp and reason, plus an optional replacement backup ID. It is separate from the immutable archive, checksum sidecar, and manifest. Discovery validates the marker as a small regular file, lists the backup as damaged, skips content reads, and excludes it from state records. Marked backups do not participate in retention selections or deletion. Other malformed entries and unexpected artifacts continue to block pruning. Explicit verification reports marked backups as failures and continues with the healthy history.
+
+An unresolved damage marker forces creation even when older healthy sources match. After a new backup has been committed and its checksum verified, the workflow atomically records its ID in each unresolved marker before applying retention. This records completed replacement independently of second-resolution manifest timestamp ties and local-state recovery. A failed replacement leaves the marker unresolved for retry. Marker-write failures fail the run and preserve any committed replacement. A completed marker continues to protect the damaged backup after its replacement eventually ages out of retention.
+
+Full-history checksum verification of unmarked backups remains part of explicit verification and pruning, and of the finalized-backup discovery used for automatic retention after creation.
+
 ## 13.3 Missing or unusable state recovery
 
 Vaultkeep executes without an existing `state.json`. A missing, empty, malformed, incompatible, or stale state file is a cache miss rather than a fatal application error.
@@ -1123,9 +1131,9 @@ A finer tier's configured count is a maximum. The tier retains fewer recovery po
 
 ## 14.3 Participation and deletion safety
 
-Only complete, valid backups recognized through the configured naming rule and manifest participate in retention.
+Only complete, valid, unmarked backups recognized through the configured naming rule and manifest participate in retention. Damaged backups are preserved outside retention counts even after successful replacement.
 
-Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `verify` reports matching malformed entries. The current `list` command does not render discovered entries, and `prune --dry-run` refuses a malformed destination instead of displaying a partial plan.
+Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `verify` reports matching malformed entries, and `list` displays inventory warnings with incomplete retention decisions. `prune --dry-run` refuses a malformed destination instead of displaying a partial plan. A valid damage marker is recognized metadata; other unexpected files and malformed markers still block pruning.
 
 A backup is eligible for deletion only when:
 

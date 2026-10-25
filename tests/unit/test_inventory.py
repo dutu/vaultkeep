@@ -18,6 +18,7 @@ from vaultkeep.cli import commands
 from vaultkeep.cli import output as output_module
 from vaultkeep.cli.inventory import print_inventory
 from vaultkeep.cli.output import Console
+from vaultkeep.destination.damage import mark_backup_damaged
 from vaultkeep.destination.discovery import discover_backups
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
 from vaultkeep.destination.pruning import build_prune_plan
@@ -138,6 +139,26 @@ def test_inventory_uses_stored_utc_encryption_sizes_and_relative_paths(job, caps
     assert "VERIFIED" not in out and "Result:" not in out
     assert "list: listed" not in out and "SUCCESS" not in out
     assert "[00:" not in out and err == ""
+
+
+def test_inventory_marks_damaged_backups_and_preserves_healthy_retention_preview(job, capsys):
+    healthy = job.create(1)
+    damaged = job.create(2)
+    mark_backup_damaged(damaged.directory, "checksum mismatch")
+    before = snapshot(job.path.parent)
+
+    assert cli(job) == 0
+
+    out, err = capsys.readouterr()
+    rows = records(out)
+    assert rows[str(damaged.directory.relative_to(job.root))][3] == "DAMAGED"
+    assert rows[str(healthy.directory.relative_to(job.root))][3] == "KEEP"
+    assert "checksum mismatch" in out
+    assert "Damaged backups are preserved and excluded from retention." in out
+    assert "Damaged: 1" in out
+    assert "UNKNOWN" not in out
+    assert err == ""
+    assert snapshot(job.path.parent) == before
 
 
 def test_inventory_never_reads_contents_or_changes_backups_config_or_state(

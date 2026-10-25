@@ -86,6 +86,10 @@ class ArchiveVerificationError(ArchiveError):
     """A created archive does not satisfy the v1 integrity contract."""
 
 
+class ArchiveChecksumMismatchError(ArchiveVerificationError):
+    """Readable archive content differs from its recorded checksum."""
+
+
 class PasswordFileError(ArchiveError):
     """A password file or passphrase violates the v1 security contract."""
 

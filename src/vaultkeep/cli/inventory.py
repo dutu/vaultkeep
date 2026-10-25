@@ -37,6 +37,9 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
     ]
     decisions = {}
     for backup in inventory.backups:
+        if backup.damage_reason is not None:
+            decisions[backup.directory] = "DAMAGED"
+            continue
         tiers = inventory.retained_by.get(backup.directory)
         decisions[backup.directory] = (
             "—" if not enabled else "UNKNOWN" if tiers is None else "KEEP" if tiers else "PRUNE"
@@ -65,8 +68,14 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
     else:
         lines += ["No backups found."]
 
-    if inventory.malformed or inventory.retention_warnings:
+    damaged = tuple(backup for backup in inventory.backups if backup.damage_reason is not None)
+    if damaged or inventory.malformed or inventory.retention_warnings:
         lines += ["", "Warnings:"]
+        for backup in damaged:
+            label = _display_path(backup.directory.relative_to(destination))
+            lines += [f"  {label}: DAMAGED — {backup.damage_reason}"]
+        if damaged:
+            lines += ["  Damaged backups are preserved and excluded from retention."]
         for entry in inventory.malformed:
             label = _display_path(entry.path.relative_to(destination))
             reason = entry.reason.replace(str(entry.path) + "/", "").replace(str(entry.path), "")
@@ -80,6 +89,8 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
             lines += ["  Matching invalid entries block pruning; affected histories are UNKNOWN."]
 
     summary = f"Backups: {len(inventory.backups)}"
+    if damaged:
+        summary += f" · Damaged: {len(damaged)}"
     if enabled and inventory.backups:
         summary += f" · Keep: {sum(value == 'KEEP' for value in decisions.values())}"
         summary += f" · Prune: {sum(value == 'PRUNE' for value in decisions.values())}"

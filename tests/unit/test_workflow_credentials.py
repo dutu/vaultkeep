@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from vaultkeep.archive import verification as verification_module
 from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum_sidecar
 from vaultkeep.archive.process import CommandResult
 from vaultkeep.backup import workflow
+from vaultkeep.destination.damage import DAMAGE_MARKER_NAME
 from vaultkeep.errors import ArchiveCreationError, CredentialContinuityError
 from vaultkeep.state import LocalState, calculate_credential_fingerprint, job_state_path
 
@@ -94,6 +96,32 @@ def _invalidate_state(path: Path, state_status: str) -> None:
         path.unlink()
     elif state_status == "corrupt":
         path.write_text("invalid state")
+
+
+@pytest.mark.parametrize("state_status", ["loaded", "missing", "corrupt"])
+def test_corrupt_encrypted_backup_is_replaced_before_credential_recovery(
+    encrypted_job: tuple[Path, list[Path]], state_status: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, tested = encrypted_job
+    identifiers = iter(("f" * 32, "1" * 32))
+    monkeypatch.setattr(
+        workflow, "uuid", SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=next(identifiers)))
+    )
+    created_at = workflow.datetime.now().astimezone()
+    monkeypatch.setattr(workflow, "datetime", SimpleNamespace(now=lambda: created_at))
+    first = _run(job)
+    assert first.archive_path is not None
+    first.archive_path.write_bytes(b"corrupted encrypted bytes")
+    _invalidate_state(_state_path(job), state_status)
+
+    result = _run(job)
+
+    assert result.result == "created"
+    assert result.archive_path != first.archive_path
+    assert first.archive_path.read_bytes() == b"corrupted encrypted bytes"
+    assert (first.archive_path.parent / DAMAGE_MARKER_NAME).is_file()
+    assert tested == []  # A damaged archive cannot establish password continuity.
+    assert _run(job).result == "unchanged"
 
 
 @pytest.mark.parametrize("state_status", ["loaded", "missing", "corrupt"])
