@@ -18,7 +18,6 @@ UNIT_VALIDATION_DIR=""
 MAINTENANCE_DIR=""
 MAINTENANCE_LOCKED=0
 JOBS_REFRESH_STARTED=0
-CONFIGURATION_VALIDATION_FAILED=0
 
 VK_PREFIX=${VAULTKEEP_INSTALL_PREFIX:-/opt/vaultkeep}
 VK_CONFIG_ROOT=${VAULTKEEP_CONFIG_ROOT:-/etc/vaultkeep}
@@ -63,11 +62,25 @@ EOF
 # Report descriptors stay attached to the caller while operations go to the transcript.
 exec 3>&1 4>&2
 INSTALL_LOG=""
+ERROR_REPORTING=0
 CURRENT_STAGE=""
 STAGE_STARTED=0
 HEARTBEAT_PID=""
 REPORT_FAILED=0
 FAILED_STAGE=""
+
+capture_diagnostics() {
+    # Keep structured errors separate from raw tool output. Unlink the private
+    # buffer immediately; the descriptors retain it only for this process tree.
+    local errors
+    errors=$(mktemp "${TMPDIR:-/tmp}/vaultkeep-install-errors.XXXXXX")
+    exec 5>>"$errors" 6<"$errors"
+    rm -f "$errors"
+    ERROR_REPORTING=1
+    export VAULTKEEP_INSTALL_ERROR_FD=5
+    export VAULTKEEP_INSTALL_LOG="$INSTALL_LOG"
+    exec >>"$INSTALL_LOG" 2>&1
+}
 
 color_status() {
     local value=$1 descriptor=${2:-3} color=""
@@ -123,6 +136,9 @@ warning() {
 error() {
     if [[ -n "$INSTALL_LOG" ]]; then
         message ERROR "$SCRIPT_NAME: $*" >&2
+        if [[ "$ERROR_REPORTING" == 1 ]]; then
+            message ERROR "$SCRIPT_NAME: $*" >&5
+        fi
     else
         printf '%s: %s: %s\n' "$(color_status FAILED 4)" "$SCRIPT_NAME" "$*" >&4
     fi
@@ -157,6 +173,11 @@ stage_finish() {
     stop_heartbeat
     stage_line "$CURRENT_STAGE" "${1:-OK}" "$((SECONDS - STAGE_STARTED))"
     log "Stage: $CURRENT_STAGE ${1:-OK} ($((SECONDS - STAGE_STARTED))s)"
+    if [[ "${1:-OK}" == OK && "$ERROR_REPORTING" == 1 ]]; then
+        # Errors handled by a successful stage (for example, environment repair)
+        # remain in the transcript, but do not become a later failure's summary.
+        cat <&6 >/dev/null
+    fi
     CURRENT_STAGE=""
 }
 
@@ -197,13 +218,12 @@ report_failure() {
     local failed_stage=${FAILED_STAGE:-${CURRENT_STAGE:-installation}}
     stage_finish FAILED
     printf 'Issue: %s failed (exit %s).\n' "$failed_stage" "$status" >&4
+    if [[ "$ERROR_REPORTING" == 1 ]]; then
+        cat <&6 >&4
+    fi
     printf '\nResult: %s\n' "$(color_status FAILED)" >&3
     if [[ -n "$INSTALL_LOG" ]]; then
         printf 'Diagnostics: %s\n' "$INSTALL_LOG" >&4
-        # Retain the full transcript; surface recent context without rerunning apt/pip.
-        if [[ "$CONFIGURATION_VALIDATION_FAILED" == 0 ]]; then
-            tail -n 30 "$INSTALL_LOG" >&4
-        fi
     fi
 }
 
@@ -595,12 +615,12 @@ check_existing_configurations() {
         log "PLAN validate all existing root/user job YAML with the candidate schema before pausing schedules or activation"
         return
     fi
-    if details=$(python3 "$SOURCE_DIR/scripts/install_maintenance.py" \
+    # This operation already presents its complete structured validation report.
+    if details=$(VAULTKEEP_INSTALL_ERROR_FD= python3 "$SOURCE_DIR/scripts/install_maintenance.py" \
         check-configurations "$python" 2>&1); then
         [[ -z "$details" ]] || printf '%s\n' "$details"
         return
     fi
-    CONFIGURATION_VALIDATION_FAILED=1
     FAILED_STAGE=$CURRENT_STAGE
     stage_finish FAILED
     printf '%s\n' "$details"
@@ -1086,7 +1106,7 @@ main() {
         trap 'exit 130' INT
         trap 'exit 143' TERM
         trap 'exit 129' HUP
-        exec >"$INSTALL_LOG" 2>&1
+        capture_diagnostics
     fi
     case "$MODE" in
         install|update) install_or_update ;;

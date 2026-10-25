@@ -17,6 +17,7 @@ from pathlib import Path
 
 from install_support import (
     Layout,
+    capture_command,
     execute,
     fail,
     manager_command,
@@ -237,9 +238,7 @@ def account_operation(spec: dict, python: str, action: str, payload: dict) -> di
             *[f"{key}={value}" for key, value in spec["env"].items()],
             *argv,
         ]
-    result = subprocess.run(
-        argv, input=json.dumps(payload), capture_output=True, text=True, timeout=120, check=False
-    )
+    result = capture_command(argv, input=json.dumps(payload), timeout=120)
     if result.returncode:
         fail(f"{spec['account'] or 'root'}: job {action} failed\n{result.stderr.strip()}")
     return json.loads(result.stdout) if action in ("plan", "check-configurations") else None

@@ -105,8 +105,10 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
 
 The checkout can be removed after installation; updates require another trusted
 checkout. Custom paths, installed files, and recovery are described in the
-[maintenance reference](docs/maintenance.md). Failed stages report a private
-`Diagnostics:` transcript; retain it for diagnosis. Add `--no-color` if needed.
+[maintenance reference](docs/maintenance.md). Failed stages show relevant installer
+errors and report a private `Diagnostics:` transcript containing full tool output;
+retain it for diagnosis. Raw dependency output stays in that log. Add `--no-color`
+if needed.
 
 <a id="usage"></a>
 <a id="choose-a-mode-specific-workflow"></a>

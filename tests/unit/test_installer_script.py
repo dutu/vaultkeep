@@ -422,7 +422,9 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str], vali
     result = run_installer(host, "install")
     assert result.stdout.startswith("Vaultkeep — Installation\n\n")
     assert "Result: INSTALLED" in result.stdout
+    assert result.stderr == ""
     assert "INFO:" not in result.stdout and "Looking in links" not in result.stdout
+    assert "Successfully installed" not in result.stdout
     assert result.stdout.index("Installation plan") < result.stdout.index("System dependencies")
     assert result.stdout.index("Python environment") < result.stdout.index("Application")
     assert result.stdout.index("Release activation") < result.stdout.index("Result: INSTALLED")
@@ -1307,6 +1309,75 @@ def test_job_runtime_validation_failure_restores_units_then_resumes_original_sch
     assert settings["launcher_states"]["vaultkeep@app.timer"] == "active"
 
 
+def test_disabled_monitor_failure_reports_only_relevant_errors_and_restores_schedule(
+    installed, tmp_path, valid_config, monkeypatch
+):
+    managed_timer(installed, valid_config, monkeypatch)
+    source = candidate_source(tmp_path, "install")
+    helper = source / "scripts/install_maintenance.py"
+    detail = (
+        "ERROR: installer jobs: active monitor configuration is disabled: "
+        "vaultkeep-trigger@Bisq_sd0-srv_backups-633490673caaf382.service"
+    )
+    # Reproduce the account subprocess failure without accessing real user managers.
+    child = f"print('validation stdout detail'); print({detail!r}, file=sys.stderr); sys.exit(1)"
+    operation = "    result = capture_command("
+    assert helper.read_text().count(operation) == 1
+    helper.write_text(
+        helper.read_text().replace(
+            operation,
+            "    if action == 'validate':\n"
+            "        spec = {**spec, 'account': 'bisquser'}\n"
+            f"        argv = [sys.executable, '-c', 'import sys; ' + {child!r}]\n" + operation,
+        )
+    )
+    before = snapshot(installed)
+
+    result = run_installer(installed, "install", check=False, source=source)
+
+    assert result.returncode == 1
+    assert "Issue: Refresh managed jobs failed (exit 1)." in result.stderr
+    assert result.stderr.count("bisquser: job validate failed") == 1
+    assert result.stderr.count(detail) == 1
+    assert "restoring deployment and job units" in result.stderr
+    transcript = diagnostic_log(result).read_text()
+    for raw in ("Looking in links", "Successfully installed", "validation stdout detail"):
+        assert raw in transcript
+        assert raw not in result.stdout + result.stderr
+    assert detail in transcript and "Exit code: 1" in transcript
+    assert "Stage: Python environment OK" in transcript
+    assert "Stage: Refresh managed jobs FAILED" in transcript
+    assert snapshot(installed) == before
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    assert settings["launcher_states"]["vaultkeep@app.timer"] == "active"
+
+
+def test_failed_pip_install_keeps_complete_diagnostics_and_exit_code(host, tmp_path):
+    source = candidate_source(tmp_path, "install")
+    # Force a real, offline pip failure after virtual-environment creation.
+    (source / "requirements.lock").write_text("vaultkeep-nonexistent-test-package==0\n")
+    host["PIP_FIND_LINKS"] = str(tmp_path / "empty-wheelhouse")
+    Path(host["PIP_FIND_LINKS"]).mkdir()
+
+    result = run_installer(host, "install", check=False, source=source)
+
+    assert result.returncode == 1
+    assert "Issue: Python environment failed (exit 1)." in result.stderr
+    transcript = diagnostic_log(result).read_text()
+    for raw in (
+        "Looking in links",
+        "Could not find a version that satisfies the requirement",
+        "No matching distribution found for vaultkeep-nonexistent-test-package==0",
+    ):
+        assert raw in transcript
+        assert raw not in result.stdout + result.stderr
+    assert "Stage: Python environment FAILED" in transcript
+    prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
+    assert not list((prefix / ".staging").iterdir())
+    assert not list((prefix / "releases").iterdir())
+    assert not (prefix / "install-manifest.json").exists()
+
+
 def test_resume_failure_keeps_committed_job_updates_and_resume_journal(
     installed, valid_config, monkeypatch
 ):
@@ -1474,7 +1545,7 @@ def progress_script(log_path: Path, duration: float) -> str:
         + f"""
 parse_args "$@"
 INSTALL_LOG={shlex.quote(str(log_path))}
-exec >"$INSTALL_LOG" 2>&1
+capture_diagnostics
 trap 'report_failure $?' EXIT
 stage_start 'Python environment'
 sleep {duration}
@@ -1571,6 +1642,32 @@ def test_warning_during_terminal_stage_keeps_stage_history_readable(tmp_path):
     assert "\r\033[2KWARNING: installed environment requires repair\r\n" in output
     assert output.count("OK (") == 2
     assert output.count("Result: INSTALLED") == 1
+    assert (
+        "WARNING: installed environment requires repair" in (tmp_path / "progress.log").read_text()
+    )
+
+
+def test_later_failure_does_not_repeat_errors_handled_by_successful_stage(tmp_path):
+    transcript = tmp_path / "progress.log"
+    script = (
+        progress_script(transcript, 0)
+        .replace("sleep 0", 'error "old environment needs repair"\nsleep 0')
+        .replace("stage_start 'Application'\nstage_finish", "stage_start 'Application'\nexit 19")
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", script, "install.sh", "install"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 19
+    assert "Issue: Application failed (exit 19)." in result.stderr
+    assert f"Diagnostics: {transcript}" in result.stderr
+    assert "old environment needs repair" not in result.stdout + result.stderr
+    assert "old environment needs repair" in transcript.read_text()
 
 
 def test_progress_helper_does_not_keep_installer_lock_or_outlive_parent(tmp_path):
@@ -1626,7 +1723,7 @@ def test_7zip_failure_keeps_stdout_and_stderr_diagnostics(host, tmp_path):
         + f"""
 INSTALL_LOG={shlex.quote(str(transcript))}
 VK_TESTING=0
-exec >"$INSTALL_LOG" 2>&1
+capture_diagnostics
 trap 'report_failure $?' EXIT
 stage_start '7zip compatibility'
 check_7z_compatibility
@@ -1643,7 +1740,9 @@ stage_finish
     )
     assert result.returncode == 1
     assert "7zip compatibility" in result.stdout and "Result: FAILED" in result.stdout
-    assert "archive check failed" in result.stderr and "tool detail" in result.stderr
+    assert "Issue: 7zip compatibility failed (exit 1)." in result.stderr
+    assert f"Diagnostics: {transcript}" in result.stderr
+    assert "archive check failed" not in result.stderr and "tool detail" not in result.stderr
     assert (
         "archive check failed" in transcript.read_text() and "tool detail" in transcript.read_text()
     )

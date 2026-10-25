@@ -56,6 +56,64 @@ def test_multiline_helper_error_labels_every_line(monkeypatch):
     )
 
 
+def test_structured_error_is_also_written_to_installer_summary(monkeypatch, tmp_path, capsys):
+    summary = tmp_path / "summary"
+    with summary.open("w") as output:
+        monkeypatch.setenv("VAULTKEEP_INSTALL_ERROR_FD", str(output.fileno()))
+        support.report_error("job validate failed\nactive monitor configuration is disabled")
+
+    expected = (
+        "ERROR: installer: job validate failed\n"
+        "ERROR: installer: active monitor configuration is disabled\n"
+    )
+    assert capsys.readouterr().err == expected
+    assert summary.read_text() == expected
+
+
+@pytest.mark.parametrize("status", [0, 7])
+def test_captured_command_streams_and_exit_code_are_logged(monkeypatch, tmp_path, capsys, status):
+    transcript = tmp_path / "diagnostics.log"
+    monkeypatch.setenv("VAULTKEEP_INSTALL_LOG", str(transcript))
+    monkeypatch.setattr(
+        support.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, status, "stdout details\n", "stderr details\n"
+        ),
+    )
+    if status:
+        with pytest.raises(ValueError, match=r"command failed \(7\)"):
+            support.execute(["tool", "--check"])
+    else:
+        assert support.execute(["tool", "--check"]) == "stdout details\n"
+
+    assert capsys.readouterr() == ("", "")
+    log = transcript.read_text()
+    assert f"Command: tool --check\nExit code: {status}" in log
+    assert "stdout:\nstdout details\n" in log
+    assert "stderr:\nstderr details\n" in log
+
+
+def test_command_timeout_preserves_partial_output_and_original_exception(monkeypatch, tmp_path):
+    transcript = tmp_path / "diagnostics.log"
+    monkeypatch.setenv("VAULTKEEP_INSTALL_LOG", str(transcript))
+    original = subprocess.TimeoutExpired(
+        ["tool"], 20, output=b"partial stdout\n", stderr=b"partial stderr\n"
+    )
+
+    def run(argv, **kwargs):
+        raise original
+
+    monkeypatch.setattr(support.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        support.execute(["tool"])
+
+    assert error.value is original
+    log = transcript.read_text()
+    assert "Exit code: timeout (20s)" in log
+    assert "partial stdout" in log and "partial stderr" in log
+
+
 @pytest.mark.parametrize(
     "stdout,stderr,expected",
     [

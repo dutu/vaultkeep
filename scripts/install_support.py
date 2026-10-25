@@ -37,6 +37,52 @@ def report_error(message: str) -> None:
         prefix = "\033[1;31mERROR:\033[0m"
     for line in message.splitlines() or [""]:
         print(f"{prefix} installer: {line}", file=sys.stderr)
+    descriptor = os.environ.get("VAULTKEEP_INSTALL_ERROR_FD")
+    if descriptor:
+        try:
+            with os.fdopen(os.dup(int(descriptor)), "w") as output:
+                for line in message.splitlines() or [""]:
+                    print(f"ERROR: installer: {line}", file=output)
+        except (OSError, ValueError):
+            # Reporting must not replace the operation's original failure.
+            pass
+
+
+def log_command_result(
+    argv: list[str], result: subprocess.CompletedProcess[str] | subprocess.TimeoutExpired
+) -> None:
+    """Retain captured tool output without adding it to the error summary."""
+    transcript = os.environ.get("VAULTKEEP_INSTALL_LOG")
+    if not transcript:
+        return
+    try:
+        with open(transcript, "a") as output:
+            status = (
+                result.returncode
+                if isinstance(result, subprocess.CompletedProcess)
+                else f"timeout ({result.timeout}s)"
+            )
+            output.write(f"Command: {shlex.join(argv)}\nExit code: {status}\n")
+            for label, content in (("stdout", result.stdout), ("stderr", result.stderr)):
+                if isinstance(content, bytes):
+                    content = content.decode(errors="replace")
+                output.write(f"{label}:\n{content or ''}\n")
+    except OSError:
+        pass
+
+
+def capture_command(
+    argv: list[str], *, timeout: int, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            argv, input=input, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired as error:
+        log_command_result(argv, error)
+        raise
+    log_command_result(argv, result)
+    return result
 
 
 def path_env(name: str, default: str) -> Path:
@@ -362,7 +408,7 @@ def write_manifest(
 
 
 def execute(argv: list[str], *, empty_status: int | None = None) -> str:
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    result = capture_command(argv, timeout=20)
     if result.returncode and not (
         result.returncode == empty_status
         and not result.stdout.strip()
@@ -470,7 +516,7 @@ def manager_command(account: str, uid: int) -> list[str]:
 
 
 def properties(command: list[str], unit: str) -> dict[str, str]:
-    result = subprocess.run(
+    result = capture_command(
         [
             *command,
             "show",
@@ -479,10 +525,7 @@ def properties(command: list[str], unit: str) -> dict[str, str]:
             "--all",
             "--property=LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,UnitFileState,Type,Restart,TimeoutStartUSec,UMask,PartOf,BindsTo",
         ],
-        capture_output=True,
-        text=True,
         timeout=20,
-        check=False,
     )
     data = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     required = {"LoadState", "ActiveState", "SubState"}

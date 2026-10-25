@@ -301,3 +301,27 @@ def test_job_restoration_does_not_need_a_working_candidate_interpreter(helper, t
         },
     )
     assert path.read_text() == "old contents\n"
+
+
+@pytest.mark.parametrize("status", [0, 7])
+def test_account_operation_keeps_both_captured_streams_in_diagnostics(
+    helper, monkeypatch, tmp_path, status
+):
+    transcript = tmp_path / "diagnostics.log"
+    monkeypatch.setenv("VAULTKEEP_INSTALL_LOG", str(transcript))
+    monkeypatch.setattr(
+        helper.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, status, "account stdout\n", "account stderr\n"
+        ),
+    )
+    if status:
+        with pytest.raises(ValueError, match="root: job validate failed\naccount stderr"):
+            helper.account_operation({"account": None}, "python", "validate", {})
+    else:
+        assert helper.account_operation({"account": None}, "python", "validate", {}) is None
+
+    log = transcript.read_text()
+    assert f"Exit code: {status}" in log
+    assert "account stdout" in log and "account stderr" in log
