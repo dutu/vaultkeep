@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from vaultkeep import cli
 from vaultkeep.backup import workflow
 from vaultkeep.cli.commands import main
 from vaultkeep.config import JobConfig
@@ -17,6 +19,48 @@ from vaultkeep.errors import DestinationError
 from vaultkeep.progress import VerificationProgress
 
 EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-schedule.yaml"
+
+
+@pytest.mark.parametrize("entrypoint", ["console", "module"])
+def test_ctrl_c_exits_without_traceback(entrypoint: str) -> None:
+    script = """
+import runpy
+import signal
+import sys
+from vaultkeep.cli import main, commands
+
+def interrupt(*args, **kwargs):
+    signal.raise_signal(signal.SIGINT)
+
+commands.run_backup = interrupt
+sys.argv = ["vaultkeep", "--config", "app.yaml", "run"]
+"""
+    script += (
+        'runpy.run_module("vaultkeep", run_name="__main__")'
+        if entrypoint == "module"
+        else "raise SystemExit(main())"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+    )
+
+    assert result.returncode == 130
+    assert result.stdout == ""
+    assert result.stderr.endswith("Interrupted.\n")
+    assert "Traceback" not in result.stderr
+    assert "KeyboardInterrupt" not in result.stderr
+
+
+def test_ctrl_c_during_startup_exits_without_traceback(monkeypatch, capsys) -> None:
+    def interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "create_parser", interrupt)
+
+    assert cli.main(["--version"]) == 130
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Interrupted.\n"
 
 
 def test_version_does_not_require_a_command(capsys: Any) -> None:

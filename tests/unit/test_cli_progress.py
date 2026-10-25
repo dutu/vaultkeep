@@ -11,6 +11,7 @@ import pytest
 
 from vaultkeep.backup.workflow import CommandResult
 from vaultkeep.cli import commands
+from vaultkeep.cli import main as cli_main
 from vaultkeep.cli import progress as progress_module
 from vaultkeep.errors import DestinationError
 
@@ -177,8 +178,8 @@ def test_failed_or_interrupted_command_stops_progress_before_error_handling(
     monkeypatch.setattr(commands, handler, execute)
 
     if isinstance(error, KeyboardInterrupt):
-        with pytest.raises(KeyboardInterrupt):
-            commands.main(["--config", "app.yaml", command])
+        assert cli_main(["--config", "app.yaml", command]) == 130
+        assert output.getvalue().endswith("Interrupted.\n")
     else:
         assert commands.main(["--config", "app.yaml", command]) == 5
         assert output.getvalue().endswith("unavailable\n")

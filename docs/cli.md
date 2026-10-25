@@ -61,6 +61,10 @@ Use `--user` for per-user job configuration, per-user state, and systemd user ti
 
 ## Terminal output
 
+Pressing Ctrl+C interrupts an operation without a Python traceback. The CLI reports
+the interruption on stderr and returns exit code 130.
+`trigger monitor` keeps its graceful signal handling described below.
+
 Human-readable reports use short sections and aligned fields. Validation puts the
 overall result first and separates configuration checks, backup history, and enabled
 automation. For example:

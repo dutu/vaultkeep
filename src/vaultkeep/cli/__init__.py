@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 
 from vaultkeep.cli.parser import create_parser
@@ -12,6 +13,15 @@ __all__ = ["main"]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the CLI, reporting Ctrl+C without a traceback after cleanup."""
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
+
+
+def _main(argv: Sequence[str] | None) -> int:
     """Take the deployment lock before importing the backup/monitor workflow."""
     namespace = create_parser().parse_args(argv)
     guarded = not namespace.show_version and requires_deployment_lock(
