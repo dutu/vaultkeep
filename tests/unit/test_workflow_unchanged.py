@@ -147,7 +147,15 @@ def test_corrupt_latest_archive_creates_replacement_and_preserves_damage(
         original_hook(phase, *args, **kwargs)
 
     monkeypatch.setattr(workflow, "_run_configured_hook", hook)
-    result = _run(job)
+    original_open = Path.open
+
+    def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        assert path not in archives[:-1], "Replacement must not read older archive contents"
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", guarded_open)
+        result = _run(job)
 
     assert result.result == "created"
     replacement = result.files[0].archive_path if result.files else result.archive_path
@@ -274,13 +282,18 @@ def test_damage_persistence_failure_preserves_backups_and_retries(
     assert _run(job).result == "unchanged"
 
 
-def test_sources_matching_only_an_older_backup_create_a_new_archive(
-    history: tuple[Path, list[Path]], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("older_corrupted", [False, True])
+def test_creation_verifies_new_archive_without_reading_existing_archive_contents(
+    history: tuple[Path, list[Path]], monkeypatch: pytest.MonkeyPatch, older_corrupted: bool
 ) -> None:
     job, archives = history
+    if older_corrupted:
+        archives[0].write_bytes(b"corrupted older archive")
+    # Matching an older backup still requires creation when the latest differs.
     (job.parent / "source" / "data").write_text("0")
     original_build = workflow.build_archive
     original_calculate = checksums.calculate_archive_sha256
+    original_open = Path.open
     hashed = []
 
     def build(backup: ArchiveBuildRequest, **kwargs: Any) -> ArchiveArtifact:
@@ -291,10 +304,72 @@ def test_sources_matching_only_an_older_backup_create_a_new_archive(
         hashed.append(path)
         return original_calculate(path, **kwargs)
 
+    def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        assert path not in archives, "Creation and retention must not read existing archives"
+        return original_open(path, *args, **kwargs)
+
     monkeypatch.setattr(workflow, "build_archive", build)
     monkeypatch.setattr(checksums, "calculate_archive_sha256", calculate)
+    monkeypatch.setattr(Path, "open", guarded_open)
 
-    assert _run(job).result == "created"
-    # Finalized-backup discovery still verifies history before retention.
-    assert set(archives).issubset(hashed)
-    assert all(hashed.count(archive) == 1 for archive in archives)
+    result = _run(job)
+
+    assert result.result == "created"
+    created = result.files[0].archive_path if result.files else result.archive_path
+    assert created is not None
+    assert created in hashed
+    assert all(path not in archives for path in hashed)
+
+
+def test_run_retention_prunes_older_archives_without_reading_contents(
+    history: tuple[Path, list[Path]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, archives = history
+    document = json.loads(job.read_text())
+    document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
+    job.write_text(json.dumps(document))
+    (job.parent / "source" / "data").write_text("changed source")
+    original_open = Path.open
+
+    def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        assert path not in archives, "Retention must not open older archive contents"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+
+    result = _run(job)
+
+    assert result.result == "created"
+    assert result.removed == 3
+    assert not any(archive.exists() for archive in archives)
+    created = result.files[0].archive_path if result.files else result.archive_path
+    assert created is not None and created.is_file()
+
+
+def test_corrupt_finalized_archive_fails_before_retention(
+    history: tuple[Path, list[Path]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, archives = history
+    document = json.loads(job.read_text())
+    document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
+    job.write_text(json.dumps(document))
+    (job.parent / "source" / "data").write_text("changed source")
+    original_commit = workflow.commit_archive_artifact
+
+    def corrupt_after_commit(paths: Any, *args: Any, **kwargs: Any) -> Any:
+        manifest = original_commit(paths, *args, **kwargs)
+        (paths.final_directory / paths.archive_path.name).write_bytes(b"corrupt finalized archive")
+        return manifest
+
+    monkeypatch.setattr(workflow, "commit_archive_artifact", corrupt_after_commit)
+
+    if document["backup_mode"] == "combined":
+        with pytest.raises(ArchiveVerificationError, match="checksum does not match"):
+            _run(job)
+    else:
+        assert _run(job).result == "failed"
+    assert all(archive.is_file() for archive in archives)
+    (state_path,) = (job.parent / "state").rglob("state.json")
+    state = LocalState.model_validate_json(state_path.read_bytes())
+    assert state.last_run.result == "failed"
+    assert state.last_successful_backup.backup_path == str(archives[-1])

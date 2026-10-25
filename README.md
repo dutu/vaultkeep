@@ -229,7 +229,8 @@ checksum; it does not read older archive contents for that decision. A checksum
 mismatch marks that backup as damaged and creates a fresh verified backup.
 `list` labels marked backups `DAMAGED`; retention preserves them without counting
 them toward healthy backup retention. After creating a backup, retention checks
-still verify checksums across the unmarked matching history.
+use backup metadata and directory layout; `run` checks only the new archive's
+checksum after finalization. Use `verify` to check older archive contents.
 `verify` continues to report preserved damaged backups as failures. Inspect their
 `list` warnings before manually moving or removing the affected directories; see
 [damage recovery details](docs/cli.md#run-a-job-manually).

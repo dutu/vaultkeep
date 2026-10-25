@@ -1023,7 +1023,7 @@ The `.vaultkeep-damaged` JSON marker records the detection timestamp and reason,
 
 An unresolved damage marker forces creation even when older healthy sources match. After a new backup has been committed and its checksum verified, the workflow atomically records its ID in each unresolved marker before applying retention. This records completed replacement independently of second-resolution manifest timestamp ties and local-state recovery. A failed replacement leaves the marker unresolved for retry. Marker-write failures fail the run and preserve any committed replacement. A completed marker continues to protect the damaged backup after its replacement eventually ages out of retention.
 
-Full-history checksum verification of unmarked backups remains part of explicit verification and pruning, and of the finalized-backup discovery used for automatic retention after creation.
+Full-history checksum verification of unmarked backups remains part of explicit verification and pruning. During `run`, both initial discovery and the finalized-backup discovery used for automatic retention validate manifests, checksum-sidecar metadata, and directory layout without reading historical archive contents. After finalization, the workflow verifies only the new archive's checksum before saving state, recording completed replacements, or applying retention. Older unmarked content corruption does not block automatic retention; metadata errors and unexpected artifacts continue to block pruning.
 
 ## 13.3 Missing or unusable state recovery
 

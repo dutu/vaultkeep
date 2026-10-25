@@ -249,9 +249,14 @@ are excluded from unchanged checks and retention counts, and are never
 automatically deleted. Failure to persist a marker or replacement record fails
 the run; a replacement already committed remains on disk.
 
-Use `verify` to check the entire history. After creating a backup, the
-finalized-backup and retention checks still verify all unmarked matching archive
-checksums.
+After creating a backup, `run` validates the destination metadata and verifies
+only the newly finalized archive's checksum before saving state and applying
+retention. Automatic retention checks manifests, checksum-sidecar metadata, and
+directory layout without reading older archive contents. Content damage in older
+unmarked archives is detected by full-history checks; automatic retention follows
+the configured policy without checking their content integrity. Use `verify` to
+check the entire history; explicit `prune` also retains its full checksum checks
+before deletion.
 
 Temporary backups use `~$.partial-vaultkeep-<job>-<backup-id>` directory names.
 On destinations managed by synchronization software, verify that temporary

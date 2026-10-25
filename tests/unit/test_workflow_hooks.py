@@ -151,6 +151,7 @@ def _patch_creation_workflow(
         workflow, "calculate_config_fingerprint", lambda *args, **kwargs: "sha256:" + "b" * 64
     )
     monkeypatch.setattr(workflow, "discover_backups", lambda *args, **kwargs: next(discovered))
+    monkeypatch.setattr(workflow, "verify_checksum_sidecar", lambda *args, **kwargs: "0" * 64)
     monkeypatch.setattr(
         workflow,
         "reconcile_local_state",

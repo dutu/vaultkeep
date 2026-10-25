@@ -777,9 +777,13 @@ def _run_single_backup(
         )
         staging_path = None
         report("Checking finalized backup")
-        committed = discover_backups(config, runtime_params=parameters)
+        committed = discover_backups(config, runtime_params=parameters, verify_archives=False)
         record = next(
             record for record in committed.state_records if record.backup_id == manifest.backup_id
+        )
+        verify_checksum_sidecar(
+            allocated.final_directory / allocated.archive_path.name,
+            allocated.final_directory / allocated.checksum_path.name,
         )
         from vaultkeep.state.atomic import write_local_state
 
