@@ -196,7 +196,8 @@ def test_verify_cli_passes_mode_and_reports_verified_archives(
     assert main([*(["--user"] if user_mode else []), "--config", str(local_job), "verify"]) == 0
     captured = capsys.readouterr()
     assert captured.out == "verify: verified\n"
-    assert captured.err == f"Verified: {archive}\n"
+    assert captured.err.startswith(f"Verified: {archive}\n")
+    assert captured.err.endswith("SUCCESS: Verification complete\n")
 
 
 def test_runtime_validation_checks_marker_before_writing_probe(

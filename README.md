@@ -220,6 +220,9 @@ if needed.
 A created backup directory contains `<base>.tar.zst` (or `.tar.7z`), its `.sha256`,
 and `<base>.json`. Terminal runs show the new archive path. `list` inspects metadata;
 `verify` checks archive contents and checksums without requiring original sources.
+`run`, `list`, and `verify` show an in-place spinner with elapsed time on interactive
+terminals. Redirected stderr uses plain stage messages and a heartbeat every 10 seconds
+during long stages. See [progress display](docs/cli.md#progress-display).
 <a id="validate-a-job-configuration"></a>
 Full validation writes/renames/removes a temporary destination probe; schema-only
 validation skips runtime checks and does not establish readiness.

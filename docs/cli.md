@@ -187,18 +187,31 @@ Run validation as the account that runs the backup, using `--user` for user-mode
 Successful validation confirms access at that moment; permissions and mount conditions
 can change afterward.
 
+## Progress display
+
+`run`, `list`, and `verify` report progress on stderr. On an interactive terminal,
+they show an animated spinner, elapsed time, and the current stage on one line.
+Completion messages remain as permanent lines. The status fits the terminal width
+and uses an ASCII spinner when the terminal encoding cannot display Unicode.
+Elapsed time is for the whole operation; stages do not imply a completion percentage.
+
+When stderr is redirected, piped, or captured, or `TERM` is unset, empty, or `dumb`,
+progress uses plain timestamped lines with immediate stage changes and a
+`still running` heartbeat every 10 seconds during long stages. This also applies
+to systemd, cron, and SSH sessions without a terminal; SSH sessions with a suitable
+terminal use the spinner. `--no-color` and `NO_COLOR` disable colors but allow
+animation on suitable terminals. Final command result markers remain on stdout.
+
 ## Run a job manually
 
 ```text
 vaultkeep [--user] --config <job.yaml> run
 ```
 
-When stderr is a terminal, `run` displays the current stage and elapsed time,
-including source hashing, compression, verification, and retention. Long stages
-repeat every 10 seconds with a `still running` message. Elapsed time is for the
-whole run; these updates indicate the active stage, not a completion percentage.
-Terminal updates are omitted when stderr is redirected or captured. Every run,
-including scheduled execution, still publishes progress for `vaultkeep status`. The final result remains on stdout as `run: created` or `run: unchanged`.
+`run` reports source hashing, compression, verification, and retention stages using
+the shared [progress display](#progress-display). Every run, including scheduled
+execution, also publishes progress for `vaultkeep status`. The final result remains
+on stdout as `run: created`, `run: unchanged`, or `run: failed`.
 After `run: created`, the terminal also shows the archive path, archive size,
 total run duration, and number of backups removed by retention. This summary
 uses stderr and is omitted when stderr is redirected or captured.
@@ -233,10 +246,8 @@ not a per-backup inventory or malformed-entry report. That marker alone does not
 establish that any archive exists or that all matching entries are valid. Use `verify`
 for archive corruption/malformed-entry diagnosis and inspect the destination for paths.
 
-When stderr is a terminal, `list` displays its current stage with elapsed time.
-Long stages repeat every 10 seconds with a `still running` message. Progress is
-omitted when stderr is redirected or captured. The final result remains on stdout
-as `list: listed`.
+`list` uses the shared [progress display](#progress-display) for its current stage
+and elapsed time. The final result remains on stdout as `list: listed`.
 
 ## Verify job backups
 
@@ -262,11 +273,9 @@ Each verified archive is reported on stderr. Verification continues after indivi
 backup failures and reports their paths and reasons; any failure produces a nonzero
 exit status.
 
-When stderr is a terminal, `verify` displays configuration validation, destination
-checks, and backup verification stages with elapsed time. Long stages repeat every
-10 seconds with a `still running` message, as with `run`. Progress is omitted when
-stderr is redirected or captured. The final result remains on stdout as
-`verify: verified`.
+`verify` uses the shared [progress display](#progress-display) for configuration
+validation, destination checks, and archive verification. Verified archive messages
+remain as permanent lines. The final result remains on stdout as `verify: verified`.
 
 ## Prune job backups
 

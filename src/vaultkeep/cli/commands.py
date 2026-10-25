@@ -19,7 +19,7 @@ from vaultkeep.backup.workflow import (
 )
 from vaultkeep.cli.output import Console, command_logging
 from vaultkeep.cli.parser import create_parser
-from vaultkeep.cli.progress import terminal_progress
+from vaultkeep.cli.progress import CliProgress
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import (
     ConfigurationError,
@@ -106,28 +106,36 @@ def _dispatch(
             )
         elif namespace.command == "run":
             started = monotonic()
-            with terminal_progress(no_color=namespace.no_color) as progress:
+            with CliProgress() as progress:
                 result = run_backup(
                     namespace.config,
                     runtime_params=runtime_params,
                     user_mode=namespace.user_mode,
-                    progress=progress,
+                    progress=progress.update,
                 )
+                if result.result == "failed":
+                    progress.fail("Backup failed")
+                else:
+                    progress.succeed(
+                        "Backup unchanged" if result.result == "unchanged" else "Backup complete"
+                    )
             elapsed = monotonic() - started
         elif namespace.command == "list":
-            with terminal_progress(no_color=namespace.no_color) as progress:
+            with CliProgress() as progress:
                 result, _ = list_backups(
-                    namespace.config, runtime_params=runtime_params, progress=progress
+                    namespace.config, runtime_params=runtime_params, progress=progress.update
                 )
+                progress.succeed("Backup listing complete")
         elif namespace.command == "verify":
-            with terminal_progress(no_color=namespace.no_color) as progress:
+            with CliProgress() as verification_progress:
                 result = verify_backups(
                     namespace.config,
                     runtime_params=runtime_params,
                     user_mode=namespace.user_mode,
-                    progress=progress,
-                    on_verified=lambda path: output.print(f"Verified: {path}", file=sys.stderr),
+                    progress=verification_progress.update,
+                    on_verified=lambda path: verification_progress.message(f"Verified: {path}"),
                 )
+                verification_progress.succeed("Verification complete")
         elif namespace.command == "prune":
             result = prune_backups(
                 namespace.config, dry_run=namespace.dry_run, runtime_params=runtime_params
