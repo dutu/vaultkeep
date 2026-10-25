@@ -7,6 +7,7 @@ import stat
 import string
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from os import stat_result
 from pathlib import Path
 
 from vaultkeep.archive.checksums import read_checksum_sidecar, verify_checksum_sidecar
@@ -40,6 +41,7 @@ class DiscoveredBackup:
     manifest_path: Path
     base_name: str
     manifest: BackupManifest
+    archive_size: int
 
     @property
     def state_record(self) -> BackupStateRecord:
@@ -73,15 +75,28 @@ def discover_backups(
     *,
     runtime_params: Mapping[str, str] | None = None,
     verify_archives: bool = True,
+    metadata_only: bool = False,
     on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> DiscoveryResult:
-    """Validate matching backups, reading archive contents unless explicitly disabled."""
+    """Discover matching backups; metadata_only skips all checksum/content reads.
+
+    Inventory includes both supported formats, using each stored manifest's facts.
+    Other callers retain strict format and checksum validation.
+    """
     root = Path(config.destination.root)
-    base_matcher = _base_name_matcher(
-        config.destination.name_template,
-        config.job.id,
-        config.archive.format,
-        runtime_params=runtime_params,
+    formats = ("tar.zst", "tar.7z") if metadata_only else (config.archive.format,)
+    base_matcher = re.compile(
+        "(?:"
+        + "|".join(
+            _base_name_matcher(
+                config.destination.name_template,
+                config.job.id,
+                archive_format,
+                runtime_params=runtime_params,
+            ).pattern
+            for archive_format in formats
+        )
+        + ")"
     )
     matcher = re.compile(rf"(?:{base_matcher.pattern})(?:-(?:{_BACKUP_ID}|{_COLLISION_NUMBER}))?")
     try:
@@ -140,6 +155,8 @@ def discover_backups(
                     base_matcher,
                     config,
                     verify_archives=verify_archives,
+                    metadata_only=metadata_only,
+                    runtime_params=runtime_params,
                     on_progress=report if on_progress is not None else None,
                 )
             )
@@ -157,6 +174,8 @@ def _validate_backup_directory(
     config: JobConfig,
     *,
     verify_archives: bool,
+    metadata_only: bool = False,
+    runtime_params: Mapping[str, str] | None = None,
     on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> DiscoveredBackup:
     try:
@@ -175,6 +194,8 @@ def _validate_backup_directory(
         raise DestinationDiscoveryError(
             f"Cannot inspect backup directory {path}: {error}"
         ) from error
+    if not manifests:
+        raise DestinationDiscoveryError(f"Missing manifest: {path}")
     if len(manifests) != 1:
         raise DestinationDiscoveryError(
             f"Backup directory must contain exactly one manifest: {path}"
@@ -187,6 +208,17 @@ def _validate_backup_directory(
             f"Manifest name does not match destination template: {path}"
         )
     manifest = load_manifest(manifest_path)
+    if metadata_only:
+        stored_matcher = _base_name_matcher(
+            config.destination.name_template,
+            config.job.id,
+            manifest.archive_format,
+            runtime_params=runtime_params,
+        )
+        if stored_matcher.fullmatch(base_name) is None:
+            raise DestinationDiscoveryError(
+                f"Manifest name does not match stored archive format: {path}"
+            )
     suffix = path.name.removeprefix(base_name)
     if re.fullmatch(rf"-{_BACKUP_ID}", suffix):
         valid_name = suffix == f"-{manifest.backup_id}"
@@ -194,7 +226,7 @@ def _validate_backup_directory(
         valid_name = not suffix or re.fullmatch(rf"-{_COLLISION_NUMBER}", suffix) is not None
     if not path.name.startswith(base_name) or not valid_name or manifest.job != config.job.id:
         raise DestinationDiscoveryError(f"Manifest identity does not match directory name: {path}")
-    if manifest.archive_format != config.archive.format:
+    if not metadata_only and manifest.archive_format != config.archive.format:
         raise DestinationDiscoveryError(
             f"Manifest archive format does not match job configuration: {path}"
         )
@@ -205,10 +237,21 @@ def _validate_backup_directory(
         )
     archive_path = path / expected_archive
     checksum_path = path / f"{expected_archive}.sha256"
-    _require_regular_file(archive_path)
+    archive_status = _require_regular_file(archive_path)
     _require_regular_file(checksum_path)
     _require_regular_file(manifest_path)
     _require_exact_artifacts(path, {archive_path.name, checksum_path.name, manifest_path.name})
+    backup = DiscoveredBackup(
+        path,
+        archive_path,
+        checksum_path,
+        manifest_path,
+        base_name,
+        manifest,
+        archive_status.st_size,
+    )
+    if metadata_only:
+        return backup
     report_progress(
         on_progress,
         VerificationProgress(
@@ -251,16 +294,21 @@ def _validate_backup_directory(
             detail=f"Manifest and sidecar SHA-256: {digest}",
         ),
     )
-    return DiscoveredBackup(path, archive_path, checksum_path, manifest_path, base_name, manifest)
+    return backup
 
 
-def _require_regular_file(path: Path) -> None:
+def _require_regular_file(path: Path) -> stat_result:
     try:
         status = path.lstat()
-    except OSError as error:
+    except FileNotFoundError as error:
         raise DestinationDiscoveryError(f"Required backup artifact is missing: {path}") from error
+    except OSError as error:
+        raise DestinationDiscoveryError(
+            f"Cannot inspect backup artifact {path}: {error}"
+        ) from error
     if not stat.S_ISREG(status.st_mode):
         raise DestinationDiscoveryError(f"Backup artifact is not a regular file: {path}")
+    return status
 
 
 def _require_exact_artifacts(directory: Path, expected: set[str]) -> None:

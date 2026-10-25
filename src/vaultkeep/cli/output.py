@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import unicodedata
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -31,6 +32,75 @@ _COLORS = {
     "BLOCKED": "1;33",
     "EXECUTION ERROR": "1;31",
 }
+
+
+def terminal_columns(stream: TextIO) -> int:
+    try:
+        return max(1, os.get_terminal_size(stream.fileno()).columns)
+    except (OSError, ValueError):
+        return 80
+
+
+def text_cells(text: str) -> int:
+    """Count terminal cells, including wide characters and combining marks."""
+    return sum(
+        0
+        if unicodedata.combining(char)
+        else 2
+        if unicodedata.east_asian_width(char) in ("W", "F")
+        else 1
+        for char in text
+    )
+
+
+def safe_text(text: str, stream: TextIO) -> str:
+    text = "".join(char if char.isprintable() else " " for char in text)
+    encoding = stream.encoding or "ascii"
+    return text.encode(encoding, errors="replace").decode(encoding)
+
+
+def format_table(
+    headings: tuple[str, ...], rows: Sequence[tuple[str, ...]], *, stream: TextIO
+) -> list[str]:
+    """Use aligned columns or labeled records on narrow terminals; never truncate."""
+    table = [tuple(safe_text(value, stream) for value in row) for row in rows]
+    widths = [
+        max(text_cells(row[index]) for row in [headings, *table]) for index in range(len(headings))
+    ]
+    table_width = sum(widths) + 2 * (len(headings) - 1)
+    if stream.isatty() and table_width >= terminal_columns(stream):
+        lines = []
+        label_width = max(len(label) for label in headings[1:])
+        for row in table:
+            lines += [row[0]]
+            lines += [
+                f"  {label + ':':<{label_width + 2}}{value}"
+                for label, value in zip(headings[1:], row[1:], strict=True)
+            ]
+            lines += [""]
+        return lines
+
+    def format_row(row: tuple[str, ...]) -> str:
+        return "  ".join(
+            value + " " * (width - text_cells(value))
+            for value, width in zip(row, widths, strict=True)
+        ).rstrip()
+
+    return [
+        format_row(headings),
+        "─" * table_width,
+        *(format_row(row) for row in table),
+        "─" * table_width,
+    ]
+
+
+def format_size(size: int, *, byte_unit: str = "B") -> str:
+    value = float(size)
+    for unit in (byte_unit, "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if value < 1024 or unit == "PiB":
+            return f"{size} {unit}" if unit == byte_unit else f"{value:.1f} {unit}"
+        value /= 1024
+    raise AssertionError("Unreachable size unit")
 
 
 @dataclass(frozen=True)

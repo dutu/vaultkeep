@@ -114,49 +114,9 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
 
 
 @pytest.mark.parametrize(
-    ("command", "handler", "result", "stage"),
-    [
-        ("list", "list_backups", "listed", "Listing backup metadata"),
-    ],
-)
-def test_terminal_read_only_command_animates_and_preserves_stdout(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: Any,
-    progress_threads: list[Thread],
-    command: str,
-    handler: str,
-    result: str,
-    stage: str,
-) -> None:
-    output = TerminalOutput()
-    monkeypatch.setattr(progress_module.sys, "stderr", output)
-
-    def execute(config: Path, **kwargs: Any) -> Any:
-        assert config == Path("app.yaml")
-        assert kwargs["runtime_params"] == {"wallet": "app"}
-        kwargs["progress"](stage)
-        output.frame_seen.clear()
-        assert output.frame_seen.wait(timeout=2)
-        outcome = CommandResult(command, result, backups=2)
-        return (outcome, ()) if command == "list" else outcome
-
-    monkeypatch.setattr(commands, handler, execute)
-
-    assert commands.main(["--config", "app.yaml", "--param", "wallet=app", command]) == 0
-    assert capsys.readouterr().out == f"{command}: {result}\n"
-    assert f"[00:00] {stage}" in output.getvalue()
-    assert "\r\033[2K" in output.getvalue()
-    assert "still running" not in output.getvalue()
-    assert "SUCCESS:" in output.getvalue()
-    assert len(progress_threads) == 1
-    assert not progress_threads[0].is_alive()
-
-
-@pytest.mark.parametrize(
     ("command", "handler", "result"),
     [
         ("run", "run_backup", "created"),
-        ("list", "list_backups", "listed"),
     ],
 )
 def test_captured_command_logs_progress_and_heartbeat_without_escapes(
@@ -178,7 +138,7 @@ def test_captured_command_logs_progress_and_heartbeat_without_escapes(
         outcome = CommandResult(
             command, result, archive_path=Path("/backups/app.tar.zst"), archive_size=1536
         )
-        return (outcome, ()) if command == "list" else outcome
+        return outcome
 
     monkeypatch.setattr(commands, handler, execute)
 
@@ -197,7 +157,7 @@ def test_captured_command_logs_progress_and_heartbeat_without_escapes(
 @pytest.mark.parametrize("error", [DestinationError("unavailable"), KeyboardInterrupt()])
 @pytest.mark.parametrize(
     ("command", "handler"),
-    [("run", "run_backup"), ("list", "list_backups"), ("verify", "verify_backups")],
+    [("run", "run_backup"), ("verify", "verify_backups")],
 )
 def test_failed_or_interrupted_command_stops_progress_before_error_handling(
     monkeypatch: pytest.MonkeyPatch,

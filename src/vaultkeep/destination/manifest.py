@@ -96,7 +96,7 @@ def load_manifest(path: Path) -> BackupManifest:
     """Load exactly one strict UTF-8 JSON manifest."""
     try:
         payload = path.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise ManifestError(f"Cannot read backup manifest {path}: {error}") from error
     try:
         decoded = json.loads(payload)

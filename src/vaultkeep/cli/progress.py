@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-import unicodedata
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +14,7 @@ from types import TracebackType
 from typing import ClassVar, TextIO
 
 from vaultkeep.backup.progress import HEARTBEAT_SECONDS
+from vaultkeep.cli.output import format_size, format_table, safe_text, terminal_columns, text_cells
 from vaultkeep.progress import VerificationProgress
 
 _HEARTBEAT_SECONDS = HEARTBEAT_SECONDS
@@ -249,18 +249,11 @@ class CliProgress:
 
     @property
     def columns(self) -> int:
-        return _terminal_columns(self._stream)
+        return terminal_columns(self._stream)
 
     @staticmethod
     def _cells(text: str) -> int:
-        return sum(
-            0
-            if unicodedata.combining(char)
-            else 2
-            if unicodedata.east_asian_width(char) in ("W", "F")
-            else 1
-            for char in text
-        )
+        return text_cells(text)
 
     @classmethod
     def _fit(cls, text: str, width: int) -> str:
@@ -274,9 +267,7 @@ class CliProgress:
         return fitted
 
     def _safe_text(self, text: str, *, stream: TextIO | None = None) -> str:
-        text = "".join(char if char.isprintable() else " " for char in text)
-        encoding = (self._stream if stream is None else stream).encoding or "ascii"
-        return text.encode(encoding, errors="replace").decode(encoding)
+        return safe_text(text, self._stream if stream is None else stream)
 
     def _write(self, text: str) -> None:
         if not self._disabled:
@@ -393,9 +384,9 @@ class VerificationDisplay:
             event_total = "?" if event.total is None else str(event.total)
             detail = f"{label} | {index}/{event_total} | {operation}"
             if event.bytes_processed is not None:
-                detail += f" | {_verification_size(event.bytes_processed)}"
+                detail += f" | {format_size(event.bytes_processed, byte_unit='bytes')}"
                 if event.bytes_total is not None:
-                    detail += f" / {_verification_size(event.bytes_total)}"
+                    detail += f" / {format_size(event.bytes_total, byte_unit='bytes')}"
                     if event.bytes_total:
                         detail += f" ({100 * event.bytes_processed / event.bytes_total:.0f}%)"
         self._progress.update(description, lines=self._header(), detail=detail, log=log)
@@ -484,31 +475,7 @@ class VerificationDisplay:
             (labels[row.directory], row.manifest, row.checksum, row.archive) for row in rows
         ]
         headings = ("Backup", "Manifest", "SHA-256", "Archive")
-        table = [
-            tuple(self._progress._safe_text(value, stream=self._stream) for value in row)
-            for row in table
-        ]
-        widths = [max(len(row[index]) for row in [headings, *table]) for index in range(4)]
-        table_width = sum(widths) + 6
-        if self._stream.isatty() and table_width >= _terminal_columns(self._stream):
-            for label, manifest, checksum, archive in table:
-                lines += [
-                    label,
-                    f"  Manifest: {manifest}",
-                    f"  SHA-256:  {checksum}",
-                    f"  Archive:  {archive}",
-                    "",
-                ]
-        else:
-
-            def format_row(row: tuple[str, ...]) -> str:
-                return "  ".join(
-                    value.ljust(width) for value, width in zip(row, widths, strict=True)
-                ).rstrip()
-
-            lines += [format_row(headings), "─" * table_width]
-            lines += [format_row(row) for row in table]
-            lines += ["─" * table_width]
+        lines += format_table(headings, table, stream=self._stream)
         verified = sum(row.manifest == row.checksum == row.archive == "OK" for row in rows)
         elapsed = max(0, int(monotonic() - self._started))
         minutes, seconds = divmod(elapsed, 60)
@@ -537,19 +504,3 @@ class VerificationDisplay:
         for line in lines:
             self._stream.write(self._progress._safe_text(line, stream=self._stream) + "\n")
         self._stream.flush()
-
-
-def _terminal_columns(stream: TextIO) -> int:
-    try:
-        return max(1, os.get_terminal_size(stream.fileno()).columns)
-    except (OSError, ValueError):
-        return 80
-
-
-def _verification_size(size: int) -> str:
-    value = float(size)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
-        if value < 1024 or unit == "PiB":
-            return f"{size} bytes" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    raise AssertionError("Unreachable size unit")

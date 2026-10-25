@@ -55,7 +55,10 @@ def create_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true", help="include detailed safety and execution diagnostics"
     )
     commands.add_parser("run", help="run this job's backup now")
-    commands.add_parser("list", help="list this job's stored backups")
+    inventory = commands.add_parser("list", help="list this job's stored backups")
+    inventory.add_argument(
+        "--verbose", action="store_true", help="include full paths and stored backup metadata"
+    )
     verify = commands.add_parser("verify", help="verify this job's stored backups")
     verify.add_argument(
         "--verbose",

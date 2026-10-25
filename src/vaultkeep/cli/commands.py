@@ -17,7 +17,8 @@ from vaultkeep.backup.workflow import (
     validate_job,
     verify_backups,
 )
-from vaultkeep.cli.output import Console, command_logging
+from vaultkeep.cli.inventory import print_inventory
+from vaultkeep.cli.output import Console, command_logging, format_size
 from vaultkeep.cli.parser import create_parser
 from vaultkeep.cli.progress import CliProgress, VerificationDisplay
 from vaultkeep.config import parse_runtime_parameters
@@ -121,11 +122,9 @@ def _dispatch(
                     )
             elapsed = monotonic() - started
         elif namespace.command == "list":
-            with CliProgress() as progress:
-                result, _ = list_backups(
-                    namespace.config, runtime_params=runtime_params, progress=progress.update
-                )
-                progress.succeed("Backup listing complete")
+            inventory = list_backups(namespace.config, runtime_params=runtime_params)
+            print_inventory(inventory, output=output, verbose=namespace.verbose)
+            return 0
         elif namespace.command == "verify":
             with CliProgress(animate=sys.stdout.isatty()) as verification_progress:
                 display = VerificationDisplay(verification_progress, verbose=namespace.verbose)
@@ -206,18 +205,9 @@ def _print_run_summary(result: CommandResult, elapsed: float, output: Console) -
     if result.archive_path is not None:
         rows.append(("Archive", str(result.archive_path)))
     if result.archive_size is not None:
-        rows.append(("Size", _format_size(result.archive_size)))
+        rows.append(("Size", format_size(result.archive_size)))
     rows.append(("Duration", f"{elapsed:.1f}s"))
     rows.append(("Backups removed by retention", str(result.removed)))
     # Losing the summary stream must not turn a completed backup into a failure.
     with suppress(OSError):
         output.fields(rows, file=sys.stderr)
-
-
-def _format_size(size: int) -> str:
-    value = float(size)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
-        if value < 1024 or unit == "PiB":
-            return f"{size} B" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    raise AssertionError("Unreachable size unit")

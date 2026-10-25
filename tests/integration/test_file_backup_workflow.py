@@ -161,7 +161,7 @@ def test_numbered_directories_and_legacy_backups_share_manageable_histories(file
     shutil.rmtree(file_job.parent / "state")
     assert _run(file_job).result == "unchanged"
     assert workflow.verify_backups(file_job).backups == 3
-    assert workflow.list_backups(file_job)[0].backups == 3
+    assert len(workflow.list_backups(file_job).backups) == 3
 
     document["retention"]["hourly"] = 1
     file_job.write_text(json.dumps(document))
@@ -185,7 +185,7 @@ def test_deleted_renamed_and_excluded_wallet_histories_remain_manageable(file_jo
     assert workflow.verify_backups(file_job).backups == 3
     # Management also works after the entire source directory is removed.
     shutil.rmtree(source)
-    assert workflow.list_backups(file_job)[0].backups == 3
+    assert len(workflow.list_backups(file_job).backups) == 3
     assert workflow.verify_backups(file_job).backups == 3
     assert workflow.prune_backups(file_job, dry_run=False).removed == 0
 
@@ -435,7 +435,7 @@ def test_manual_prune_validates_all_histories_before_deleting_anything(file_job:
     # Keep both backups for later pruning by putting them in separate hours.
     workflow.datetime.current += timedelta(hours=1)
     _run(file_job)
-    assert workflow.list_backups(file_job)[0].backups == 4
+    assert len(workflow.list_backups(file_job).backups) == 4
     document["retention"]["hourly"] = 1
     file_job.write_text(json.dumps(document))
     broken = first.files[-1].archive_path.with_suffix(".zst.sha256")

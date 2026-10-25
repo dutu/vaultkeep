@@ -17,7 +17,7 @@ vaultkeep --version
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] run
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] status [--json] [--verbose]
-vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list
+vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] list [--verbose]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] verify [--verbose]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] prune [--dry-run]
 
@@ -189,9 +189,9 @@ can change afterward.
 
 ## Progress display
 
-`run`, `list`, and `verify` report progress on stderr. On an interactive terminal,
-they show an animated spinner, elapsed time, and the current stage. `run` and `list`
-use one line with permanent completion messages. `verify` uses a compact panel with
+`run` and `verify` report progress on stderr. On an interactive terminal,
+they show an animated spinner, elapsed time, and the current stage. `run`
+uses one line with permanent completion messages. `verify` uses a compact panel with
 completed phase summaries and replaces it with a final results table on stdout.
 The status fits the terminal width and uses an ASCII spinner when the terminal encoding cannot display Unicode.
 Elapsed time is for the whole operation. Percentages appear only when measured byte
@@ -205,6 +205,7 @@ terminal use the spinner. `--no-color` and `NO_COLOR` disable colors but allow
 animation on suitable terminals. `verify` also requires stdout to be a terminal
 for animation; redirecting stdout disables its ANSI output. Final command results
 remain on stdout; verification uses the results table instead of a result marker.
+`list` prints its completed inventory directly on stdout without progress timestamps.
 
 ## Run a job manually
 
@@ -241,17 +242,40 @@ backup is using them; later runs do not remove older partial directories.
 ## List job backups
 
 ```text
-vaultkeep [--user] --config <job.yaml> list
+vaultkeep [--user] --config <job.yaml> list [--verbose]
 ```
 
-`list` checks backup directory layouts, manifests, and checksum sidecars without
-reading archive contents or changing state. The current CLI prints `list: listed`,
-not a per-backup inventory or malformed-entry report. That marker alone does not
-establish that any archive exists or that all matching entries are valid. Use `verify`
-for archive corruption/malformed-entry diagnosis and inspect the destination for paths.
+`list` prints a `Vaultkeep — Backups` inventory with the destination, UTC creation
+times, actual archive sizes, encryption (`yes` or `no`), and archive paths relative
+to that destination. Backups appear newest first. Creation and encryption facts
+come from stored manifests, including backups in either supported format after a
+change to the current archive settings. For `per_file` jobs, paths include each
+file history directory and sorting covers all histories.
 
-`list` uses the shared [progress display](#progress-display) for its current stage
-and elapsed time. The final result remains on stdout as `list: listed`.
+The table uses the same formatting as `verify`, switching to labeled records on
+narrow terminals. Paths are never truncated; control characters and characters
+unsupported by the output encoding are escaped. The final summary counts listed
+backups; an empty inventory says `No backups found.` There are no elapsed-time
+or redundant success messages.
+
+Matching entries with missing or invalid manifests or archive layouts appear under
+`Warnings`, followed by an `Invalid entries` count. They are excluded from the
+backup count. A manifest missing required encryption metadata is invalid rather
+than being assigned encryption from the current configuration. Unrelated entries
+and partial backup directories are ignored.
+
+`--verbose` shows absolute archive paths in place of relative paths, followed by
+backup directories, manifest paths and metadata, stored digests, and full warning
+diagnostics. Stored digests are reported as metadata, not verified results.
+
+Listing reads manifests and filesystem metadata, requires the archive and checksum
+sidecar to exist as regular files, and checks the expected directory layout. It
+does not read archive contents or checksum sidecar contents, calculate SHA-256,
+load encryption passwords, require the original sources, or modify backup or local
+state. **Being listed does not establish archive integrity**; use `verify` to check
+contents and checksums. A completed inventory exits zero, including empty inventories
+and inventories with invalid-entry warnings. Configuration and destination failures
+retain the [core exit codes](#exit-codes).
 
 ## Verify job backups
 

@@ -219,9 +219,11 @@ if needed.
    an empty `per_file` selection is unchanged and verification can find zero archives.
 
 A created backup directory contains `<base>.tar.zst` (or `.tar.7z`), its `.sha256`,
-and `<base>.json`. Terminal runs show the new archive path. `list` inspects metadata;
+and `<base>.json`. Terminal runs show the new archive path. `list` shows backups
+newest first with UTC dates, sizes, encryption, relative archive paths, and warnings
+for invalid entries; `list --verbose` adds full paths and stored metadata.
 `verify` checks archive contents and checksums without requiring original sources.
-`run`, `list`, and `verify` show an in-place spinner with elapsed time on interactive
+`run` and `verify` show an in-place spinner with elapsed time on interactive
 terminals. Redirected stderr uses plain stage messages and a heartbeat every 10 seconds
 during long stages. Redirecting stdout also disables verification animation. Use
 `verify --verbose` for full paths and individual checks. See
@@ -358,7 +360,7 @@ See [CLI output and options](docs/cli.md#terminal-output) for report conventions
 | Read activity, previous result, and automation | `vaultkeep --user --config "$job_config" status` |
 | Detailed diagnostics or script-readable status | Append `--verbose` or `--json` to `status` |
 | Run now | `vaultkeep --user --config "$job_config" run` |
-| <a id="list-job-backups"></a>Inspect metadata | `vaultkeep --user --config "$job_config" list` |
+| <a id="list-job-backups"></a>List stored backups | `vaultkeep --user --config "$job_config" list` |
 | <a id="verify-job-backups"></a>Verify contents | `vaultkeep --user --config "$job_config" verify` |
 | <a id="prune-job-backups"></a>Check retention plan without deleting | `vaultkeep --user --config "$job_config" prune --dry-run` |
 | Apply retention | `vaultkeep --user --config "$job_config" prune` |

@@ -2696,7 +2696,10 @@ A failed run reports:
 
 - validates configuration without requiring source paths;
 - discovers valid and matching-but-malformed backup entries;
-- currently prints only `list: listed`, without rendering discovered backup details or matching malformed entries;
+- renders a newest-first inventory of stored UTC creation times, filesystem archive sizes, stored encryption, and paths relative to the displayed destination;
+- reports matching malformed entries as warnings and counts them separately;
+- shares table formatting and narrow-terminal fallback with `verify`, with full paths and stored metadata under `--verbose`;
+- reads manifests and filesystem metadata for either supported archive format, without reading archive or checksum sidecar contents;
 - skips unrelated destination entries;
 - never verifies full archive content, modifies state, or applies retention.
 

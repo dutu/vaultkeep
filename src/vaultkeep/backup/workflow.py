@@ -38,7 +38,7 @@ from vaultkeep.destination import (
     execute_prune_plan,
     probe_destination_writability,
 )
-from vaultkeep.destination.discovery import DiscoveredBackup
+from vaultkeep.destination.discovery import DiscoveredBackup, MalformedDestinationEntry
 from vaultkeep.errors import (
     ArchiveVerificationError,
     DestinationError,
@@ -97,6 +97,15 @@ class CommandResult:
     files: tuple[FileBackupResult, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class BackupInventory:
+    """Read-only inventory facts, including entries that could not be listed."""
+
+    destination: Path
+    backups: tuple[DiscoveredBackup, ...]
+    malformed: tuple[MalformedDestinationEntry, ...]
+
+
 class _HookRunKwargs(TypedDict, total=False):
     owner_uid: int
     owner_gid: int | None
@@ -137,7 +146,7 @@ def list_backups(
     *,
     runtime_params: Mapping[str, str] | None = None,
     progress: Callable[[str], None] | None = None,
-) -> tuple[CommandResult, tuple[object, ...]]:
+) -> BackupInventory:
     """List backup metadata without reading archive contents or requiring sources."""
     report = progress if progress is not None else lambda message: None
     parameters = dict(runtime_params or {})
@@ -147,14 +156,24 @@ def list_backups(
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
     report("Listing backup metadata")
     destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
-    backups = tuple(
-        backup
+    discovered = tuple(
+        discover_backups(destination, runtime_params=parameters, metadata_only=True)
         for destination in destinations
-        for backup in discover_backups(
-            destination, runtime_params=parameters, verify_archives=False
-        ).backups
     )
-    return CommandResult("list", "listed", backups=len(backups)), backups
+    backups = tuple(
+        sorted(
+            (backup for result in discovered for backup in result.backups),
+            key=lambda backup: (backup.manifest.created_datetime_utc, str(backup.archive_path)),
+            reverse=True,
+        )
+    )
+    malformed = tuple(
+        sorted(
+            (entry for result in discovered for entry in result.malformed),
+            key=lambda entry: str(entry.path),
+        )
+    )
+    return BackupInventory(Path(config.destination.root), backups, malformed)
 
 
 def prune_backups(

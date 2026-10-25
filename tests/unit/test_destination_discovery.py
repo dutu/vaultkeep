@@ -222,10 +222,10 @@ def test_list_never_reads_archive_contents_but_verify_and_prune_still_check_them
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", guarded_open)
-        result, backups = list_backups(config_path, progress=stages.append)
+        inventory = list_backups(config_path, progress=stages.append)
 
-    assert result.backups == 1
-    assert backups[0].archive_path == archive
+    assert len(inventory.backups) == 1
+    assert inventory.backups[0].archive_path == archive
     assert stages == [
         "Loading and validating configuration",
         "Checking destination",
