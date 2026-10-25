@@ -24,6 +24,50 @@ triggered executions, including jobs with no automatic initiation enabled. Trigg
 alerts require the job's monitor to be active, and work with Backup alerts disabled.
 Schedule only arranges execution; it has no separate notification category.
 
+## Enable notifications
+
+Backup notifications apply to manual, scheduled, and triggered executions. Trigger
+notifications cover application monitoring, dispatch, and recovery. Each category
+is optional and defaults to disabled.
+
+1. Install the desktop notification command if needed:
+
+   ```bash
+   sudo apt-get install libnotify-bin
+   ```
+
+   From the backup owner's graphical session, test delivery:
+
+   ```bash
+   notify-send "Vaultkeep" "Desktop notifications are available"
+   ```
+
+   Expect a desktop notification unless desktop settings suppress it. The desktop
+   must run as the backup owner in the same host or container. Session discovery
+   uses `busctl`, supplied by systemd, and also supports NoMachine sessions in LXC.
+
+2. Add the top-level YAML section shown above to the job, enabling the categories
+   you want. Both categories default to disabled.
+
+   `backup.enabled` works with manual-only jobs and scheduled jobs as well as Trigger.
+   `trigger.enabled` here controls Trigger alerts; enabling application monitoring
+   still requires the job's separate `trigger.enabled` setting and an installed monitor.
+   The delivery command and timeout apply to both notification categories.
+
+3. Set `job_config` to the actual YAML path, then validate as its owner. For example:
+
+   ```bash
+   job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
+   vaultkeep --user --config "$job_config" validate
+   ```
+
+   Future backups read these settings automatically. If this job has an installed
+   Trigger monitor, also apply the change to it:
+
+   ```bash
+   vaultkeep --user --config "$job_config" trigger update
+   ```
+
 ## Backup notifications
 
 Backup generates messages directly from its common execution lifecycle:
@@ -155,11 +199,44 @@ Missing commands, unavailable or ambiguous sessions, delivery timeouts, invalid
 notification IDs, and nonzero exits are logged as warnings in the backup log or monitor journal.
 Command failure details are limited to one bounded line. Delivery remains best-effort;
 successful command execution does not confirm that the desktop displayed a popup.
-See [troubleshooting](trigger/troubleshooting.md#notifications-do-not-appear).
+See [troubleshooting](#troubleshooting).
 
 Notifications target a desktop running as the backup owner in the same environment.
 For LXC, that means a desktop inside the container. Routing to a host or SSH client's
 desktop requires separate integration. A service running under another account,
 including root, does not gain access to the backup owner's desktop automatically.
+
+## Troubleshooting
+
+Check `notifications.backup.enabled` for execution alerts or
+`notifications.trigger.enabled` for monitoring/dispatch alerts, plus `notify-send` and
+systemd's `busctl`.
+The desktop must run as the backup owner, in the same host/container as the backup or monitor.
+For NoMachine, test from a terminal opened inside that desktop:
+
+```sh
+id -un
+printf 'Desktop bus: %s\n' "${DBUS_SESSION_BUS_ADDRESS:-unset}"
+notify-send "Vaultkeep" "Desktop notification test"
+```
+
+Notification delivery discovers session-specific buses automatically; an absent
+`/run/user/<uid>/bus` does not by itself prevent delivery. After installing an updated
+Vaultkeep, validate the job and run `trigger update` to restart its installed monitor.
+
+Inspect the backup journal/execution log for Backup delivery warnings. For Trigger
+alerts, inspect warnings and confirm the monitor is running:
+
+```sh
+systemctl --user list-units --all 'vaultkeep-trigger@*.service'
+journalctl --user -u 'vaultkeep-trigger@*.service' -n 100 --no-pager
+```
+
+Warnings identify missing tools, an unavailable graphical bus, ambiguous desktop
+sessions, timeouts, and command failures. Fallback discovery needs readable
+same-account graphical process environments; container or `/proc` restrictions may
+prevent this. When several desktop buses exist, a working inherited
+`DBUS_SESSION_BUS_ADDRESS` can select the intended session explicitly. Popup visibility
+still follows the desktop's notification settings. See [session selection](#session-bus).
 
 [User guide](../README.md#desktop-notifications)

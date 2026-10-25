@@ -295,7 +295,7 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
 
 ### 4.2 Update
 
-Review [automatic maintenance](README.md#pause-and-resume-for-maintenance).
+Review [automatic maintenance](docs/maintenance.md#pause-and-resume-for-maintenance).
 Keep existing timers/monitors active to verify automatic pause and resume, with no
 backup work running; also verify safe refusal while a disposable backup is active.
 Use an already installed previous Vaultkeep release as the starting point, then
@@ -452,7 +452,7 @@ For each combination, create a fixture containing:
 
   - Both commands exit `0`.
   - `verify` reports `verify: verified`.
-  - `list` reports at least one backup.
+  - `list` completes successfully; inspect the destination and confirm at least one archive exists.
 
 - [ ] Restore with standard Debian tools, not Vaultkeep internals.
 

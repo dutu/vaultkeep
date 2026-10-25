@@ -1,6 +1,6 @@
 # Electrum Trigger configuration
 
-This guide explains how to configure one VaultKeep job to trigger after a
+This guide explains how to configure one Vaultkeep job to trigger after a
 specific Electrum instance stops. Use one job per independently monitored
 Electrum data directory.
 
@@ -11,7 +11,7 @@ template, not a verified preset.
 
 ## Prerequisites
 
-- VaultKeep and Trigger run as the same user that owns the Electrum process.
+- Vaultkeep and Trigger run as the same user that owns the Electrum process.
 - The Electrum launch exposes its data directory through `ELECTRUMDIR`,
   `-D`, or `--dir`.
 - Select the files needed for recovery. The matcher must cover every Electrum or
@@ -19,6 +19,35 @@ template, not a verified preset.
 - The job has a destination that is independent from other Trigger-enabled jobs.
 
 Trigger does not inspect processes owned by other users.
+
+## Prepare the backup job
+
+First have an administrator [install Vaultkeep](../../../README.md#installation).
+Then run as the non-root application owner, without sudo:
+
+```bash
+vaultkeep --version
+jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
+install -d -m 700 "$jobs_dir"
+job_config="$jobs_dir/electrum-main.yaml"
+if [ ! -e "$job_config" ]; then
+    install -m 600 /opt/vaultkeep/current/src/examples/electrum-trigger.yaml.example "$job_config"
+fi
+nano "$job_config"
+```
+
+Keep the complete example. The filename stem must match `job.id` (`electrum-main` here).
+Replace every example path: `sources[].path` selects the files to back up,
+`destination.root` is an existing writable directory, and `trigger.data_dir`
+identifies the application instance. Mount and verify any network share first;
+optional [destination safety checks](../../configuration.md#destination-safety-checks)
+can reject an unintended local directory. Keep destinations independent between jobs.
+
+Leave `schedule.enabled: false` and `trigger.enabled: false` while preparing and
+manually testing the job. The example creates unencrypted `tar.zst` archives;
+[configure password protection](../../configuration.md#password-protected-backups)
+if the destination must not hold plaintext wallet data. Review retention and the
+following application-specific identity requirements before enabling monitoring.
 
 ## Process identity
 
@@ -61,7 +90,7 @@ is canonicalized and compared with `trigger.data_dir`.
 If Electrum uses its default directory without exposing one of those values,
 launch it with an explicit `--dir` argument or configure `ELECTRUMDIR` for the
 application process. If the directory cannot be resolved, the observation is
-`ambiguous` and VaultKeep does not trigger.
+`ambiguous` and Vaultkeep does not trigger.
 
 ## Separate wallet backups
 
@@ -93,7 +122,7 @@ It runs automatically without the old wrapper's confirmation prompt. The AppImag
 actual process identity still needs to be checked as described above; the example
 script entrypoint is not an AppImage preset.
 
-See [per-file operation](../../../README.md#back-up-directory-files-separately) for
+See [per-file operation](../../configuration.md#back-up-directory-files-separately) for
 validation, destination layout, failure reporting, and history management.
 
 ## Multiple Electrum instances
@@ -128,26 +157,64 @@ absent.
 
 ## Validate and enable
 
-Inspect the installed process before enabling the trigger:
+1. With the application running, inspect its actual process command lines:
 
-```sh
-ps -u "$(id -un)" -o pid=,args= | grep '[r]un_electrum'
-```
+   ```sh
+   ps -u "$(id -un)" -o pid=,args= | grep '[r]un_electrum'
+   ```
 
-Confirm that the launcher path, data-directory argument, and all writers match
-the job. Then validate and install the monitor:
+   Confirm the real launcher/daemon identity and `ELECTRUMDIR` or `-D`/`--dir`
+   evidence. Adapt the inspection filter to the actual installation. A forwarded GUI
+   request is not necessarily the long-lived writer; do not identify Electrum using
+   the Python interpreter alone.
+   Review every process that can write the selected sources. Process arguments can
+   contain private information; inspect locally and review before sharing output.
 
-```sh
-vaultkeep --user --config /absolute/path/electrum-main.yaml validate
-vaultkeep --user --config /absolute/path/electrum-main.yaml trigger install
-```
+2. Stop the application and related writers normally. With both automation flags
+   still disabled, test the complete backup as its owner:
 
-`vaultkeep validate` validates the selected matcher and job but does not certify
-Electrum's installed process model, writer coverage, or backup consistency.
+   ```bash
+   vaultkeep --user --config "$job_config" validate
+   vaultkeep --user --config "$job_config" run
+   vaultkeep --user --config "$job_config" verify
+   ```
 
-Before installation, validation reports the missing monitor and `setup incomplete`.
-Fix any prerequisite failures, install the monitor explicitly, then run the same
-validation command again to check its health.
+   Expect `Result: OK`, then `run: created` (or `run: unchanged` for an existing
+   baseline), and `verify: verified`. Confirm an archive exists for the selected
+   data; verification can succeed with zero archives. An unchanged run does not
+   apply retention. Keep sources stable for this manual test.
+
+3. Set `trigger.enabled: true`, keep `schedule.enabled: false`, then activate:
+
+   ```bash
+   vaultkeep --user --config "$job_config" validate
+   vaultkeep --user --config "$job_config" trigger install
+   vaultkeep --user --config "$job_config" status
+   vaultkeep --user --config "$job_config" validate
+   ```
+
+   Before installation, `Monitor service: NOT INSTALLED` and `SETUP INCOMPLETE`
+   are expected. Fix any other failed checks first. Allow the monitor's first
+   observation before expecting healthy validation. It needs an active systemd user
+   manager and private account-owned `XDG_RUNTIME_DIR`; installing Vaultkeep alone
+   activates no monitor.
+
+4. Start the application and confirm fresh `Application: RUNNING` in `status`.
+   Close it normally and expect `CONFIRMING STOP`, then `HAS STOPPED`, a backup
+   request, and a Backup result. Run `verify` again. Starting the monitor with the
+   application already stopped requests nothing: running evidence must come first.
+
+Validation checks the YAML and runtime readiness; it does not certify installed
+process identity, writer coverage, clean shutdown, or application consistency.
+A final offline recheck cannot prevent a writer restarting during archival. Unknown
+or unreadable detection evidence blocks dispatch. Review the limitations below.
+
+After configuration edits, validate and use `trigger update` to refresh, enable,
+and restart the monitor, then validate again. `trigger disable` stops future
+monitoring but leaves existing workers running and preserves recovery evidence.
+Use `status --verbose` for exact units/log paths. Full lifecycle and safe switching
+instructions are in [README](../../../README.md#change-or-stop-automation-safely).
+For logout behavior see [user-manager lifetime](../../user-mode.md#configure-user-mode-automatic-backups).
 
 ## Limitations
 
@@ -162,4 +229,4 @@ See [process detection](../process-detection.md),
 [complete configuration](../configuration.md), and
 [consistency limits](../consistency.md).
 
-[User guide](../../../README.md#optional-trigger)
+[User guide](../../../README.md#trigger)

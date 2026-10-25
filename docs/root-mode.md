@@ -1,11 +1,12 @@
 # Vaultkeep root mode guide
 
-Root mode is the administrator-managed Vaultkeep workflow. It is the right mode for system backups, protected application data, root-owned secrets, mounted backup shares, and administrator-controlled lifecycle hooks.
+Root mode is for administrator-managed backups of protected/system data, root-owned
+secrets, mounted shares, and administrator-controlled hooks. It uses the centrally
+installed `vaultkeep` command without `--user`; run privileged operations with `sudo`.
+Manual and Schedule activation are supported. Trigger rejects root execution.
 
-Root mode uses the centrally installed `vaultkeep` command and system locations:
-
-| Purpose | Location |
-|---|---|
+| Purpose | Default location |
+| --- | --- |
 | Job configurations | `/etc/vaultkeep/jobs` |
 | Secrets | `/etc/vaultkeep/secrets` |
 | Local state | `/var/lib/vaultkeep/jobs` |
@@ -13,149 +14,97 @@ Root mode uses the centrally installed `vaultkeep` command and system locations:
 | Locks | `/run/lock/vaultkeep` |
 | Systemd units and drop-ins | `/etc/systemd/system` |
 
-Root mode is independent from user mode. It does not read user-mode jobs below `~/.config/vaultkeep`, and user-mode timers do not modify root-mode timer units or registries.
-
-For the shared job schema, destination template rules, command surface, retention behavior, restore notes, and troubleshooting reference, see the [shared user guide](../README.md#usage).
+Root mode does not read user jobs, state, locks, timer registries, or user unit files.
+Root schedules can coexist with user-owned Trigger jobs. Each job/machine must use
+an independent destination namespace, even when jobs run under different accounts.
 
 ## Install or update Vaultkeep
 
-Root installs Vaultkeep and its Debian package dependencies once for the host:
-
-Replace `<release-tag-or-commit>` with a published release tag or a reviewed commit
-SHA. Use a reviewed commit for development builds when a release tag is unavailable.
-
-```bash
-git clone https://github.com/dutu/vaultkeep.git /path/to/vaultkeep
-cd /path/to/vaultkeep
-git checkout <release-tag-or-commit>
-
-sudo ./install.sh install --dry-run
-sudo ./install.sh install
-```
-
-For updates, select the newer release tag or reviewed commit SHA:
-
-```bash
-cd /path/to/vaultkeep
-git fetch --tags --prune
-git checkout <new-release-tag-or-commit>
-
-sudo ./install.sh update --dry-run
-sudo ./install.sh update
-```
-
-The root installation provides the shared `/usr/local/bin/vaultkeep` command that both root mode and user mode use. If installed with [custom paths](../README.md#installation), substitute the chosen command, configuration, and state locations in this guide and repeat the same installer overrides when updating or uninstalling.
+An administrator [installs Vaultkeep once](../README.md#installation) for all scopes.
+Use the [README update procedure](../README.md#update-the-application) for newer
+versions; [maintenance](maintenance.md) explains custom paths, same-version reinstall,
+and recovery. With a custom layout, substitute the selected command/configuration
+paths below and repeat installer overrides for updates or uninstall.
 
 ## Create a root-mode job
 
-Copy an installed example to a real job file:
+1. Copy an installed example without overwriting an existing job, then edit as root:
 
-```bash
-sudo cp \
-  /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example \
-  /etc/vaultkeep/jobs/app.yaml
-```
+   ```bash
+   sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example /etc/vaultkeep/jobs/app.yaml
+   sudo nano /etc/vaultkeep/jobs/app.yaml
+   ```
 
-Edit it as root:
+2. Set `job.id: app` to match `app.yaml`, replace source/destination paths, and review
+   retention. Keep `schedule.enabled: false` and `trigger.enabled: false` for the
+   first manual test. Use absolute paths and retain the complete example's required
+   sections; see [configuration](configuration.md#job-structure).
 
-```bash
-sudo nano /etc/vaultkeep/jobs/app.yaml
-```
+3. Mount network shares through the operating system first. Validate the intended
+   destination from the same environment that executes Vaultkeep. Optional
+   `destination.expected_fstype: cifs` can reject an unintended host-local directory
+   exposed through an LXC bind mount; `destination.marker_file` independently checks
+   for a regular marker you create on the verified target. Follow the complete
+   [destination safety procedure](configuration.md#destination-safety-checks).
 
-The filename stem and `job.id` must match:
-
-```yaml
-job:
-  id: app
-```
-
-Use absolute source and destination paths. Mount network shares through the operating
-system before using them as destinations.
-
-For CIFS shares, set `destination.expected_fstype: cifs` to reject a local directory
-exposed through an LXC bind mount when the host share is unavailable. See the
-[destination safety checks](../README.md#destination-safety-checks) for verification commands.
-The optional `destination.marker_file` independently requires a designated marker
-file below the destination root. Either check can be used alone or together.
+Configuration and hooks are trusted administrator input; do not allow untrusted
+users to edit root jobs or scripts they invoke.
 
 ## Validate and run manually
 
-Schema-only validation can run without root:
+Use [README's Manual procedure](../README.md#manual) with these root commands:
+
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml run
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml status
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml verify
+```
+
+Full validation creates a temporary destination probe. Schema-only validation can
+run without root if the configuration is readable, but skips runtime readiness:
 
 ```bash
 vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate --schema-only
 ```
 
-Complete validation and real backup operations run with sudo:
-
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml run
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml list
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml verify
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune --dry-run
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml prune
-```
+For routine list/prune commands and restoration, use the
+[README operations](../README.md#check-health-and-perform-everyday-operations) and
+[restore procedure](../README.md#restore-a-backup), with `sudo` where access requires it.
 
 ## Configure root-mode automatic backups
 
-Root-mode automatic backups use systemd timers. Shutdown Trigger is user-mode only
-and rejects root execution. To use it, create a user-mode job and run
-`vaultkeep --user trigger` as the application owner, without sudo. See the
-[Trigger guide](../README.md#optional-trigger). Root-mode scheduled jobs and
-user-mode Trigger jobs can run independently on the same host.
+Follow [README's Schedule procedure](../README.md#schedule), omit `--user`, and prefix
+commands with `sudo`. This installs system `vaultkeep@<instance>.timer` and `.service`
+units, rather than user units. Before installation, enabled scheduling reports
+`NOT INSTALLED` and `SETUP INCOMPLETE`; resolve other failed prerequisites, install
+explicitly, and validate again. Use the same runtime parameters for every command.
 
-Enable scheduling in the job:
-
-```yaml
-schedule:
-  enabled: true
-  interval: daily
-  window: "01:00-05:00"
-  persistent: true
-```
-
-Validate the enabled schedule, then install its system timer explicitly. Before
-installation, validation reports `NOT INSTALLED` for `Timer` and `SETUP INCOMPLETE`;
-fix any prerequisite failures before continuing. Re-run validation after setup
-to check system timer health. See [validation results](../README.md#validate-a-job-configuration).
-
-```bash
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule install
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
-```
-
-Manage the timer:
+Inspect one job or preview all root schedule changes:
 
 ```bash
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml status
 sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule next
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule update
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule disable
-sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml schedule remove
-```
-
-Manage all root-mode jobs:
-
-```bash
 sudo vaultkeep schedules list
-sudo vaultkeep schedules validate
 sudo vaultkeep schedules sync --dry-run
-sudo vaultkeep schedules sync
 ```
 
-For parameterized jobs, see [bulk schedule behavior](../README.md#manage-all-job-timers).
+The [CLI reference](cli.md#manage-all-job-timers) explains bulk synchronization,
+parameterized jobs, enablement, and persistent timestamp behavior. Preview before
+applying `schedules sync`.
+
+To use shutdown Trigger, create a separate [user-owned job](user-mode.md) and run it
+as the non-root application owner. Do not use sudo to monitor another user's wallet.
 
 ## Secrets and hooks
 
-Root-mode encrypted backups use root-owned password files:
+Root-mode password files must be regular files owned by `root:root` with mode exactly
+`0600`, normally under `/etc/vaultkeep/secrets`. Parents must not be group/other-writable.
+Use the [password-file creation procedure](configuration.md#create-a-password-file)
+and retain old passphrases for old archives. Password rotation requires a new job ID,
+password file, and destination namespace.
 
-```text
-/etc/vaultkeep/secrets/app.passphrase
-owner: root
-group: root
-mode: 0600
-```
-
-Root-mode hooks are trusted administrator code, configured as shell command strings and executed with `/bin/sh -c`. Vaultkeep checks that the shell and its path are root-owned and not writable by group or other users. Administrators must securely manage the commands and scripts invoked by the shell; those commands are not individually checked by Vaultkeep. See [lifecycle hooks](../README.md#lifecycle-hooks) for examples and execution behavior.
+Hooks run as root through `/bin/sh -c`. Vaultkeep checks the shell and its path for
+root ownership and unsafe writability; it does not individually check every command
+or script invoked by the shell. Secure those scripts and use the documented fixed
+PATH/environment. See [hook execution and failure semantics](configuration.md#lifecycle-hooks).

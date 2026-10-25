@@ -67,7 +67,7 @@ The source-review baseline is 2026-10-13, with the CLI/validation/locking behavi
 ### Observed CLI exit mapping
 
 The reviewed VaultKeep dispatcher maps error classes to these codes. This is separate
-from [Trigger command exits](../trigger/cli.md#exit-codes):
+from [Trigger command exits](../cli.md#trigger-exit-codes):
 
 | Code | Source condition |
 | ---: | --- |

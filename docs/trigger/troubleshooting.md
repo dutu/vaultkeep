@@ -3,57 +3,15 @@
 Use the executable and config path selected during [installation](../../README.md#install-the-application).
 The examples below assume `vaultkeep` is on your `PATH`; otherwise use the
 absolute installed console-script path. For nondefault config, put `--config PATH`
-before `validate`, or before Trigger's `monitor` or `status`. The job YAML selects its recovery namespace.
+before `validate`, `status`, or `trigger monitor`. The job YAML selects its recovery namespace.
 
 ## Installer candidate fails `--version`
 
-The installer checks the candidate in staging before activating it. If a command
-fails, the installer marks its stage `FAILED` and shows recent diagnostic context.
-The complete ordered subprocess output is retained in the private transcript named
-by `Diagnostics:`; inspect that file if the displayed context is insufficient. A successful `vaultkeep --version` after a staging failure
-checks the existing installation and does not mean the candidate passed.
-
-For `ModuleNotFoundError: No module named 'vaultkeep.cli.output'`, the source
-checkout is incomplete. From the checkout directory, check:
-
-```sh
-test -f src/vaultkeep/cli/output.py
-git ls-files --error-unmatch src/vaultkeep/cli/output.py
-```
-
-Both commands should succeed. If the file exists locally but is absent from Git,
-include it in the source commit before updating the target host. With a complete
-checkout, repeat `sudo ./install.sh install`. The installer pauses existing
-launchers, refuses active backup work, refreshes managed units, validates jobs, and
-resumes only previously active launchers after success or completed rollback.
+See [candidate validation diagnosis](../troubleshooting.md#installer-candidate-fails---version).
 
 ## Installer reports `inconclusive unit properties`
 
-The normal installer report names the failed stage and shows `Result: FAILED`.
-Detailed subprocess errors go to stderr and remain in the diagnostic transcript;
-those diagnostic messages may use severity prefixes. Colors highlight status values.
-Redirected output stays plain text. Set `NO_COLOR=1` or add `--no-color` after the
-install/update/uninstall mode to disable color; `TERM=dumb` also uses plain text.
-See [terminal output](../../README.md#terminal-output).
-
-Before the worker template has been installed, the user manager can report the
-worker instance as `not-found`, `inactive`, and `dead` without an `ExecStart`
-property. This is normal before Trigger's shared units are installed. The corrected
-installer accepts that confirmed absence; it still requires command properties for
-loaded services and refuses failed or incomplete manager queries.
-
-Inspect the response as the affected account:
-
-```sh
-systemctl --user show vaultkeep-trigger-exec@installer-check.service --all --no-pager \
-    --property=LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,UnitFileState
-```
-
-If an older installer refuses that absent-unit response, use the corrected checkout
-and repeat `sudo ./install.sh install`. This preflight refusal leaves
-the existing core deployment active; no unit or state cleanup is needed. Other
-responses, especially active work or an unreachable user manager, require resolving
-the reported condition before retrying.
+See [installer unit-property diagnosis](../troubleshooting.md#installer-reports-inconclusive-unit-properties).
 
 ## First checks
 
@@ -107,13 +65,15 @@ responsive monitoring.
 Do not remove a held lock file to bypass ownership. Stop the extra monitor normally
 and keep workers independent; unlinking a live lock can permit two monitor owners.
 
-## `status` exits 2
+<a id="status-exits-2"></a>
+## Status reports an inspection or configuration error
 
-Persisted state is corrupt or has an incompatible schema version. Trigger does not
-migrate, repair, or reinitialize it; the diagnosis material is preserved for review.
-Other readable instances are still shown by the status query.
-An unknown selected ID also exits 2 when other records exist. IDs come from persisted
-state, so an enabled instance may not be recorded until the monitor first runs.
+The unified `vaultkeep --user --config JOB.yaml status` returns 15 for inspection
+errors and 3 for invalid configuration/parameters. Corrupt or incompatible recovery
+state remains explicit in the available report; preserve the records for review.
+Exit 0 means readable collection, including unknown activity or failed previous work.
+There is no separate Trigger status command or instance-selection argument.
+See [status semantics](../status.md#json) and [recovery](recovery.md).
 
 ## An instance reports `dispatch blocked`
 
@@ -125,7 +85,7 @@ not clear the block. See [per-instance recovery](recovery.md#per-instance-state-
 
 ## No backup was requested
 
-Check that the instance is enabled; the shipped example has all entries disabled.
+Check that the instance is enabled; the shipped examples have `trigger.enabled: false`.
 Only verified `running` evidence arms detection, and the app must have been observed
 running before its shutdown. Starting the monitor while an app is already stopped
 creates no request. An `ambiguous` or `inspection_unavailable` observation blocks
@@ -227,36 +187,10 @@ dedicated status reason. See [retention](service-operation.md#internal-constants
 
 ## Notifications do not appear
 
-Check `notifications.backup.enabled` for execution alerts or
-`notifications.trigger.enabled` for monitoring/dispatch alerts, plus `notify-send` and
-systemd's `busctl`.
-The desktop must run as the backup owner, in the same host/container as the backup or monitor.
-For NoMachine, test from a terminal opened inside that desktop:
-
-```sh
-id -un
-printf 'Desktop bus: %s\n' "${DBUS_SESSION_BUS_ADDRESS:-unset}"
-notify-send "Vaultkeep" "Desktop notification test"
-```
-
-Notification delivery discovers session-specific buses automatically; an absent
-`/run/user/<uid>/bus` does not by itself prevent delivery. After installing an updated
-Vaultkeep, validate the job and run `trigger update` to restart its installed monitor.
-
-Inspect the backup journal/execution log for Backup delivery warnings. For Trigger
-alerts, inspect warnings and confirm the monitor is running:
-
-```sh
-systemctl --user list-units --all 'vaultkeep-trigger@*.service'
-journalctl --user -u 'vaultkeep-trigger@*.service' -n 100 --no-pager
-```
-
-Warnings identify missing tools, an unavailable graphical bus, ambiguous desktop
-sessions, timeouts, and command failures. Fallback discovery needs readable
-same-account graphical process environments; container or `/proc` restrictions may
-prevent this. When several desktop buses exist, a working inherited
-`DBUS_SESSION_BUS_ADDRESS` can select the intended session explicitly. Popup visibility
-still follows the desktop's notification settings. See [session selection](../notifications.md#session-bus).
+Follow the [notification troubleshooting procedure](../notifications.md#troubleshooting).
+Backup and Trigger alerts have separate enablement flags; neither is required for
+execution. Check the backup log for execution alerts and monitor journal for Trigger
+alerts. Delivery failures do not change backup or monitoring results.
 
 ## A result is `result_unknown`
 

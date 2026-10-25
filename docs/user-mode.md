@@ -1,251 +1,142 @@
 # Vaultkeep user mode guide
 
-User mode lets a normal user configure, run, and schedule their own Vaultkeep jobs without sudo after Vaultkeep has been centrally installed by root.
+User mode lets an ordinary user configure, run, and automate backups after central
+installation by an administrator. It can read only files and write only destinations
+already accessible to that user. Use the shared `vaultkeep` command with `--user`,
+without sudo, for user-owned jobs.
 
-User mode is for backups of files the user can already read to destinations the user can already write. It does not grant access to system files, root-owned application data, protected secrets, or system mounts.
-
-User mode uses the shared `/usr/local/bin/vaultkeep` command with the `--user` flag. If the administrator chose a [custom command path](../README.md#installation), use that command instead; generated monitors and timers use it automatically:
-
-```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml run
-```
-
-Root mode and user mode are independent. User mode does not use `/etc/vaultkeep/jobs`, `/var/lib/vaultkeep`, `/run/lock/vaultkeep`, or root-mode system timers. A host can have root-mode jobs already installed while one or more users maintain separate user-mode jobs.
-
-For the shared job schema, destination template rules, command surface, retention behavior, restore notes, and troubleshooting reference, see the [shared user guide](../README.md#usage).
+Execution scope is independent of activation: user jobs support Manual, Schedule,
+and Trigger. Root jobs and other users' jobs have separate configuration, state,
+locks, timer registries, and units. Each job/machine needs its own destination namespace.
 
 ## Administrator prerequisite
 
-Root must install Vaultkeep and the required Debian packages first:
-
-```bash
-sudo ./install.sh install
-```
-
-The root installation installs packages and tools used by both modes, including Python, GNU TAR, Zstandard, Debian's `7zip` package, `rsync`, `util-linux`, and mount utilities.
-
-After that, a normal user can create jobs, run jobs, and manage user timers without sudo.
+An administrator must [install Vaultkeep and Debian dependencies](../README.md#installation)
+once for the host. User mode does not install packages or create system mounts.
+The default shared command is `/usr/local/bin/vaultkeep`; if the administrator chose a
+[custom command path](maintenance.md#installation-layout-and-custom-paths), use that
+command instead. Generated monitors and timers use the selected command automatically.
 
 ## User-mode locations
 
-Vaultkeep resolves user-mode paths from the XDG environment when available:
+Core user paths follow the selected XDG environment:
 
 | Purpose | Default location |
-|---|---|
+| --- | --- |
 | Job configurations | `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs` |
 | Password files | `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/secrets` |
 | Local state | `${XDG_STATE_HOME:-~/.local/state}/vaultkeep/jobs` |
 | Temporary encrypted-archive workspaces | `${XDG_CACHE_HOME:-~/.cache}/vaultkeep/tmp` |
-| Locks | `$XDG_RUNTIME_DIR/vaultkeep/locks`, or `${XDG_CACHE_HOME:-~/.cache}/vaultkeep/locks` |
+| Locks | `$XDG_RUNTIME_DIR/vaultkeep/locks`, falling back to `${XDG_CACHE_HOME:-~/.cache}/vaultkeep/locks` |
 | Systemd user units | `${XDG_CONFIG_HOME:-~/.config}/systemd/user` |
-| User timer registry | `${XDG_STATE_HOME:-~/.local/state}/vaultkeep/systemd-instances.json` |
+| Timer registry | `${XDG_STATE_HOME:-~/.local/state}/vaultkeep/systemd-instances.json` |
+
+Keep relevant XDG settings consistent across interactive commands, timers, and monitors
+so they use the same state and lock namespace. Trigger additionally requires a private
+account-owned `XDG_RUNTIME_DIR` and has a **separate fixed recovery root** under the
+OS account home, independent of `XDG_STATE_HOME`. See
+[Trigger environment and locations](trigger/service-operation.md#state-and-runtime-locations).
 
 ## Create a user-mode job
 
-Create the user job and destination directories:
+1. Run as the backup owner and copy the installed example safely:
 
-```bash
-mkdir -p ~/.config/vaultkeep/jobs
-mkdir -p ~/.local/share/backups/app
-```
+   ```bash
+   jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
+   install -d -m 700 "$jobs_dir"
+   job_config="$jobs_dir/app.yaml"
+   if [ ! -e "$job_config" ]; then
+       install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml.example "$job_config"
+   fi
+   nano "$job_config"
+   ```
 
-Optionally start from a packaged example, then edit `job.id`, sources, destination, and retention:
+2. Set `job.id: app`, use absolute readable source paths, and select an existing writable
+   destination. For a local example you can create `$HOME/.local/share/backups/app`
+   with `install -d -m 700 "$HOME/.local/share/backups/app"`; use its absolute path
+   in YAML. Mount and verify network destinations first instead of creating a directory
+   over a missing mount. Keep both automation settings disabled for the first test.
 
-```bash
-cp /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml.example \
-  ~/.config/vaultkeep/jobs/app.yaml
-```
-
-The root-mode copies under `/etc/vaultkeep/jobs/*.example` are administrator-owned. User-mode jobs normally copy from `/opt/vaultkeep/current/src/examples`.
-
-Or create `~/.config/vaultkeep/jobs/app.yaml` manually:
-
-```yaml
-config_version: 1
-
-job:
-  id: app
-
-sources:
-  - path: /home/alice/Documents
-    archive_path_mode: prefix
-    archive_prefix: Documents
-  - path: /home/alice/Projects/app
-    archive_path_mode: prefix
-    archive_prefix: app
-    exclude:
-      - .venv/
-      - __pycache__/
-
-exclude:
-  - "**/.cache/**"
-
-source_options:
-  follow_symlinks: false
-  cross_filesystems: false
-  ignore_missing: false
-
-destination:
-  root: /home/alice/.local/share/backups/app
-  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
-
-archive:
-  format: tar.zst
-  compression_level: 6
-
-encryption:
-  mode: none
-
-retention:
-  hourly: 24
-  daily: 7
-  weekly: 8
-  monthly: 12
-  yearly: 3
-
-schedule:
-  enabled: false
-
-hooks:
-  before_check: null
-  before_archive: null
-  after_archive: null
-  on_success: null
-  on_failure: null
-  on_unchanged: null
-
-logging:
-  level: info
-  include_command_output: false
-```
-
-The filename stem and `job.id` must match. In the example above, both are `app`.
+The filename stem must match `job.id`. Keep the complete example's other required
+sections; use the [configuration reference](configuration.md) for all settings.
+Examples under `/etc/vaultkeep/jobs` are administrator-owned; user jobs normally copy
+from `/opt/vaultkeep/current/src/examples`. For wallet Trigger jobs, use the complete
+[Electrum](trigger/apps/electrum.md), [Bisq 1](trigger/apps/bisq.md), or
+[Wasabi](trigger/apps/wasabi.md) guide instead.
 
 ## Validate and run manually
 
-Run schema-only validation:
+Apply [README's Manual procedure](../README.md#manual) as this user:
 
 ```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml validate --schema-only
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" run
+vaultkeep --user --config "$job_config" status
+vaultkeep --user --config "$job_config" verify
 ```
 
-Run complete validation and a backup:
-
-```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml validate
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml run
-```
-
-Inspect and maintain backups:
-
-```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml list
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml verify
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml prune --dry-run
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml prune
-```
+Stop application writers or otherwise provide a stable source first. Full validation
+writes a temporary destination probe. `validate --schema-only` checks YAML structure
+without proving source, mount, or automation readiness.
+See [everyday operations](../README.md#check-health-and-perform-everyday-operations)
+for list/prune commands, and [restore](../README.md#restore-a-backup) for extraction.
 
 ## Configure user-mode automatic backups
 
-Each job may use a systemd user timer or a shutdown trigger. Scheduling and triggering
-cannot both be enabled for one job. Trigger supports user mode only: use
-`vaultkeep --user trigger` as the application owner, without sudo.
-Root-mode scheduled jobs can continue independently on the same host. Follow the
-[Trigger procedure](../README.md#configure-and-validate-trigger) for its app-specific
-YAML examples, validation and explicit per-job monitor activation.
+Use the single [Schedule](../README.md#schedule) or [Trigger](../README.md#trigger)
+activation procedure, with `--user` and the same YAML path/parameters as the manual
+backup. Trigger and Schedule cannot both be enabled. Before installation, full
+validation reports `NOT INSTALLED` and `SETUP INCOMPLETE`; resolve other failures,
+install explicitly, and validate again.
 
-Enable scheduling in the job:
-
-```yaml
-schedule:
-  enabled: true
-  interval: daily
-  window: "01:00-05:00"
-  persistent: true
-```
-
-Validate the enabled schedule, then install its user timer explicitly. Before
-installation, validation reports `NOT INSTALLED` for `Timer` and `SETUP INCOMPLETE`;
-fix any prerequisite failures before continuing. Re-run validation after setup
-to check user timer health. See [validation results](../README.md#validate-a-job-configuration).
+User timers and monitors depend on the owning systemd user manager. A login session
+normally supplies it. To inspect operation beyond logout:
 
 ```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml validate
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule install
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml validate
+loginctl show-user "$(id -un)" --property=Linger
 ```
 
-Manage the user timer:
-
-```bash
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml status
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule next
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule update
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule disable
-vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml schedule remove
-```
-
-Manage all user-mode jobs:
-
-```bash
-vaultkeep --user schedules list
-vaultkeep --user schedules validate
-vaultkeep --user schedules sync --dry-run
-vaultkeep --user schedules sync
-```
-
-For parameterized jobs, see [bulk schedule behavior](../README.md#manage-all-job-timers).
-
-User timers depend on the user's systemd user manager. On many Debian systems, user timers run while the user has an active login session. To run user timers after boot without an active session, an administrator may need to enable lingering:
+An administrator may explicitly enable lingering for an account:
 
 ```bash
 sudo loginctl enable-linger alice
 ```
 
-That is an administrator decision and is outside Vaultkeep's user-mode permissions.
+Replace `alice` with the account name. Lingering keeps the user manager available
+beyond login sessions; it does not guarantee desktop notifications or completion
+during host shutdown. Vaultkeep does not configure it automatically. Trigger workers
+survive a monitor restart, but may be interrupted by logout/user-manager termination
+or host shutdown; see [lifecycle limits](trigger/service-operation.md#lifecycle-limits).
+
+Bulk schedule commands operate only on this user's jobs. Use
+`vaultkeep --user schedules list` or preview with `vaultkeep --user schedules sync --dry-run`.
+Read [bulk behavior](cli.md#manage-all-job-timers) before applying synchronization.
 
 ## Password-protected user-mode backups
 
-Create a user-owned password file:
-
-```bash
-mkdir -p ~/.config/vaultkeep/secrets
-chmod 700 ~/.config/vaultkeep/secrets
-nano ~/.config/vaultkeep/secrets/app.passphrase
-chmod 600 ~/.config/vaultkeep/secrets/app.passphrase
-```
-
-Configure the job:
-
-```yaml
-archive:
-  format: tar.7z
-  compression_level: 6
-
-encryption:
-  mode: password
-  password_file: /home/alice/.config/vaultkeep/secrets/app.passphrase
-```
-
-The password file must be owned by the user running `vaultkeep --user` and must have mode `0600`.
+Follow the [password-file setup](configuration.md#create-a-password-file) for a
+user-owned file under `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/secrets`, then select
+`tar.7z` and `encryption.mode: password`. Use its absolute path in YAML. The regular
+file must be owned by the executing user with mode exactly `0600`; parent directories
+must not be group/other-writable. Keep an independent passphrase copy for restoration.
+Password rotation requires a new job ID, password file, and destination namespace;
+keep old credentials for old archives. See [encryption restrictions](configuration.md#password-protected-backups).
 
 ## User-mode hooks
 
-User-mode hooks run as the calling user. Each `command` is a shell command string executed with `/bin/sh -c`. Built-in placeholders such as `{job}` and `{hostname}`, shell built-ins, `$VAULTKEEP_*` variables, and command substitution are supported. Commands can use absolute paths or the fixed hook `PATH`; the user's interactive shell environment is not inherited.
-
-Vaultkeep checks that the shell and its path are owned by root or the calling user and are not writable by group or other users. The user must securely manage any commands and scripts invoked by the shell; those commands are not individually checked by Vaultkeep. See [lifecycle hooks](../README.md#lifecycle-hooks) for examples and execution behavior.
-
-Hooks must not contain passwords or tokens in command strings or arguments because they can be visible through the operating-system process list.
+Hooks run as the calling user through `/bin/sh -c`, with the documented fixed PATH
+and context variables rather than the interactive shell's environment. Shell and path
+ownership may be root or the calling user and must not be group/other-writable.
+Commands/scripts invoked by the shell are not individually checked: secure them as
+trusted executable configuration. Keep secrets out of command strings and arguments.
+The complete [hook reference](configuration.md#lifecycle-hooks) defines placeholders,
+quoting, environments, timeouts, and failure/cleanup behavior.
 
 ## User-mode limitations
 
-User mode cannot:
-
-- install Vaultkeep or Debian package dependencies;
-- read files the user cannot read;
-- write destinations the user cannot write;
-- mount CIFS/NFS shares unless the operating system already permits the user to do so;
-- manage root-mode jobs or system timers;
-- use root-mode state, secrets, locks, or timer registries.
-
-Use root mode when the backup requires administrator privileges.
+User mode cannot install packages, elevate access to files/secrets/destinations,
+mount CIFS/NFS unless the OS already permits it, or manage root jobs/system timers.
+Use root scope when protected system resources require administrator privileges.
+Trigger still requires the non-root application owner and never gains access to
+another user's processes. Optional [notifications](notifications.md) target a desktop
+owned by this account in the same host/container.

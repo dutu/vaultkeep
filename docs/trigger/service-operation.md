@@ -14,11 +14,14 @@ worker template. It uses `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity
 Workers remain independent of monitor stop/restart. Do not add monitor lifecycle
 dependencies or enable individual attempt instances.
 
-These command paths are the installation defaults. With a [custom installation layout](../../README.md#installation), both monitor services and the shared worker template use the configured stable command path.
+These command paths are the installation defaults. With a [custom installation layout](../maintenance.md#installation-layout-and-custom-paths), both monitor services and the shared worker template use the configured stable command path.
 
 Only a monitor submits workers, via
 `systemctl --user start --no-block vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service`.
-The shared template reads frozen requests, so it takes no current configuration.
+The shared template reads frozen requests, so it takes no current configuration. The internal
+worker validates its namespace and attempt UUID before reading state; it never infers
+request paths from arbitrary strings. Its backup child still reads the selected job
+file at execution time, as described below.
 Installing Vaultkeep starts/enables no monitor. The explicit per-job `trigger install`
 command creates and enables that job's monitor; `update` refreshes and restarts it.
 `disable` and `remove` preserve recovery evidence and never stop workers.

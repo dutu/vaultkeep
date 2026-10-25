@@ -907,7 +907,7 @@ Discovery rules:
 8. warn about malformed matching entries;
 9. never apply retention to unrelated content.
 
-Matching-but-malformed entries are reported as errors and are never automatically deleted. Their presence blocks destructive pruning while still allowing `list` and `prune --dry-run`.
+Matching-but-malformed entries are never automatically deleted. Their presence blocks retention plan calculation, including `prune --dry-run`. `verify` reports their paths and reasons; `list` performs metadata discovery but currently prints only its completion marker.
 
 ---
 
@@ -1125,7 +1125,7 @@ A finer tier's configured count is a maximum. The tier retains fewer recovery po
 
 Only complete, valid backups recognized through the configured naming rule and manifest participate in retention.
 
-Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `list` and `prune --dry-run` still report the complete state.
+Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `verify` reports matching malformed entries. The current `list` command does not render discovered entries, and `prune --dry-run` refuses a malformed destination instead of displaying a partial plan.
 
 A backup is eligible for deletion only when:
 
@@ -1134,7 +1134,7 @@ A backup is eligible for deletion only when:
 - every destination entry has been classified successfully;
 - the complete retention plan has been calculated successfully.
 
-The retention module returns a `RetentionPlan` and never deletes files directly. The destination module presents or logs the complete plan and performs only its authorized deletions.
+The retention module returns a `RetentionPlan` and never deletes files directly. The destination module performs only deletions authorized by that complete plan. The current CLI does not render per-backup keep/delete decisions; a successful dry-run prints `prune: planned`.
 
 ---
 
@@ -1796,7 +1796,7 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 
 Synchronization uses a plan-then-apply transaction. Any invalid job or ownership-registry error aborts before file or systemd state changes. During apply, drop-ins and the ownership registry use atomic replacement. A failed apply, including interruption with Ctrl-C, restores the previous generated files and registry, reloads systemd, restores timer enabled and active states, and exits with timer-management failure. Restoration continues after individual rollback errors and reports any incomplete rollback. Persistent timestamps cleared during apply are not restored. Deleted registered instances undergo disable and timestamp cleanup even when their generated timer file is absent; cleanup failures abort apply and trigger rollback.
 
-`schedules list` displays each selected job instance's enabled setting, managed-file installed state, systemd active state, next trigger, and configuration drift. Drift compares generated files and timer enablement with the job configuration and detects active timers for disabled jobs. Disabled jobs retain their preceding timer files, so their calendar is not compared. Operator-owned overrides are outside this comparison. Missing next triggers display as `n/a`; unavailable or incomplete systemd inspection fails the command. Listing never changes files or systemd state. Bulk commands report uninstalled parameterized templates as skipped, as described in the [user guide](../../README.md#manage-all-job-timers).
+`schedules list` displays each selected job instance's enabled setting, managed-file installed state, systemd active state, next trigger, and configuration drift. Drift compares generated files and timer enablement with the job configuration and detects active timers for disabled jobs. Disabled jobs retain their preceding timer files, so their calendar is not compared. Operator-owned overrides are outside this comparison. Missing next triggers display as `n/a`; unavailable or incomplete systemd inspection fails the command. Listing never changes files or systemd state. Bulk commands report uninstalled parameterized templates as skipped, as described in the [CLI reference](../cli.md#manage-all-job-timers).
 
 `schedules validate` validates job configurations and generated calendars, checks registry ownership, and never mutates files or systemd state. `schedules sync --dry-run` displays the create, update, disable, and remove plan without applying it.
 
@@ -2686,7 +2686,7 @@ A failed run reports:
 - validates configuration;
 - discovers backups;
 - calculates the retention plan;
-- displays the plan without deletion when `--dry-run` is set;
+- validates the plan without deletion and prints `prune: planned` when `--dry-run` is set; individual keep/delete paths are not currently rendered;
 - never requires source paths to exist;
 - refuses to delete malformed or unrelated content.
 
@@ -2696,8 +2696,8 @@ A failed run reports:
 
 - validates configuration without requiring source paths;
 - discovers valid and matching-but-malformed backup entries;
-- displays backup ID, creation timestamp, archive path, archive size, source digest, and structural status;
-- reports unrelated destination entries only at debug verbosity;
+- currently prints only `list: listed`, without rendering discovered backup details or matching malformed entries;
+- skips unrelated destination entries;
 - never verifies full archive content, modifies state, or applies retention.
 
 ## 29.6 Verify command
