@@ -225,7 +225,8 @@ Each row includes the complete backup directory relative to the displayed destin
 Invalid entries appear as warnings; affected histories have `UNKNOWN` decisions.
 `verify` checks archive contents and checksums without requiring original sources.
 `run` and `verify` show an in-place spinner with elapsed time on interactive
-terminals. Redirected stderr uses plain stage messages and a heartbeat every 10 seconds
+terminals. `run` keeps completed stages listed with a tick. Redirected stderr uses
+plain stage messages and a heartbeat every 10 seconds
 during long stages. Redirecting stdout also disables verification animation. Use
 `verify --verbose` for full paths and individual checks. See
 [progress display](docs/cli.md#progress-display).

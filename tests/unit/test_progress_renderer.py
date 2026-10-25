@@ -76,15 +76,65 @@ def test_spinner_animates_elapsed_time_and_clears_shorter_status(monkeypatch, wo
     assert len(workers) == 1
 
 
+@pytest.mark.parametrize("encoding,tick", [("utf-8", "✓"), ("ascii", "[OK]")])
+def test_completed_stages_remain_above_spinner_and_after_success(
+    monkeypatch, workers, encoding, tick
+):
+    output = Output(encoding=encoding)
+    now = [0.0]
+    monkeypatch.setattr(progress_module, "monotonic", lambda: now[0])
+    with CliProgress(stream=output, keep_completed=True) as progress:
+        progress.start("Hashing sources")
+        progress.update("Hashing sources", metrics=ProgressMetrics(percent=100))
+        assert tick not in output.getvalue()
+        now[0] = 2.0
+        progress.update("Verifying archive")
+        first = f"{tick} [00:02] Hashing sources (100%)\n"
+        assert output.getvalue().count(first) == 1
+        assert output.getvalue().endswith("[00:02] Verifying archive")
+        progress.message("Archive checked")
+        now[0] = 3.0
+        progress.succeed("Backup complete")
+    text = output.getvalue()
+    assert text.count(first) == 1
+    assert text.endswith(f"{tick} [00:03] Verifying archive\n[00:03] SUCCESS: Backup complete\n")
+    # Redraws clear only the active line, never move back into completed history.
+    assert "\033[1A" not in text
+    text.encode(encoding)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("corrupt archive"), KeyboardInterrupt()])
+def test_failed_stage_and_failure_cleanup_receive_no_ticks(monkeypatch, workers, error):
+    output = Output()
+    monkeypatch.setattr(progress_module, "monotonic", lambda: 0.0)
+    with pytest.raises(type(error)), CliProgress(stream=output, keep_completed=True) as progress:
+        progress.start("Hashing sources")
+        progress.update("Verifying archive")
+        try:
+            raise error
+        except BaseException:
+            progress.update("Cleaning up incomplete archive")
+            progress.update("Handling backup failure")
+            raise
+    assert "✓ [00:00] Hashing sources\n" in output.getvalue()
+    assert "✓ [00:00] Verifying archive" not in output.getvalue()
+    assert "✓ [00:00] Cleaning up incomplete archive" not in output.getvalue()
+    assert "✓ [00:00] Handling backup failure" not in output.getvalue()
+    assert "FAILED:" in output.getvalue()
+
+
 @pytest.mark.parametrize("tty,term", [(False, "xterm"), (True, "dumb"), (True, ""), (True, None)])
-def test_unsuitable_terminals_log_immediate_stages_and_heartbeats(monkeypatch, workers, tty, term):
+@pytest.mark.parametrize("keep_completed", [False, True])
+def test_unsuitable_terminals_log_immediate_stages_and_heartbeats(
+    monkeypatch, workers, tty, term, keep_completed
+):
     if term is None:
         monkeypatch.delenv("TERM", raising=False)
     else:
         monkeypatch.setenv("TERM", term)
     monkeypatch.setattr(progress_module, "_HEARTBEAT_SECONDS", 0.01)
     output = Output(tty=tty)
-    with CliProgress(stream=output) as progress:
+    with CliProgress(stream=output, keep_completed=keep_completed) as progress:
         progress.start("Loading configuration")
         progress.update("Verifying backups")
         progress.update("Verifying backups")
@@ -138,7 +188,7 @@ def test_terminal_width_uses_display_cells_and_adapts_to_resize(monkeypatch, wor
     monkeypatch.setattr(
         progress_module.os, "get_terminal_size", lambda fd: os.terminal_size((width[0], 24))
     )
-    with CliProgress(stream=output) as progress:
+    with CliProgress(stream=output, keep_completed=True) as progress:
         progress.start("Checking 界面 e\u0301 " * 30)
         frame = output.getvalue().split("\r\033[2K")[-1]
         cells = sum(

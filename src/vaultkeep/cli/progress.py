@@ -56,9 +56,12 @@ class CliProgress:
     clears them, and a new description resets them. Route permanent output through
     ``message`` while active. A single waiting worker animates blocking operations
     or emits log heartbeats; it is always joined before leaving the context.
+    ``keep_completed`` leaves ticked stages in interactive terminal history.
     """
 
-    def __init__(self, *, stream: TextIO | None = None, animate: bool = True) -> None:
+    def __init__(
+        self, *, stream: TextIO | None = None, animate: bool = True, keep_completed: bool = False
+    ) -> None:
         self._stream = sys.stderr if stream is None else stream
         self._interactive = (
             animate
@@ -76,6 +79,12 @@ class CliProgress:
             pass
         else:
             self._frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        self._keep_completed = keep_completed and self._interactive
+        self._tick = "✓"
+        try:
+            self._tick.encode(self._stream.encoding or "ascii")
+        except (UnicodeError, LookupError):
+            self._tick = "[OK]"
         self._lock = Lock()
         self._stopped = Event()
         self._worker: Thread | None = None
@@ -130,6 +139,10 @@ class CliProgress:
                 self._started = monotonic()
             changed = description is not None and description != self._description
             if changed:
+                # Cleanup callbacks run inside exception handlers. Advancing to
+                # cleanup does not establish that the preceding stage succeeded.
+                if sys.exception() is None:
+                    self._retain_stage()
                 self._description = description
                 self._metrics = ProgressMetrics()
             if metrics is not None:
@@ -174,6 +187,8 @@ class CliProgress:
             if self._stopped.is_set():
                 return
             self._stopped.set()
+            if status == "SUCCESS":
+                self._retain_stage()
             self._clear()
             if message is not None or self._description is not None:
                 self._write(
@@ -208,14 +223,24 @@ class CliProgress:
         minutes, seconds = divmod(int(monotonic() - self._started), 60)
         return f"[{minutes:02d}:{seconds:02d}]"
 
-    def _render(self, *, heartbeat: bool = False) -> None:
-        if self._description is None:
-            return
+    def _retain_stage(self) -> None:
+        """Leave a completed stage above the active spinner, outside its redraw area."""
+        if self._keep_completed and self._description is not None:
+            self._clear()
+            text = f"{self._tick} {self._status_text()}"
+            self._write(self._fit(text, self.columns - 1) + "\n")
+
+    def _status_text(self) -> str:
         text = f"{self._elapsed()} {self._description}"
         details = self._metrics.format()
         if details:
             text += f" ({details})"
-        text = self._safe_text(text)
+        return self._safe_text(text)
+
+    def _render(self, *, heartbeat: bool = False) -> None:
+        if self._description is None:
+            return
+        text = self._status_text()
         if self._interactive:
             text = f"{self._frames[self._frame % len(self._frames)]} {text}"
             self._frame += 1

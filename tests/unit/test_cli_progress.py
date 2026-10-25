@@ -85,6 +85,7 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
     def run(config: Path, **kwargs: Any) -> CommandResult:
         assert config == Path("app.yaml")
         kwargs["progress"]("Checking existing backups")
+        kwargs["progress"]("Saving backup state")
         return CommandResult(
             "run", result, removed=2, archive_path=Path("/backups/app.tar.zst"), archive_size=1536
         )
@@ -94,6 +95,8 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
     assert commands.main(["--config", "app.yaml", "run"]) == (7 if result == "failed" else 0)
     assert capsys.readouterr().out == f"run: {result}\n"
     assert "Checking existing backups" in output.getvalue()
+    assert "[OK] [00:00] Checking existing backups\n" in output.getvalue()
+    assert ("[OK] [00:00] Saving backup state\n" in output.getvalue()) == (result != "failed")
     assert "\r\033[2K" in output.getvalue()
     completion = {
         "created": "SUCCESS: Backup complete",

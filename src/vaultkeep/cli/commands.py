@@ -107,7 +107,7 @@ def _dispatch(
             )
         elif namespace.command == "run":
             started = monotonic()
-            with CliProgress() as progress:
+            with CliProgress(keep_completed=True) as progress:
                 result = run_backup(
                     namespace.config,
                     runtime_params=runtime_params,

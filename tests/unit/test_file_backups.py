@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from vaultkeep.backup import workflow
 from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import DestinationError, SourceDiscoveryError
 from vaultkeep.file_backups import file_config, file_destinations, file_key, select_files
@@ -135,3 +137,36 @@ def test_discovery_ignores_unrelated_entries_and_refuses_managed_symlinks(
     (tmp_path / file_key("wallet")).symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(DestinationError, match="not a real directory"):
         file_destinations(config)
+
+
+def test_early_file_failure_reports_failure_before_continuing(
+    tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "wallets"
+    destination = tmp_path / "backups"
+    source.mkdir()
+    destination.mkdir()
+    for name in ("a", "b"):
+        (source / name).touch()
+    config = _config(valid_config, source, destination)
+    error = DestinationError("file destination unavailable")
+    events: list[tuple[str, BaseException | None]] = []
+
+    def run_single(config_path, child, **kwargs):
+        if child.sources[0].path == str(source / "a"):
+            raise error
+        return workflow.CommandResult("run", "unchanged")
+
+    monkeypatch.setattr(workflow, "_run_single_backup", run_single)
+    result = workflow._run_file_backups(
+        tmp_path / "app.yaml",
+        config,
+        runtime_params=None,
+        paths=workflow.WorkflowPaths(tmp_path / "state", tmp_path / "cache", tmp_path / "locks"),
+        user_mode=True,
+        progress=lambda stage: events.append((stage, sys.exception())),
+    )
+
+    assert result.result == "failed"
+    assert [outcome.result for outcome in result.files] == ["failed", "unchanged"]
+    assert events[-2:] == [("Handling backup failure", error), ("Backing up 'b'", None)]

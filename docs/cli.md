@@ -195,7 +195,9 @@ can change afterward.
 
 `run` and `verify` report progress on stderr. On an interactive terminal,
 they show an animated spinner, elapsed time, and the current stage. `run`
-uses one line with permanent completion messages. `verify` uses a compact panel with
+keeps each completed stage listed with a tick, animating only the current stage.
+Terminals without Unicode support use `[OK]` for completed stages. Failed or
+interrupted stages receive no tick. `verify` uses a compact panel with
 completed phase summaries and replaces it with a final results table on stdout.
 The status fits the terminal width and uses an ASCII spinner when the terminal encoding cannot display Unicode.
 Elapsed time is for the whole operation. Percentages appear only when measured byte

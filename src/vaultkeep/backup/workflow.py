@@ -480,6 +480,7 @@ def _run_file_backups(
             removed += result.removed
             archive_size += result.archive_size or 0
         except (VaultkeepError, OSError) as error:
+            report("Handling backup failure")
             logging.getLogger(__name__).error(
                 "Backup of %s failed: %s", source, error, exc_info=error
             )
