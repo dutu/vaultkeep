@@ -970,6 +970,229 @@ def managed_timer(host, valid_config, monkeypatch, *, active=True):
     return config, paths.units_root / "vaultkeep@app.timer.d/schedule.conf"
 
 
+def candidate_source(tmp_path: Path, mode: str) -> Path:
+    source = tmp_path / "newer-source"
+    shutil.copytree(CANDIDATE_SOURCE, source)
+    if mode == "update":
+        project = source / "pyproject.toml"
+        project.write_text(project.read_text().replace(f'"{CANDIDATE_VERSION}"', '"0.3.0"'))
+    # Same-version install must also prepare a candidate rather than reuse current.
+    readme = source / "README.md"
+    readme.write_text(readme.read_text() + "\nCandidate configuration validation test.\n")
+    return source
+
+
+def assert_configuration_refusal(host, result, before):
+    assert result.returncode != 0
+    assert "Configuration validation" in result.stdout and "FAILED" in result.stdout
+    assert "Pause schedules" not in result.stdout
+    assert "Release activation" not in result.stdout
+    assert "Refresh managed jobs" not in result.stdout
+    assert "Installation aborted." in result.stderr
+    assert "installation and schedules remain unchanged" in result.stderr
+    assert snapshot(host) == before
+    calls = [json.loads(line) for line in Path(host["HOST_LOG"]).read_text().splitlines()]
+    assert all(
+        not set(call) & {"stop", "start", "enable", "disable", "daemon-reload"} for call in calls
+    )
+    prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
+    assert not list(prefix.glob(".maintenance.*"))
+    assert not list(prefix.glob(".transaction.*"))
+    assert not list((prefix / ".staging").iterdir())
+
+
+@pytest.mark.usefixtures("installer_wheelhouse")
+def test_first_install_validates_existing_yaml_without_creating_deployment(host):
+    jobs = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "jobs"
+    jobs.mkdir(parents=True)
+    config = jobs / "existing.yaml"
+    config.write_text("job: [\n")
+    before = config.read_bytes(), config.stat().st_mode, config.stat().st_mtime_ns
+
+    result = run_installer(host, "install", check=False)
+
+    assert result.returncode != 0
+    assert "Configuration validation" in result.stdout
+    assert "Pause schedules" not in result.stdout
+    assert "Release activation" not in result.stdout
+    assert f"File: {config}" in result.stderr
+    assert "Unable to parse YAML configuration" in result.stderr
+    assert (config.read_bytes(), config.stat().st_mode, config.stat().st_mtime_ns) == before
+    prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
+    assert not (prefix / "current").exists()
+    assert not (prefix / "install-manifest.json").exists()
+    assert not (prefix / "maintenance.lock").exists()
+    assert not Path(host["VAULTKEEP_BIN_LINK"]).exists()
+    assert not Path(host["VAULTKEEP_SYSTEMD_ROOT"]).exists()
+    assert not Path(host["VAULTKEEP_VAR_ROOT"]).exists()
+    assert not list((prefix / ".staging").iterdir())
+
+
+@pytest.mark.parametrize("mode", ["install", "update"])
+def test_candidate_schema_refuses_obsolete_system_job_before_any_schedule_changes(
+    installed, tmp_path, valid_config, monkeypatch, mode
+):
+    config, _ = managed_timer(installed, valid_config, monkeypatch)
+    valid_config["trigger"] = {"notifications": {}}
+    del valid_config["destination"]["root"]
+    config.write_text(json.dumps(valid_config))
+    # Reproduce a previous release that accepts fields removed by the candidate.
+    release = Path(manifest(installed)["active_release"])
+    loader = release / "venv/lib/python3.13/site-packages/vaultkeep/config/loader.py"
+    loader.write_text(
+        loader.read_text().replace(
+            "document = _parse_yaml(path)",
+            "document = _parse_yaml(path)\n"
+            '    document.get("trigger", {}).pop("notifications", None)\n'
+            '    document["destination"].setdefault("root", "/mnt/backups")',
+        )
+    )
+    subprocess.run(
+        [installed["VAULTKEEP_BIN_LINK"], "--config", str(config), "validate", "--schema-only"],
+        env=installed,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    source = candidate_source(tmp_path, mode)
+    before = snapshot(installed)
+    metadata = {
+        path: (path.stat().st_mode, path.stat().st_mtime_ns)
+        for base in ("VAULTKEEP_CONFIG_ROOT", "VAULTKEEP_SYSTEMD_ROOT")
+        for path in Path(installed[base]).rglob("*")
+    }
+    Path(installed["HOST_LOG"]).write_text("")
+
+    result = run_installer(installed, mode, check=False, source=source)
+
+    assert_configuration_refusal(installed, result, before)
+    assert all(
+        (path.stat().st_mode, path.stat().st_mtime_ns) == value for path, value in metadata.items()
+    )
+    for output in (result.stderr, diagnostic_log(result).read_text()):
+        assert "Found 1 invalid job configuration:" in output
+        assert "Job: app" in output and f"File: {config}" in output
+        assert "trigger.notifications" in output and "Unknown property." in output
+        assert "destination.root" in output and "Field required" in output
+    # Correcting the same file lets the same candidate complete successfully.
+    valid_config["trigger"] = {}
+    valid_config["destination"]["root"] = str(config.parent.parent / "destination")
+    config.write_text(json.dumps(valid_config))
+    success = run_installer(installed, mode, source=source)
+    assert success.stdout.index("Configuration validation") < success.stdout.index(
+        "Pause schedules"
+    )
+    assert manifest(installed)["version"] == ("0.3.0" if mode == "update" else CANDIDATE_VERSION)
+
+
+@pytest.mark.parametrize("mode", ["install", "update"])
+@pytest.mark.parametrize("user_count", [1, 2])
+def test_configuration_refusal_collects_user_jobs_without_pausing(
+    installed, tmp_path, valid_config, mode, user_count
+):
+    source = candidate_source(tmp_path, mode)
+    accounts = []
+    configs = []
+    for index in range(user_count):
+        name = f"user{index}"
+        home = tmp_path / name
+        jobs = home / ".config/vaultkeep/jobs"
+        jobs.mkdir(parents=True)
+        config = jobs / f"job{index}.yaml"
+        valid_config["job"]["id"] = config.stem
+        valid_config["trigger"] = {"notifications": {}}
+        config.write_text(json.dumps(valid_config))
+        configs.append(config)
+        accounts.append((name, "x", 1000 + index, 1000 + index, "", str(home), "/bin/sh"))
+    if user_count == 2:
+        system_config = Path(installed["VAULTKEEP_CONFIG_ROOT"]) / "jobs/System-backups.yaml"
+        system_config.write_text("{}")
+    # Discover offline accounts through the real inventory without touching host users.
+    helper = source / "scripts/install_maintenance.py"
+    helper.write_text(
+        helper.read_text()
+        .replace(
+            "PATTERNS =",
+            f"TEST_ACCOUNTS = list(map(pwd.struct_passwd, {accounts!r}))\n\nPATTERNS =",
+        )
+        .replace("for entry in ():", "for entry in TEST_ACCOUNTS:")
+        .replace(
+            "entry = pwd.getpwnam(account)",
+            "entry = next(e for e in TEST_ACCOUNTS if e.pw_name == account)",
+        )
+        .replace('home = Path(os.environ["HOST_USER_HOME"])', "home = Path(entry.pw_dir)")
+    )
+    fake = Path(installed["PATH"].split(":")[0])
+    executable(
+        fake / "runuser",
+        """#!/usr/bin/python3
+import os, sys
+args = sys.argv[sys.argv.index('--') + 1:]
+assert args[:2] == ['env', '-i']
+args = args[2:]
+while args and '=' in args[0]:
+    key, value = args.pop(0).split('=', 1)
+    if key != 'PATH':
+        os.environ[key] = value
+os.execvp(args[0], args)
+""",
+    )
+    before = snapshot(installed)
+    originals = {config: (config.read_bytes(), config.stat().st_mtime_ns) for config in configs}
+    Path(installed["HOST_LOG"]).write_text("")
+
+    result = run_installer(installed, mode, check=False, source=source)
+
+    assert_configuration_refusal(installed, result, before)
+    expected_count = user_count + (user_count == 2)
+    assert f"Found {expected_count} invalid job configuration" in result.stderr
+    if user_count == 2:
+        assert "Job: System-backups" in result.stderr
+        assert f"File: {system_config}" in result.stderr
+    for config, original in originals.items():
+        for output in (result.stderr, diagnostic_log(result).read_text()):
+            assert f"User: {config.parents[3].name}" in output
+            assert f"Job: {config.stem}" in output and f"File: {config}" in output
+            assert "trigger.notifications" in output
+        assert (config.read_bytes(), config.stat().st_mtime_ns) == original
+
+
+@pytest.mark.parametrize("mode", ["install", "update"])
+def test_schema_change_after_preflight_is_still_rejected_by_refresh(
+    installed, tmp_path, valid_config, monkeypatch, mode
+):
+    config, _ = managed_timer(installed, valid_config, monkeypatch)
+    source = candidate_source(tmp_path, mode)
+    installer = source / "install.sh"
+    installer.write_text(
+        installer.read_text().replace(
+            '    stage_start "Pause schedules"\n',
+            "    python3 -c 'import json, sys; from pathlib import Path; "
+            'p = Path(sys.argv[1]); d = json.loads(p.read_text()); d["obsolete"] = True; '
+            'p.write_text(json.dumps(d))\' "$VK_JOBS/app.yaml"\n'
+            '    stage_start "Pause schedules"\n',
+        )
+    )
+    before = snapshot(installed)
+
+    result = run_installer(installed, mode, check=False, source=source)
+
+    assert result.returncode != 0
+    assert "Release activation" in result.stdout and "Refresh managed jobs" in result.stdout
+    assert "obsolete" in result.stderr and "Unknown property." in result.stderr
+    assert "restoring deployment and job units" in result.stderr
+    # YAML belongs to the administrator: rollback leaves even concurrent edits intact.
+    after = snapshot(installed)
+    updated = json.loads(before.pop(str(config))[1])
+    updated["obsolete"] = True
+    assert json.loads(after.pop(str(config))[1]) == updated
+    assert after == before
+    assert json.loads(Path(installed["HOST_CONTROL"]).read_text())["launcher_states"] == {
+        "vaultkeep@app.timer": "active"
+    }
+
+
 @pytest.mark.parametrize("mode", ["install", "update"])
 def test_installer_pauses_refreshes_validates_and_resumes_existing_jobs(
     installed, valid_config, monkeypatch, mode

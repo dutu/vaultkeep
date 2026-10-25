@@ -189,6 +189,51 @@ def test_offline_accounts_are_discovered_without_starting_a_manager(helper, monk
     assert all(argv[0] == "systemctl" and argv[1].startswith("list-") for argv in calls)
 
 
+def test_configuration_check_collects_all_accounts_even_after_an_account_failure(
+    helper, monkeypatch, tmp_path
+):
+    specs = [{"account": name} for name in (None, "alice", "bob", "carol")]
+    monkeypatch.setattr(helper, "inventory", lambda layout: {"accounts": specs})
+    calls = []
+
+    def operation(spec, python, action, payload):
+        calls.append(spec["account"])
+        assert python == "/candidate/venv/bin/python"
+        assert action == "check-configurations"
+        assert payload["user"] == (spec["account"] is not None)
+        if spec["account"] == "bob":
+            raise ValueError("bob: permission denied inspecting jobs")
+        name = spec["account"] or "system"
+        return {
+            "errors": [
+                {
+                    "job": name,
+                    "file": str(tmp_path / f"{name}.yaml"),
+                    "issues": [
+                        {"path": "trigger.notifications", "message": "Unknown property."},
+                        {"path": "destination.root", "message": "Field required"},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(helper, "account_operation", operation)
+    with pytest.raises(ValueError) as caught:
+        helper.check_configurations(None, "/candidate/venv/bin/python")
+
+    assert calls == [None, "alice", "bob", "carol"]
+    message = str(caught.value)
+    assert "Found 3 invalid job configurations:" in message
+    for name in ("system", "alice", "carol"):
+        assert f"Job: {name}" in message
+        assert f"File: {tmp_path / f'{name}.yaml'}" in message
+    assert "User: system" not in message
+    assert "User: alice" in message and "User: carol" in message
+    assert "bob: permission denied" in message
+    assert message.count("trigger.notifications") == 3
+    assert message.count("destination.root") == 3
+
+
 def test_account_rendering_uses_own_home_and_manager_xdg_environment(helper, monkeypatch, tmp_path):
     monkeypatch.setattr(
         helper.pwd, "getpwnam", lambda account: SimpleNamespace(pw_dir=str(tmp_path))

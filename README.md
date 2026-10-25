@@ -97,6 +97,12 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
    enables no jobs or lingering. Reinstallation/update automatically pauses,
    refreshes, validates, and resumes previously active managed automation.
 
+   Both `install` and `update` first validate existing system and user job YAML
+   against the selected release's schema. Invalid files abort installation before
+   activation or changes to schedules. The report identifies every invalid job,
+   its owner, absolute file path, and configuration errors. Correct the reported
+   YAML files and rerun the same installer command.
+
 The checkout can be removed after installation; updates require another trusted
 checkout. Custom paths, installed files, and recovery are described in the
 [maintenance reference](docs/maintenance.md). Failed stages report a private

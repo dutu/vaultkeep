@@ -14,6 +14,7 @@ on 0.1.0 and use their installed uninstall script until the OS is upgraded.
 The installer:
 
 - stages the checkout and virtual environment as one versioned release;
+- checks existing system and user job YAML against the candidate release's schema before pausing schedules or activating the release;
 - atomically activates that release through `/opt/vaultkeep/current`;
 - creates `/usr/local/bin/vaultkeep`;
 - creates configuration, secrets, state, and temporary directories;
@@ -70,15 +71,19 @@ The installer copies every `examples/*.example` file from the release. Updates o
 
 `install.sh install` and `install.sh update` handle maintenance automatically:
 
-1. Inventory existing root and user Vaultkeep timers and Trigger monitors, recording
+1. Prepare the candidate release in staging and validate existing job configurations
+   with its schema. Check `.yaml` files in managed job directories and the original
+   paths referenced by installed timers and monitors, including offline accounts.
+   An exact version/source match uses the verified installed release's schema.
+2. Inventory existing root and user Vaultkeep timers and Trigger monitors, recording
    their active states and enablement, including runtime enablement.
-2. Stop active timers and monitors. Running backup services and workers are never
+3. Stop active timers and monitors. Running backup services and workers are never
    stopped. If backups, workers, queued work, held job locks, or inconclusive activity
    remain, refuse the operation and resume the recorded launchers.
-3. Hold the deployment maintenance lock, install or repair the release, and refresh
+4. Hold the deployment maintenance lock, install or repair the release, and refresh
    existing managed job units using their original YAML paths and parameters.
    Refreshing units does not enable or start them.
-4. Reload systemd, validate all discovered jobs and runtime readiness for jobs being
+5. Reload systemd, validate all discovered jobs and runtime readiness for jobs being
    resumed, then resume only previously active timers and monitors. Previously
    inactive schedules remain inactive. Enablement and persistent timer timestamps
    are preserved; a persistent calendar timer may catch up a missed event.
@@ -174,6 +179,7 @@ The update mode:
 - requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;
 - stages the source and virtual environment as a complete versioned release;
 - validates the executable, example configurations, and systemd units;
+- validates existing job YAML with the candidate schema before pausing schedules;
 - atomically switches `/opt/vaultkeep/current` to the new release;
 - refreshes existing managed schedule and monitor units and reloads systemd;
 - validates jobs and resumes only previously active timers/monitors;
@@ -201,6 +207,27 @@ inspect `current`, `install-manifest.json`, retained releases, and `.staging` or
 reports a failure; never erase Trigger evidence to force an update.
 
 ## Installer-specific diagnosis
+
+### Configuration validation fails
+
+Both `install` and `update` abort before activation or schedule changes if an existing
+job YAML is missing, unreadable, malformed, or incompatible with the selected
+release's schema. The report lists all invalid configurations with job names,
+usernames where applicable, absolute paths, and full property paths and messages.
+The complete report is also retained in the private `Diagnostics:` transcript.
+
+Correct each reported file as its owner, then rerun the same installation command.
+For example, an obsolete `trigger.notifications` property must be removed or replaced
+with the supported [notification settings](notifications.md).
+The installer does not migrate, rewrite, or skip invalid jobs. The existing release,
+job files, and schedules remain unchanged on this refusal; prepared staging files
+are cleaned up. Package-manager changes made while preparing dependencies are
+outside deployment rollback.
+
+Schema checks do not require backup sources or destinations to be available.
+Configuration validation during managed-job refresh and runtime readiness checks
+for schedules being resumed remain in place. Failures after maintenance begins use
+the existing rollback and resume procedure described above.
 
 ### Installer candidate fails `--version`
 

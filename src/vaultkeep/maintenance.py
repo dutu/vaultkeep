@@ -105,6 +105,73 @@ def require_generated(original: str, rendered: str, *, variable: tuple[str, ...]
         raise ValueError("locally modified managed unit requires review")
 
 
+def managed_units(
+    document: dict[str, Any], manager: Any
+) -> tuple[set[str], set[Path], dict[str, str]]:
+    """Discover installed timers and monitors without loading their YAML files."""
+    timers: set[str] = set()
+    monitors: set[Path] = set()
+    for root in map(Path, document["unit_roots"]):
+        if document["user"]:
+            timers.update(path.name[10:-6] for path in root.glob("vaultkeep@*.timer"))
+            monitors.update(root.glob("vaultkeep-trigger@*.service"))
+        else:
+            timers.update(path.name[10:-8] for path in root.glob("vaultkeep@*.timer.d"))
+    registry = manager._registry()
+    timers.update(registry)
+    return timers, monitors, registry
+
+
+def check_configurations(document: dict[str, Any]) -> dict[str, Any]:
+    """Check every managed YAML and installed selection with this release's schema."""
+    from vaultkeep.config import load_config
+    from vaultkeep.errors import ConfigurationError
+    from vaultkeep.schedule import TimerManager, TimerPaths
+
+    user = document["user"]
+    paths = TimerPaths(**{key: Path(value) for key, value in document["paths"].items()})
+    manager = TimerManager(paths, user_mode=user)
+    timers, monitors, _ = managed_units(document, manager)
+    try:
+        configurations = {path for path in paths.jobs_root.iterdir() if path.suffix == ".yaml"}
+    except FileNotFoundError:
+        configurations = set()
+    for instance in sorted(timers):
+        service = manager._service_drop_in_path(instance)
+        snapshot = read_file(service)
+        if snapshot is None:
+            configurations.add(paths.jobs_root / f"{instance}.yaml")
+        else:
+            config, _ = command_selection(
+                base64.b64decode(snapshot["content"]).decode(), monitor=False, user=user
+            )
+            configurations.add(config)
+    for path in sorted(monitors):
+        snapshot = read_file(path)
+        if snapshot is None:
+            raise ValueError(f"managed monitor disappeared: {path}")
+        config, _ = command_selection(
+            base64.b64decode(snapshot["content"]).decode(), monitor=True, user=True
+        )
+        configurations.add(config)
+    errors = []
+    for path in sorted(configurations):
+        try:
+            load_config(path)
+        except ConfigurationError as error:
+            errors.append(
+                {
+                    "job": path.stem,
+                    "file": str(path.absolute()),
+                    "issues": [
+                        {"path": issue.dotted_path, "message": issue.message}
+                        for issue in error.issues
+                    ],
+                }
+            )
+    return {"errors": errors}
+
+
 def plan(document: dict[str, Any]) -> dict[str, Any]:
     """Render existing jobs; retain snapshots before any mutation."""
     from vaultkeep.backup.workflow import load_validated_config
@@ -124,17 +191,7 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
         after = base64.b64encode(content.encode()).decode("ascii") if content is not None else None
         changes.append({"path": str(path), "before": before, "after": after})
 
-    timers: set[str] = set()
-    monitors: set[Path] = set()
-    for root in map(Path, document["unit_roots"]):
-        if user:
-            for path in root.glob("vaultkeep@*.timer"):
-                timers.add(path.name[10:-6])
-            monitors.update(root.glob("vaultkeep-trigger@*.service"))
-        else:
-            timers.update(path.name[10:-8] for path in root.glob("vaultkeep@*.timer.d"))
-    registry = manager._registry()
-    timers.update(registry)
+    timers, monitors, registry = managed_units(document, manager)
     for instance in sorted(timers):
         timer = manager._timer_drop_in_path(instance)
         service = manager._service_drop_in_path(instance)
@@ -279,6 +336,8 @@ def main() -> None:
     document = json.load(sys.stdin)
     if action == "plan":
         print(json.dumps(plan(document)))
+    elif action == "check-configurations":
+        print(json.dumps(check_configurations(document)))
     elif action in ("apply", "restore"):
         apply(document, restore=action == "restore")
     elif action == "validate":

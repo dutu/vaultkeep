@@ -91,6 +91,86 @@ def test_refresh_existing_schedules_and_rollback_preserve_selection_and_files(
         assert (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns) == before
 
 
+@pytest.mark.parametrize("user", [False, True])
+@pytest.mark.parametrize("problem", ["obsolete", "malformed", "missing", "required", "unreadable"])
+def test_configuration_check_reports_managed_job_failures(
+    tmp_path, valid_config, monkeypatch, user, problem
+):
+    spec, _, config = scheduled_job(tmp_path, valid_config, monkeypatch, user=user)
+    if problem == "obsolete":
+        valid_config["trigger"] = {"notifications": {}}
+        valid_config["destination"]["obsolete"] = True
+        config.write_text(json.dumps(valid_config))
+    elif problem == "malformed":
+        config.write_text("job: [\n")
+    elif problem == "missing":
+        config.unlink()
+    elif problem == "required":
+        del valid_config["destination"]["root"]
+        config.write_text(json.dumps(valid_config))
+    else:
+        original = Path.open
+
+        def denied(path, *args, **kwargs):
+            if path == config:
+                raise PermissionError("configuration is not readable")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", denied)
+
+    result = maintenance.check_configurations(spec)
+
+    assert len(result["errors"]) == 1
+    error = result["errors"][0]
+    assert error["job"] == "app" and error["file"] == str(config)
+    if problem == "obsolete":
+        assert {issue["path"] for issue in error["issues"]} == {
+            "trigger.notifications",
+            "destination.obsolete",
+        }
+        # Refresh-time schema validation remains a safeguard.
+        from vaultkeep.errors import ConfigurationError
+
+        with pytest.raises(ConfigurationError):
+            maintenance.plan(spec)
+    elif problem == "required":
+        assert error["issues"][0]["path"] == "destination.root"
+    else:
+        assert error["issues"][0]["path"] == "<root>"
+        assert "Unable to parse YAML configuration" in error["issues"][0]["message"]
+
+
+def test_configuration_check_includes_custom_monitor_paths_and_all_directory_jobs(
+    tmp_path, valid_config
+):
+    spec, unit, _ = monitor_job(tmp_path, valid_config)
+    custom = tmp_path / "directory with spaces/app.yaml"
+    custom.write_text("job: [\n")
+    jobs = Path(spec["paths"]["jobs_root"])
+    jobs.mkdir()
+    (jobs / "another.yaml").write_text("{}")
+    (jobs / "ignored.example").write_text("invalid YAML: [")
+    before = unit.read_bytes()
+
+    result = maintenance.check_configurations(spec)
+
+    assert {error["file"] for error in result["errors"]} == {
+        str(custom),
+        str(jobs / "another.yaml"),
+    }
+    assert unit.read_bytes() == before
+
+
+@pytest.mark.parametrize("user", [False, True])
+def test_configuration_check_accepts_valid_parameterized_jobs(
+    tmp_path, valid_config, monkeypatch, user
+):
+    spec, _, _ = scheduled_job(
+        tmp_path, valid_config, monkeypatch, user=user, params={"repo": "nas"}
+    )
+    assert maintenance.check_configurations(spec) == {"errors": []}
+
+
 def monitor_job(tmp_path, valid_config):
     spec = document(tmp_path, user=True)
     root = Path(spec["unit_roots"][0])

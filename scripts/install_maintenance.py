@@ -117,7 +117,12 @@ def inventory(layout: Layout) -> dict:
         if entry.pw_name in accounts:
             continue
         root = Path(entry.pw_dir) / ".config/systemd/user"
-        if any(root.glob("vaultkeep@*.timer")) or any(root.glob("vaultkeep-trigger@*.service")):
+        if (
+            any(root.glob("vaultkeep@*.timer"))
+            or any(root.glob("vaultkeep-trigger@*.service"))
+            or (Path(entry.pw_dir) / ".config/vaultkeep/jobs").exists()
+            or (Path(entry.pw_dir) / ".local/state/vaultkeep/systemd-instances.json").exists()
+        ):
             specs.append(account_spec(entry.pw_name, None, layout))
     for spec in specs:
         command = spec["command"]
@@ -237,7 +242,34 @@ def account_operation(spec: dict, python: str, action: str, payload: dict) -> di
     )
     if result.returncode:
         fail(f"{spec['account'] or 'root'}: job {action} failed\n{result.stderr.strip()}")
-    return json.loads(result.stdout) if action == "plan" else None
+    return json.loads(result.stdout) if action in ("plan", "check-configurations") else None
+
+
+def check_configurations(layout: Layout, python: str) -> None:
+    errors = []
+    failures = []
+    for spec in inventory(layout)["accounts"]:
+        try:
+            result = account_operation(
+                spec, python, "check-configurations", {**spec, "user": spec["account"] is not None}
+            )
+            for error in result["errors"]:
+                lines = [f"Job: {error['job']}"]
+                if spec["account"] is not None:
+                    lines.append(f"User: {spec['account']}")
+                lines.append(f"File: {error['file']}")
+                for issue in error["issues"]:
+                    lines.append(f"\n  {issue['path']}\n    {issue['message']}")
+                errors.append("\n".join(lines))
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            failures.append(str(error))
+    if errors or failures:
+        details = []
+        if errors:
+            noun = "configuration" if len(errors) == 1 else "configurations"
+            details.append(f"Found {len(errors)} invalid job {noun}:\n\n" + "\n\n".join(errors))
+        details.extend(failures)
+        fail("\n\n".join(details))
 
 
 def refresh(path: Path, python: str) -> None:
@@ -308,7 +340,11 @@ def resume(path: Path) -> None:
 
 
 def main() -> None:
-    action, journal, *args = sys.argv[1:]
+    action, *args = sys.argv[1:]
+    if action == "check-configurations":
+        check_configurations(Layout(), args[0])
+        return
+    journal, *args = args
     path = Path(journal)
     if action == "pause":
         pause(path, Layout())

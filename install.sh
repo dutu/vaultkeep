@@ -18,6 +18,7 @@ UNIT_VALIDATION_DIR=""
 MAINTENANCE_DIR=""
 MAINTENANCE_LOCKED=0
 JOBS_REFRESH_STARTED=0
+CONFIGURATION_VALIDATION_FAILED=0
 
 VK_PREFIX=${VAULTKEEP_INSTALL_PREFIX:-/opt/vaultkeep}
 VK_CONFIG_ROOT=${VAULTKEEP_CONFIG_ROOT:-/etc/vaultkeep}
@@ -200,7 +201,9 @@ report_failure() {
     if [[ -n "$INSTALL_LOG" ]]; then
         printf 'Diagnostics: %s\n' "$INSTALL_LOG" >&4
         # Retain the full transcript; surface recent context without rerunning apt/pip.
-        tail -n 30 "$INSTALL_LOG" >&4
+        if [[ "$CONFIGURATION_VALIDATION_FAILED" == 0 ]]; then
+            tail -n 30 "$INSTALL_LOG" >&4
+        fi
     fi
 }
 
@@ -585,6 +588,29 @@ maintenance() {
     python3 "$SOURCE_DIR/scripts/install_maintenance.py" "$1" "$MAINTENANCE_DIR/journal.json" "${@:2}"
 }
 
+check_existing_configurations() {
+    local python=$1 details
+    stage_start "Configuration validation"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        log "PLAN validate all existing root/user job YAML with the candidate schema before pausing schedules or activation"
+        return
+    fi
+    if details=$(python3 "$SOURCE_DIR/scripts/install_maintenance.py" \
+        check-configurations "$python" 2>&1); then
+        [[ -z "$details" ]] || printf '%s\n' "$details"
+        return
+    fi
+    CONFIGURATION_VALIDATION_FAILED=1
+    FAILED_STAGE=$CURRENT_STAGE
+    stage_finish FAILED
+    printf '%s\n' "$details"
+    printf '%s\n' "$details" >&4
+    details=$'Installation aborted.\nThe existing Vaultkeep installation and schedules remain unchanged.'
+    printf '\n%s\n' "$details"
+    printf '\n%s\n' "$details" >&4
+    return 1
+}
+
 pause_schedules() {
     if [[ "$DRY_RUN" == 1 ]]; then
         log "PLAN inventory existing root/user jobs and record launcher states; stop active Vaultkeep timers/monitors"
@@ -695,9 +721,11 @@ rollback_commit() {
     trap - EXIT INT TERM HUP
     set +e
     [[ "$status" != 0 ]] || status=1
-    FAILED_STAGE=$CURRENT_STAGE
+    FAILED_STAGE=${FAILED_STAGE:-$CURRENT_STAGE}
     stage_finish FAILED
-    error "installer transaction failed (exit $status); restoring deployment and job units"
+    if [[ -n "$MAINTENANCE_DIR" || "$ROLLBACK_ACTIVE" == 1 ]]; then
+        error "installer transaction failed (exit $status); restoring deployment and job units"
+    fi
     if [[ -f "$MAINTENANCE_DIR/journal.json" ]]; then
         # Restore account-owned units independently of candidate package health,
         # before removing the candidate or reinstating a same-version release.
@@ -854,9 +882,6 @@ install_or_update() {
         support ownership "$SOURCE_DIR" "$COMPONENTS"
     fi
     start_transaction
-    stage_start "Pause schedules"
-    pause_schedules
-    refuse_active_services
     if [[ "$mode_result" == 10 && "$PREVIOUS_SCHEMA" == 3 ]]; then
         if [[ "$DRY_RUN" == 1 ]]; then
             log "PLAN verify installed environment; rebuild through protected transaction if damaged"
@@ -871,6 +896,30 @@ install_or_update() {
         previous_release=$active_release
     fi
     log "  retained release after success: $previous_release"
+    if [[ "$rebuild" == 1 ]]; then
+        stage_start "System dependencies"
+        install_dependencies
+        if [[ "$DRY_RUN" == 0 ]]; then
+            verify_python
+            support ownership "$SOURCE_DIR" "$COMPONENTS" staging
+        fi
+        verify_executables
+        check_7z_compatibility
+        stage_start "Directory preparation"
+        run install -d -o root -g root -m 0755 "$VK_PREFIX" "$VK_RELEASES" "$VK_STAGING"
+        stage_start "Systemd template checks"
+        verify_systemd_templates
+        stage_start "Release staging"
+        stage_release "$version" "$digest"
+    fi
+    if [[ "$rebuild" == 1 ]]; then
+        check_existing_configurations "$STAGED_RELEASE/venv/bin/python"
+    else
+        check_existing_configurations "$active_release/venv/bin/python"
+    fi
+    stage_start "Pause schedules"
+    pause_schedules
+    refuse_active_services
     if [[ "$rebuild" == 0 && "$DRY_RUN" == 0 && "$(support needs-reconciliation "$COMPONENTS")" == 0 ]]; then
         log "Vaultkeep $version verified; no deployment changes required"
         stage_start "Refresh managed jobs"
@@ -884,22 +933,6 @@ install_or_update() {
         resume_schedules
         installation_result "$version" "$previous_release"
         return
-    fi
-    if [[ "$rebuild" == 1 ]]; then
-        stage_start "System dependencies"
-        install_dependencies
-        if [[ "$DRY_RUN" == 0 ]]; then
-            verify_python
-            support ownership "$SOURCE_DIR" "$COMPONENTS" staging
-        fi
-        verify_executables
-        check_7z_compatibility
-        stage_start "Directory preparation"
-        prepare_directories
-        stage_start "Systemd template checks"
-        verify_systemd_templates
-        stage_start "Release staging"
-        stage_release "$version" "$digest"
     fi
     stage_start "Activation safety checks"
     prepare_directories
