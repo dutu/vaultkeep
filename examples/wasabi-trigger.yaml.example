@@ -1,57 +1,108 @@
-# Wasabi shutdown-triggered backup example.
-# User mode only: run vaultkeep --user as the application owner, without sudo.
-# Copy to your user jobs directory as wasabi-main.yaml; replace every example path.
-# Confirm the process identity, data-directory identity and all related writers
-# against the installed application before enabling this trigger.
-# See docs/trigger/apps/wasabi.md for configuration guidance.
-config_version: 1
+## Wasabi backup example (user mode)
+## Copy to ~/.config/vaultkeep/jobs/wasabi-main.yaml and replace example paths.
+## Run Vaultkeep as the Wasabi user: vaultkeep --user (no sudo).
+## Verify the Wasabi process and data directory before enabling the trigger.
+## Setup guide: docs/trigger/apps/wasabi.md
+
+config_version: 1                        # Configuration schema
 job:
-  id: wasabi-main
+  id: wasabi-main                        # Unique job ID
+
+## Backup mode
+# backup_mode: combined                  # combined (default) | per_file
+## per_file requires one source directory and follow_symlinks: false.
+
+## Sources
 sources:
-  - path: /home/user/.walletwasabi/client
-    archive_path_mode: prefix
-    archive_prefix: wasabi
+  - path: /home/user/.walletwasabi/client # Directory to back up
+    archive_path_mode: prefix            # Store under archive_prefix
+    archive_prefix: wasabi               # Path prefix in the archive
+    # exclude:                            # Source-specific exclusions
+    #   - "*.tmp"
+
+# exclude:                                # Global exclusions
+#   - "*.swp"
+
 source_options:
-  follow_symlinks: false
-  cross_filesystems: false
-  ignore_missing: false
+  follow_symlinks: false                 # Follow symbolic links
+  cross_filesystems: false               # Cross filesystem boundaries
+  ignore_missing: false                  # Allow missing sources
+
+## Destination
 destination:
-  root: /mnt/backups/wasabi-main
+  root: /mnt/backups/wasabi-main         # Backup directory
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+  # marker_file: ".vaultkeep-target"      # Verify file under root
+  # expected_fstype: cifs                # Required filesystem type
+
+## Archive
 archive:
-  format: tar.zst
-  compression_level: 6
+  format: tar.zst                        # Archive format
+  compression_level: 6                  # Compression strength
+
+## Encryption
 encryption:
-  mode: none
+  mode: none                             # Encryption disabled
+  # password_file: /home/user/.config/vaultkeep/secrets/wasabi-main.passphrase
+## password_file requires mode: password and archive.format: tar.7z.
+
+## Retention
 retention:
-  hourly: 24
-  daily: 7
-  weekly: 8
-  monthly: 12
-  yearly: 3
+  hourly: 24                             # Keep up to 24 hourly backups
+  daily: 7                               # Keep up to 7 daily backups
+  weekly: 8                              # Keep up to 8 weekly backups
+  monthly: 12                            # Keep up to 12 monthly backups
+  yearly: 3                              # Keep up to 3 yearly backups
+
+## Schedule (mutually exclusive with an enabled trigger)
 schedule:
-  enabled: false
+  enabled: false                         # Scheduled backups off
+  # interval: daily                      # hourly | daily | weekly | monthly
+  # window: "01:00-05:00"                # Local time range; alternative to at
+  # at: "03:30"                          # Local time; alternative to window
+  # day: sunday                          # Weekly: monday through sunday
+  # day: 1                               # Monthly: day 1–28
+  # persistent: true                     # Run once after missed activation
+
+## Shutdown trigger
 trigger:
-  enabled: false
-  app: wasabi
-  data_dir: /home/user/.walletwasabi/client
+  enabled: false                         # Shutdown-triggered backups off
+  app: wasabi                            # Application matcher
+  data_dir: /home/user/.walletwasabi/client # Must match Wasabi data directory
   matcher:
-    entrypoints:
+    entrypoints:                         # Accepted process entrypoints
       - kind: script
         value: /opt/wasabi/WalletWasabi
-    argv_tokens: []
-  poll_seconds: 2
-  confirm_seconds: 5
-  # Optional advisory deadline; never terminates a backup.
-  # deadline_seconds: 3600
-# Optional desktop alerts; each category is independent of automatic execution.
+    argv_tokens: []                      # Required command-line arguments
+    # exe_realpath: /opt/wasabi/WalletWasabi # Executable path predicate
+    # cmdline_regex: 'WalletWasabi'      # Optional regex (max 200 chars)
+    # env_eq: {}                         # Only WASABI_DATADIR is supported
+  poll_seconds: 2                        # Process check interval
+  confirm_seconds: 5                     # Shutdown confirmation delay
+  # deadline_seconds: 3600               # Advisory; never stops a backup
+  # params: {}                            # Runtime strings (e.g. NETWORK)
+
+## Lifecycle hooks (optional; commands run via /bin/sh -c)
+# hooks:
+#   before_check:
+#     command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
+#     timeout_seconds: 300               # Allowed: 1–3600
+#   before_archive: null
+#   after_archive: null
+#   on_success: null
+#   on_failure: null
+#   on_unchanged: null
+
+## Desktop notifications (independent for backup and trigger)
 notifications:
-  command: notify-send
-  timeout_ms: 5000
+  command: notify-send                   # Notification command
+  timeout_ms: 5000                       # Timeout in milliseconds
   backup:
-    enabled: false
+    enabled: false                       # Backup status alerts
   trigger:
-    enabled: false
+    enabled: false                       # Trigger status alerts
+
+## Logging
 logging:
-  level: info
-  include_command_output: false
+  level: info                            # Log verbosity
+  include_command_output: false         # Include hook command output

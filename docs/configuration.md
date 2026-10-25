@@ -41,8 +41,10 @@ IDs contain 1–128 ASCII letters, digits, underscores, or hyphens.
 | `hooks` | No | Six optional phases; each defaults to `null`. |
 | `logging` | Yes | Required `level`, optional `include_command_output`. |
 
-The [annotated job example](../examples/vaultkeep-schedule.yaml.example) includes
-all common settings. This complete manual-only job illustrates the shared structure:
+Each [job example](../README.md#create-a-backup-job) shows every supported parameter,
+with optional settings commented out where appropriate. The
+[annotated general example](../examples/vaultkeep-schedule.yaml.example) explains
+their values. This complete manual-only job illustrates the shared structure:
 
 ```yaml
 config_version: 1

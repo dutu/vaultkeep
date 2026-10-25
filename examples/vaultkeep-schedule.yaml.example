@@ -1,118 +1,94 @@
-# Vaultkeep job example.
-# Copy to /etc/vaultkeep/jobs/<job-id>.yaml or a user-mode jobs directory.
-# The file stem must match job.id, for example app.yaml with job.id: app.
+## Vaultkeep — scheduled backup example
+## Copy to /etc/vaultkeep/jobs/example.yaml or a user-mode jobs directory.
+## The filename must match job.id. Replace example paths before enabling.
+## Convention: ## = explanation; # key: value = disabled option.
 
-# Supported value: 1.
-config_version: 1
+config_version: 1                         # Supported: 1
 
+## Job
 job:
-  # Unique job ID. Values: letters, digits, _ and -; max 128 chars.
-  id: example
+  id: example                            # Letters, digits, _ or -; max 128
 
+## Archive grouping
+# backup_mode: combined                  # combined (default) | per_file
+## per_file requires one source directory and follow_symlinks: false.
+
+## Sources
 sources:
-  # Source file or directory. Value: absolute path.
-  - path: /path/to/source
-
-    # Archive member path mode. Values: prefix, preserve.
-    archive_path_mode: prefix
-
-    # Required with archive_path_mode: prefix.
-    # Empty string stores source contents directly at the archive root.
-    archive_prefix: source
-
-    # Optional source-only excludes. Values: gitwildmatch patterns.
-    # exclude:
+  - path: /path/to/source                # Absolute file or directory
+    archive_path_mode: prefix           # prefix | preserve
+    archive_prefix: source              # Prefix; "" places files at archive root
+    # exclude:                          # Source-only gitwildmatch patterns
     #   - cache/
     #   - "*.tmp"
     #   - "**/node_modules/**"
 
-# Optional global excludes. Values: gitwildmatch patterns.
-# exclude:
+# exclude:                               # Global gitwildmatch patterns
 #   - "*.swp"
 #   - "**/.cache/**"
 
+## Source handling
 source_options:
-  # Follow symlink targets. Values: true, false.
-  follow_symlinks: false
+  follow_symlinks: false                 # Follow symlink targets
+  cross_filesystems: false              # Traverse nested mounts
+  ignore_missing: false                 # Allow missing sources
 
-  # Descend into mounted filesystems below sources. Values: true, false.
-  cross_filesystems: false
-
-  # Ignore missing source paths. Values: true, false.
-  ignore_missing: false
-
+## Destination
 destination:
-  # Backup destination directory. Value: absolute local/CIFS/NFS path.
-  root: /mnt/backups/example
-
-  # Backup base name. Must include {timestamp} or {timestamp_utc}.
-  # Built-ins: {job}, {hostname}, {timestamp}, {timestamp_utc}, {source_hash}, {format}.
+  root: /mnt/backups/example            # Local, CIFS or NFS path
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+  # marker_file: ".vaultkeep-target"     # Relative path; create file yourself
+  # expected_fstype: cifs               # Require matching filesystem type
 
-  # Optional regular marker file required below destination.root. Value: relative path.
-  # Create it yourself on the intended destination; Vaultkeep never creates it.
-  # marker_file: ".vaultkeep-target"
-
-  # Optional exact filesystem type backing root, as seen by Vaultkeep.
-  # Use cifs to reject an LXC bind mount of a host local directory.
-  # Independent of marker_file: configure either, both, or neither safety check.
-  # expected_fstype: cifs
-
+## Archive
 archive:
-  # Archive format. Values: tar.zst, tar.7z.
-  format: tar.zst
+  format: tar.zst                        # tar.zst | tar.7z
+  # compression_level: 6                # tar.zst: 1–19; tar.7z: 1–9
 
-  # Compression level. Values: 1-19 for tar.zst, 1-9 for tar.7z.
-  # compression_level: 6
-
+## Encryption
 encryption:
-  # Encryption mode. Values: none for tar.zst, password for tar.7z.
-  mode: none
+  mode: none                            # tar.zst: none; tar.7z: password
+  # password_file: /etc/vaultkeep/secrets/example.passphrase  # For tar.7z + password mode
 
-  # Required with mode: password. Value: absolute password-file path.
-  # password_file: /etc/vaultkeep/secrets/example.passphrase
-
+## Retention (counts per tier; at least one must be positive)
 retention:
-  # Retention counts. Values: integers >= 0; at least one tier must be > 0.
   hourly: 24
   daily: 7
   weekly: 8
   monthly: 12
   yearly: 3
 
+## Schedule (cannot be enabled alongside trigger)
 schedule:
-  # Enable systemd timer. Values: true, false.
-  enabled: false
+  enabled: false                        # Enable the systemd timer
+  interval: daily                       # hourly | daily | weekly | monthly
+  window: "01:00-05:00"                 # Local-time range; alternative to at
+  # at: "03:30"                         # Fixed local time; alternative to window
+  # day: sunday                         # Required for weekly; monday–sunday
+  # day: 1                              # Required for monthly; 1–28
+  persistent: true                      # One catch-up activation after downtime
 
-  # Required when enabled. Values: hourly, daily, weekly, monthly.
-  interval: daily
-
-  # Required when enabled: exactly one of window or at.
-  # window value: "HH:MM-HH:MM"; at value: "HH:MM".
-  window: "01:00-05:00"
-  # at: "03:30"
-
-  # Required with interval: weekly. Values: monday through sunday.
-  # day: sunday
-
-  # Required with interval: monthly. Values: 1-28.
-  # day: 1
-
-  # Run one catch-up activation after downtime. Values: true, false.
-  persistent: true
-
-# Scheduling and shutdown triggering cannot both be enabled for one job.
-# Trigger is optional and disabled when omitted; see the app-specific examples.
+## Shutdown trigger (alternative to schedule)
+## Electrum identity below is illustrative; see app-specific examples.
 trigger:
   enabled: false
+  # app: electrum                        # electrum | bisq | wasabi
+  # data_dir: /home/user/.electrum       # Application data directory
+  # matcher:
+  #   entrypoints:                      # At least one; script | jar | java_main
+  #     - kind: script
+  #       value: /home/user/.local/opt/electrum/current/run_electrum
+  #   exe_realpath: /usr/bin/python3    # Optional process executable check
+  #   argv_tokens: []                   # Optional argument tokens
+  #   cmdline_regex: 'run_electrum'      # Optional command-line regex
+  #   env_eq: {}                        # App-specific permitted environment keys
+  # poll_seconds: 2                     # Process observation interval
+  # confirm_seconds: 5                  # Continuous absence before shutdown
+  # deadline_seconds: 3600              # Advisory; never terminates backup
+  # params: {}                          # String runtime parameters
 
+## Hooks (null = disabled; commands run with /bin/sh -c)
 hooks:
-  # Hook phases. Values: null or {command: 'shell command', timeout_seconds: 1-3600}.
-  # Commands run with /bin/sh -c; shell built-ins and $VAULTKEEP_* variables are available.
-  # Built-ins: {job}, {hostname}, {timestamp}, {timestamp_utc}, {source_hash}, {format}.
-  # Date formats: {timestamp_utc:%Y%m%dT%H%M%SZ}. Hash truncation: {source_hash:.12}.
-  # Quote messages with shell double quotes. Shell single quotes keep placeholders literal.
-  # {source_hash} is empty until hashing completes.
   before_check: null
   before_archive: null
   after_archive: null
@@ -120,63 +96,22 @@ hooks:
   on_failure: null
   on_unchanged: null
 
-  # Example hook:
+  ## Hook example: replace a null phase above to enable it.
+  ## Timeout: 1–3600 seconds (default 300).
   # before_check:
   #   command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
   #   timeout_seconds: 300
-  # on_failure:
-  #   command: 'telegram-notify --level error "Backup failed for {job} on {hostname}"'
-  #   timeout_seconds: 60
 
-  # Alternative examples below. Choose one command per phase.
-  # Set $HOSTNAME explicitly; Vaultkeep does not inherit your shell's environment.
-  # >- joins equally indented lines with spaces, so no trailing backslashes are needed.
-  # Keep all lines of the folded command at the same indentation.
-  # $VAULTKEEP_* variables are provided.
-  # on_failure:
-  #   command: >-
-  #     HOSTNAME=$(hostname) &&
-  #     export HOSTNAME &&
-  #     telegram-notify --level error
-  #     "Backup failed for $VAULTKEEP_JOB on $HOSTNAME: $VAULTKEEP_ERROR"
-  #   timeout_seconds: 60
-
-  # Call your own POSIX shell or Bash script. Replace the paths with your scripts.
-  # The job ID is passed as $1; scripts also receive the $VAULTKEEP_* environment.
-  # Placeholders are expanded in command, not in the script's contents.
-  # on_success:
-  #   command: '/bin/sh /usr/local/libexec/vaultkeep/notify-backup.sh "{job}"'
-  #   timeout_seconds: 60
-  # on_failure:
-  #   command: '/bin/bash /usr/local/libexec/vaultkeep/notify-backup.bash "{job}"'
-  #   timeout_seconds: 60
-
-  # | preserves newlines, allowing several shell commands in one hook.
-  # A trailing \ continues the same command on the next line.
-  # The \ must be the last character on its line, with no spaces after it.
-  # Include the first global-scope local IPv4 address; requires iproute2 and awk.
-  # Missing addresses fall back to "unavailable" so the notification can still run.
-  # on_failure:
-  #   command: |
-  #     HOSTNAME=$(hostname) || HOSTNAME=unknown
-  #     IP=$(ip -4 -o addr show scope global 2>/dev/null |
-  #       awk '{split($4, address, "/"); print address[1]; exit}')
-  #     IP=${IP:-unavailable}
-  #     telegram-notify --level error \
-  #       "Backup failed for {job} on $HOSTNAME (IPv4: $IP): $VAULTKEEP_ERROR"
-  #   timeout_seconds: 60
-
-# Optional desktop alerts; each category is independent of automatic execution.
+## Desktop notifications (backup and trigger are independent)
 notifications:
-  command: notify-send
-  timeout_ms: 5000
+  command: notify-send                   # Notification command
+  timeout_ms: 5000                      # Display timeout
   backup:
     enabled: false
   trigger:
     enabled: false
-logging:
-  # Log level. Values: error, warning, info, debug.
-  level: info
 
-  # Include subprocess output in logs. Values: true, false.
-  # include_command_output: false
+## Logging
+logging:
+  level: info                           # error | warning | info | debug
+  # include_command_output: false       # Include subprocess output in logs
