@@ -38,6 +38,7 @@ from vaultkeep.destination import (
     execute_prune_plan,
     probe_destination_writability,
 )
+from vaultkeep.destination.discovery import DiscoveredBackup
 from vaultkeep.errors import (
     ArchiveVerificationError,
     DestinationError,
@@ -53,6 +54,7 @@ from vaultkeep.file_backups import (
 )
 from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_shell
 from vaultkeep.notifications.notifier import NotificationConfig
+from vaultkeep.progress import VerificationProgress, report_progress
 from vaultkeep.sources import (
     SourceEntryType,
     calculate_config_fingerprint,
@@ -185,9 +187,15 @@ def verify_backups(
     user_mode: bool = False,
     progress: Callable[[str], None] | None = None,
     on_verified: Callable[[Path], None] | None = None,
+    on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> CommandResult:
     """Verify metadata, checksums, archive streams, credentials, and safe TAR members."""
-    report = progress if progress is not None else lambda message: None
+
+    def report(message: str) -> None:
+        if progress is not None:
+            with suppress(Exception):
+                progress(message)
+
     parameters = dict(runtime_params or {})
     report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
@@ -208,36 +216,93 @@ def verify_backups(
     failures: list[str] = []
     archive_failed = False
     try:
+        backups: list[DiscoveredBackup] = []
+        backup_total: int | None = 0
         for destination in destinations:
             try:
-                discovered = discover_backups(destination, runtime_params=parameters)
+                discovered = discover_backups(
+                    destination, runtime_params=parameters, on_progress=on_progress
+                )
             except (DestinationError, OSError) as error:
                 failures.append(f"{destination.destination.root}: {error}")
+                backup_total = None
+                report_progress(
+                    on_progress,
+                    VerificationProgress(
+                        "discovery",
+                        "Backup discovery",
+                        "failed",
+                        Path(destination.destination.root),
+                        error=str(error),
+                    ),
+                )
                 continue
+            if backup_total is not None:
+                backup_total += len(discovered.backups) + len(discovered.malformed)
+            backups.extend(discovered.backups)
             failures.extend(
                 f"{entry.path}: malformed backup: {entry.reason}" for entry in discovered.malformed
             )
-            for backup in discovered.backups:
+        report_progress(
+            on_progress,
+            VerificationProgress(
+                "discovery",
+                "SHA-256 verification complete",
+                "complete",
+                completed=len(backups),
+                total=backup_total,
+            ),
+        )
+        for index, backup in enumerate(backups, start=1):
+            operation = "Archive verification"
+
+            def archive_progress(event: VerificationProgress, *, index: int = index) -> None:
+                nonlocal operation
+                operation = event.operation
+                report_progress(on_progress, replace(event, index=index, total=len(backups)))
+
+            if on_progress is None:
                 report(f"Verifying archive {str(backup.archive_path)!r}")
-                try:
-                    if backup.manifest.archive_format == "tar.zst":
-                        verify_tar_zstd(backup.archive_path, tools=tools)
-                    else:
-                        if loaded_password is None:
-                            raise ArchiveVerificationError("Encrypted backup requires a password")
-                        verify_tar_7z(
-                            backup.archive_path,
-                            job_id=backup.manifest.job,
-                            password=loaded_password.secret,
-                            tools=tools,
-                        )
-                except (VaultkeepError, OSError) as error:
-                    archive_failed = True
-                    failures.append(f"{backup.archive_path}: {error}")
-                    continue
-                count += 1
-                if on_verified is not None:
+            archive_progress(VerificationProgress("archive", operation, path=backup.archive_path))
+            try:
+                if backup.manifest.archive_format == "tar.zst":
+                    verify_tar_zstd(backup.archive_path, tools=tools, on_progress=archive_progress)
+                else:
+                    if loaded_password is None:
+                        raise ArchiveVerificationError("Encrypted backup requires a password")
+                    verify_tar_7z(
+                        backup.archive_path,
+                        job_id=backup.manifest.job,
+                        password=loaded_password.secret,
+                        tools=tools,
+                        on_progress=archive_progress,
+                    )
+            except (VaultkeepError, OSError) as error:
+                archive_failed = True
+                failures.append(f"{backup.archive_path}: {operation}: {error}")
+                archive_progress(
+                    VerificationProgress(
+                        "archive", operation, "failed", backup.archive_path, error=str(error)
+                    )
+                )
+                continue
+            count += 1
+            archive_progress(
+                VerificationProgress("archive", "Archive verification", "ok", backup.archive_path)
+            )
+            if on_verified is not None:
+                with suppress(Exception):
                     on_verified(backup.archive_path)
+        report_progress(
+            on_progress,
+            VerificationProgress(
+                "archive",
+                "Archive verification complete",
+                "complete",
+                completed=count,
+                total=len(backups),
+            ),
+        )
     finally:
         if loaded_password is not None:
             loaded_password.secret.clear()

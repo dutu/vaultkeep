@@ -193,7 +193,8 @@ can change afterward.
 they show an animated spinner, elapsed time, and the current stage on one line.
 Completion messages remain as permanent lines. The status fits the terminal width
 and uses an ASCII spinner when the terminal encoding cannot display Unicode.
-Elapsed time is for the whole operation; stages do not imply a completion percentage.
+Elapsed time is for the whole operation. Percentages appear only when measured byte
+totals are available; stage names do not imply an overall completion percentage.
 
 When stderr is redirected, piped, or captured, or `TERM` is unset, empty, or `dumb`,
 progress uses plain timestamped lines with immediate stage changes and a
@@ -273,9 +274,29 @@ Each verified archive is reported on stderr. Verification continues after indivi
 backup failures and reports their paths and reasons; any failure produces a nonzero
 exit status.
 
-`verify` uses the shared [progress display](#progress-display) for configuration
-validation, destination checks, and archive verification. Verified archive messages
-remain as permanent lines. The final result remains on stdout as `verify: verified`.
+`verify` uses the shared [progress display](#progress-display). First it reports each
+backup's path, index, manifest/directory validation, and SHA-256 calculation. SHA-256
+shows compressed archive bytes read, total bytes, and percentage when the size is
+available. Without a size, it shows bytes read. These measurements use the existing
+checksum read; they do not require another archive scan.
+
+After discovery and SHA-256 checks finish, archive verification reports the archive
+path, index, and current operation. For `.tar.zst`, the Zstandard stream test and
+TAR inspection during decompression are separate operations. For `.tar.7z`, it
+reports the archive test, header/member validation, and TAR inspection during
+decryption. Archive operations do not have byte percentages.
+
+Paths, validation results, failures, and phase completion remain as permanent lines.
+Plain-text logs coalesce byte updates into the regular 10-second heartbeats.
+For `per_file` jobs, discovery indices and totals apply to each file's backup history;
+archive indices cover all backups that passed discovery across those histories.
+
+The final stderr summary counts `Backups` that passed manifest/directory and SHA-256
+validation, and `Archives` that passed archive and TAR verification. Invalid backups
+are excluded from the archive phase. Unknown totals are omitted; an empty destination
+shows `0/0`. `Result` is `VERIFIED` only when every check succeeds, otherwise `FAILED`.
+The successful stdout marker remains `verify: verified`; failures retain their existing
+exit codes and have no success marker.
 
 ## Prune job backups
 

@@ -19,7 +19,7 @@ from vaultkeep.backup.workflow import (
 )
 from vaultkeep.cli.output import Console, command_logging
 from vaultkeep.cli.parser import create_parser
-from vaultkeep.cli.progress import CliProgress
+from vaultkeep.cli.progress import CliProgress, VerificationDisplay
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.errors import (
     ConfigurationError,
@@ -128,14 +128,23 @@ def _dispatch(
                 progress.succeed("Backup listing complete")
         elif namespace.command == "verify":
             with CliProgress() as verification_progress:
-                result = verify_backups(
-                    namespace.config,
-                    runtime_params=runtime_params,
-                    user_mode=namespace.user_mode,
-                    progress=verification_progress.update,
-                    on_verified=lambda path: verification_progress.message(f"Verified: {path}"),
-                )
-                verification_progress.succeed("Verification complete")
+                display = VerificationDisplay(verification_progress)
+                try:
+                    result = verify_backups(
+                        namespace.config,
+                        runtime_params=runtime_params,
+                        user_mode=namespace.user_mode,
+                        progress=verification_progress.update,
+                        on_progress=display.report,
+                    )
+                except (VaultkeepError, OSError):
+                    with suppress(Exception):
+                        verification_progress.fail("Verification failed")
+                        display.summary(success=False)
+                    raise
+                with suppress(Exception):
+                    verification_progress.succeed("Verification complete")
+                    display.summary(success=True)
         elif namespace.command == "prune":
             result = prune_backups(
                 namespace.config, dry_run=namespace.dry_run, runtime_params=runtime_params

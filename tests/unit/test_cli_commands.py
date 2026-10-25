@@ -14,6 +14,7 @@ from vaultkeep.cli.commands import main
 from vaultkeep.config import JobConfig
 from vaultkeep.destination import finalize as finalize_module
 from vaultkeep.errors import DestinationError
+from vaultkeep.progress import VerificationProgress
 
 EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-schedule.yaml"
 
@@ -188,7 +189,9 @@ def test_verify_cli_passes_mode_and_reports_verified_archives(
     def verify(path: Path, **kwargs: Any) -> workflow.CommandResult:
         assert path == local_job
         assert kwargs["user_mode"] is user_mode
-        kwargs["on_verified"](archive)
+        kwargs["on_progress"](
+            VerificationProgress("archive", "Archive verification", "ok", archive)
+        )
         return workflow.CommandResult("verify", "verified", backups=1)
 
     monkeypatch.setattr(commands, "verify_backups", verify)
@@ -196,7 +199,7 @@ def test_verify_cli_passes_mode_and_reports_verified_archives(
     assert main([*(["--user"] if user_mode else []), "--config", str(local_job), "verify"]) == 0
     captured = capsys.readouterr()
     assert captured.out == "verify: verified\n"
-    assert captured.err.startswith(f"Verified: {archive}\n")
+    assert f"Archive | Archive verification: OK | {archive}\n" in captured.err
     assert captured.err.endswith("SUCCESS: Verification complete\n")
 
 
@@ -366,3 +369,12 @@ def test_shared_lifecycle_actions_provide_help(command, capsys):
             main([command, action, "--help"])
         assert error.value.code == 0
         assert f"vaultkeep {command} {action}" in capsys.readouterr().out
+
+
+def test_verify_empty_destination_reports_zero_counts(local_job, capsys):
+    assert main(["--config", str(local_job), "verify"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "verify: verified\n"
+    assert "Found 0 backups" in captured.err
+    assert "Backups:  0/0 validated\nArchives: 0/0 verified\nResult:   VERIFIED\n" in captured.err
+    assert "%" not in captured.err

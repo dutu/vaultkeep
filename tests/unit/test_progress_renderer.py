@@ -17,6 +17,7 @@ from vaultkeep.backup.workflow import CommandResult
 from vaultkeep.cli import commands
 from vaultkeep.cli import progress as progress_module
 from vaultkeep.cli.progress import CliProgress, ProgressMetrics
+from vaultkeep.progress import VerificationProgress
 
 
 class Output(io.StringIO):
@@ -259,7 +260,11 @@ def test_verify_uses_renderer_and_preserves_stdout(monkeypatch, capsys, workers,
         assert kwargs["runtime_params"] == {"wallet": "app"}
         kwargs["progress"]("Checking destination")
         kwargs["progress"]("Verifying archive")
-        kwargs["on_verified"]("/backups/archive.tar.zst")
+        kwargs["on_progress"](
+            VerificationProgress(
+                "archive", "Archive verification", "ok", Path("/backups/archive.tar.zst")
+            )
+        )
         return CommandResult("verify", "verified", backups=1)
 
     monkeypatch.setattr(commands, "verify_backups", verify)
@@ -268,7 +273,229 @@ def test_verify_uses_renderer_and_preserves_stdout(monkeypatch, capsys, workers,
         == 0
     )
     assert capsys.readouterr().out == "verify: verified\n"
-    assert "Verified: /backups/archive.tar.zst\n" in output.getvalue()
+    assert "Archive | Archive verification: OK | /backups/archive.tar.zst\n" in output.getvalue()
     assert output.getvalue().endswith("SUCCESS: Verification complete\n")
     assert ("\033[2K" in output.getvalue()) is tty
     assert len(workers) == 1
+
+
+@pytest.mark.parametrize("tty", [False, True])
+@pytest.mark.parametrize("failure", [None, "manifest", "archive"])
+def test_verify_structured_progress_phases_and_final_summary(
+    monkeypatch, capsys, workers, tty, failure
+):
+    from vaultkeep.errors import ArchiveVerificationError, DestinationError
+
+    output = Output(tty=tty)
+    monkeypatch.setattr(progress_module.sys, "stderr", output)
+
+    def verify(config, **kwargs):
+        kwargs["progress"]("Checking destination")
+        emit = kwargs["on_progress"]
+        emit(VerificationProgress("discovery", "Backup discovery", "ok", Path("/backups"), total=2))
+        for index in (1, 2):
+            path = Path(f"/backups/backup-{index}")
+            emit(
+                VerificationProgress(
+                    "backup", "Manifest/directory validation", path=path, index=index, total=2
+                )
+            )
+            if failure == "manifest" and index == 1:
+                emit(
+                    VerificationProgress(
+                        "backup",
+                        "Manifest/directory validation",
+                        "failed",
+                        path,
+                        index,
+                        2,
+                        error="invalid manifest",
+                    )
+                )
+                continue
+            emit(
+                VerificationProgress(
+                    "backup", "Manifest/directory validation", "ok", path, index, 2
+                )
+            )
+            for processed in range(101):
+                emit(
+                    VerificationProgress(
+                        "backup",
+                        "SHA-256",
+                        path=path / "archive.tar.zst",
+                        index=index,
+                        total=2,
+                        bytes_processed=processed,
+                        bytes_total=100,
+                    )
+                )
+            if tty:
+                output.frame_seen.clear()
+                assert output.frame_seen.wait(2)
+                assert "100% | 100/100 bytes" in output.getvalue()
+            emit(
+                VerificationProgress("backup", "SHA-256", "ok", path / "archive.tar.zst", index, 2)
+            )
+        eligible = 1 if failure == "manifest" else 2
+        emit(
+            VerificationProgress(
+                "discovery",
+                "SHA-256 verification complete",
+                "complete",
+                total=2,
+                completed=eligible,
+            )
+        )
+        for index in range(1, eligible + 1):
+            path = Path(f"/backups/backup-{index}/archive.tar.zst")
+            emit(
+                VerificationProgress(
+                    "archive", "Zstandard stream test", path=path, index=index, total=eligible
+                )
+            )
+            emit(
+                VerificationProgress(
+                    "archive",
+                    "TAR inspection (Zstandard decompression)",
+                    path=path,
+                    index=index,
+                    total=eligible,
+                )
+            )
+            if failure == "archive" and index == 1:
+                emit(
+                    VerificationProgress(
+                        "archive",
+                        "TAR inspection (Zstandard decompression)",
+                        "failed",
+                        path,
+                        index,
+                        eligible,
+                        error="unsafe member",
+                    )
+                )
+            else:
+                emit(
+                    VerificationProgress(
+                        "archive", "Archive verification", "ok", path, index, eligible
+                    )
+                )
+        emit(
+            VerificationProgress(
+                "archive",
+                "Archive verification complete",
+                "complete",
+                total=eligible,
+                completed=eligible - (failure == "archive"),
+            )
+        )
+        if failure:
+            error_type = DestinationError if failure == "manifest" else ArchiveVerificationError
+            raise error_type("invalid manifest" if failure == "manifest" else "unsafe member")
+        return CommandResult("verify", "verified", backups=2)
+
+    monkeypatch.setattr(commands, "verify_backups", verify)
+    assert commands.main(["--config", "app.yaml", "verify"]) == (
+        5 if failure == "manifest" else 7 if failure else 0
+    )
+    assert capsys.readouterr().out == ("" if failure else "verify: verified\n")
+    text = output.getvalue()
+    assert text.index("SHA-256 verification complete") < text.index("Zstandard stream test")
+    assert "Backup 2/2 | SHA-256: OK" in text
+    if failure == "manifest":
+        assert "Manifest/directory validation: FAILED | /backups/backup-1: invalid manifest" in text
+        assert "Backups:  1/2 validated\nArchives: 1/1 verified\nResult:   FAILED\n" in text
+    elif failure == "archive":
+        assert (
+            "TAR inspection (Zstandard decompression): FAILED | "
+            "/backups/backup-1/archive.tar.zst: unsafe member" in text
+        )
+        assert "Backups:  2/2 validated\nArchives: 1/2 verified\nResult:   FAILED\n" in text
+    else:
+        assert text.endswith(
+            "Backups:  2/2 validated\nArchives: 2/2 verified\nResult:   VERIFIED\n"
+        )
+    if not tty:
+        assert "\033" not in text and "\r" not in text
+        # Chunk callbacks only update snapshots; they do not produce a line each.
+        assert text.count("bytes") <= 2
+    assert len(workers) == 1
+
+
+@pytest.mark.parametrize("tty", [False, True])
+def test_verification_unknown_totals_and_metric_heartbeats(monkeypatch, workers, tty):
+    from vaultkeep.cli.progress import VerificationDisplay
+
+    output = Output(tty=tty)
+    monkeypatch.setattr(progress_module, "_HEARTBEAT_SECONDS", 0.01)
+    with CliProgress(stream=output) as progress:
+        display = VerificationDisplay(progress)
+        display.report(
+            VerificationProgress(
+                "backup", "SHA-256", path=Path("/backup"), index=1, bytes_processed=0
+            )
+        )
+        for count in range(1, 501):
+            display.report(
+                VerificationProgress(
+                    "backup", "SHA-256", path=Path("/backup"), index=1, bytes_processed=count
+                )
+            )
+        if tty:
+            output.frame_seen.clear()
+            assert output.frame_seen.wait(2)
+        else:
+            assert output.heartbeat_seen.wait(2)
+        display.report(
+            VerificationProgress(
+                "discovery", "SHA-256 verification complete", "complete", completed=1
+            )
+        )
+        display.report(
+            VerificationProgress(
+                "archive", "Archive verification complete", "complete", completed=1
+            )
+        )
+        progress.succeed("Verification complete")
+        display.summary(success=True)
+    text = output.getvalue()
+    assert "500 bytes" in text
+    assert "%" not in text and "/None" not in text and "0/0" not in text
+    assert text.endswith("Backups:  1 validated\nArchives: 1 verified\nResult:   VERIFIED\n")
+
+
+def test_checkpoints_preserve_elapsed_time_and_clear_completed_stage(monkeypatch, workers):
+    output = Output(tty=False)
+    now = [0.0]
+    monkeypatch.setattr(progress_module, "monotonic", lambda: now[0])
+    with CliProgress(stream=output) as progress:
+        progress.update("SHA-256")
+        now[0] = 60.0
+        progress.checkpoint("SHA-256: OK")
+        now[0] = 120.0
+        progress.update("TAR inspection")
+        progress.succeed("Complete")
+    assert (
+        output.getvalue() == "[00:00] SHA-256\n[01:00] SHA-256: OK\n"
+        "[02:00] TAR inspection\n[02:00] SUCCESS: Complete\n"
+    )
+
+
+def test_renderer_failure_cannot_mask_verification_error(monkeypatch, capsys, workers):
+    from vaultkeep.errors import ArchiveVerificationError
+
+    def verify(config, **kwargs):
+        kwargs["progress"]("Verifying archive")
+        raise ArchiveVerificationError("corrupt archive /backup.tar.zst")
+
+    def broken(*args):
+        raise RuntimeError("renderer failed")
+
+    monkeypatch.setattr(commands, "verify_backups", verify)
+    monkeypatch.setattr(CliProgress, "fail", broken)
+    assert commands.main(["--config", "app.yaml", "verify"]) == 7
+    captured = capsys.readouterr()
+    assert "corrupt archive /backup.tar.zst" in captured.err
+    assert captured.out == ""
+    assert all(not worker.is_alive() for worker in workers)

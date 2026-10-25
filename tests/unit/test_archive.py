@@ -1089,3 +1089,26 @@ def test_build_request_rejects_invalid_format_contract(
             password=password,
             source_digest_calculator=lambda snapshot: SOURCE_DIGEST,
         )
+
+
+@pytest.mark.parametrize("size", [0, 9])
+def test_checksum_byte_progress_survives_unknown_total(tmp_path, monkeypatch, size):
+    import hashlib
+
+    from vaultkeep.archive import checksums
+
+    archive = tmp_path / "archive.tar.zst"
+    archive.write_bytes(b"x" * size)
+    events = []
+
+    def unavailable(fd):
+        raise OSError("size unavailable")
+
+    monkeypatch.setattr(checksums.os, "fstat", unavailable)
+    monkeypatch.setattr(checksums, "_CHUNK_SIZE", 4)
+    assert (
+        calculate_archive_sha256(archive, on_progress=events.append)
+        == hashlib.sha256(b"x" * size).hexdigest()
+    )
+    assert [e.bytes_processed for e in events] == ([0, 4, 8, 9] if size else [0])
+    assert all(e.bytes_total is None and e.path == archive for e in events)

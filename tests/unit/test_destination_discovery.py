@@ -26,6 +26,7 @@ from vaultkeep.errors import (
     PruneError,
 )
 from vaultkeep.file_backups import file_config
+from vaultkeep.progress import VerificationProgress
 from vaultkeep.state.models import CredentialFingerprint
 
 
@@ -117,7 +118,7 @@ def test_verify_checks_all_archives_and_reports_all_failures(
     inspected = []
     verified = []
 
-    def inspect(path: Path, *, tools: Any) -> None:
+    def inspect(path: Path, *, tools: Any, on_progress: Any) -> None:
         inspected.append(path)
         if path != good:
             raise ArchiveVerificationError(f"invalid stream {path.name}")
@@ -164,7 +165,9 @@ def test_verify_loads_one_password_for_all_backups_and_always_clears_it(
         loaded.append((path, owner_uid, owner_gid))
         return LoadedPassword(secret, fingerprint)
 
-    def inspect(path: Path, *, job_id: str, password: PasswordSecret, tools: Any) -> None:
+    def inspect(
+        path: Path, *, job_id: str, password: PasswordSecret, tools: Any, on_progress: Any
+    ) -> None:
         assert job_id == "app"
         assert password is secret
         assert password.terminal_input() == b"secret\n"
@@ -420,3 +423,201 @@ def test_prune_removes_only_valid_unselected_backup(
     assert not old.exists()
     assert newest.exists()
     assert unrelated.exists()
+
+
+def test_discovery_progress_tracks_backups_bytes_and_manifest_failure(
+    tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, valid_config)
+    directories = [
+        _create_backup(config, n, datetime(2026, 7, 23, n, tzinfo=UTC)) for n in (1, 2, 3)
+    ]
+    next(directories[-1].glob("*.json")).write_text("{invalid")
+    archives = {next(directory.glob("*.tar.zst")) for directory in directories[:2]}
+    events: list[VerificationProgress] = []
+    reads: list[Path] = []
+    original_open = Path.open
+
+    def track(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path in archives:
+            reads.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", track)
+    monkeypatch.setattr(checksums_module, "_CHUNK_SIZE", 3)
+    discovered = discover_backups(config, on_progress=events.append)
+
+    assert len(discovered.backups) == 2
+    assert len(discovered.malformed) == 1
+    assert events[0].total == 3
+    assert len(reads) == 2 and set(reads) == archives
+    starts = [
+        e
+        for e in events
+        if e.operation == "Manifest/directory validation" and e.status == "running"
+    ]
+    assert [e.index for e in starts] == [1, 2, 3]
+    assert {e.path for e in starts} == set(directories)
+    for archive in archives:
+        updates = [e for e in events if e.path == archive and e.bytes_processed is not None]
+        assert [e.bytes_processed for e in updates] == [0, 3, 6, 9]
+        assert all(e.bytes_total == 9 and e.total == 3 for e in updates)
+        assert len({e.index for e in updates}) == 1
+    failures = [e for e in events if e.status == "failed"]
+    assert len(failures) == 1
+    assert failures[0].operation == "Manifest/directory validation"
+    assert failures[0].path == directories[-1]
+    assert failures[0].error
+    assert len([e for e in events if e.operation == "SHA-256" and e.status == "ok"]) == 2
+
+
+@pytest.mark.parametrize("damage", ["content", "manifest-digest", "sidecar"])
+def test_checksum_progress_reports_failure_without_claiming_success(
+    tmp_path: Path, valid_config: dict[str, Any], damage: str
+) -> None:
+    import json
+
+    config = _config(tmp_path, valid_config)
+    directory = _create_backup(config, 1, datetime(2026, 7, 23, 1, tzinfo=UTC))
+    archive = next(directory.glob("*.tar.zst"))
+    if damage == "content":
+        archive.write_bytes(b"corrupt")
+    elif damage == "sidecar":
+        next(directory.glob("*.sha256")).write_text("invalid")
+    else:
+        manifest = next(directory.glob("*.json"))
+        data = json.loads(manifest.read_text())
+        data["archive_digest"] = "sha256:" + "0" * 64
+        manifest.write_text(json.dumps(data))
+    events: list[VerificationProgress] = []
+    result = discover_backups(config, on_progress=events.append)
+    assert len(result.malformed) == 1
+    assert events[-1].status == "failed"
+    assert events[-1].operation == "SHA-256"
+    assert events[-1].path == archive
+    assert not any(e.operation == "SHA-256" and e.status == "ok" for e in events)
+
+
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
+@pytest.mark.parametrize("failure", [None, "stream", "tar", "manifest", "discovery"])
+def test_verification_phase_totals_and_operation_failures(
+    tmp_path: Path,
+    valid_config: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    backup_mode: str,
+    failure: str | None,
+) -> None:
+    from vaultkeep.archive import verification
+    from vaultkeep.errors import ArchiveCreationError
+
+    valid_config["backup_mode"] = backup_mode
+    config = _config(tmp_path, valid_config)
+    destinations = (
+        [file_config(config, Path("/missing") / name) for name in ("one", "two")]
+        if backup_mode == "per_file"
+        else [config, config]
+    )
+    directories = []
+    for n, destination in enumerate(destinations, 1):
+        Path(destination.destination.root).mkdir(exist_ok=True)
+        directories.append(_create_backup(destination, n, datetime(2026, 7, 23, n, tzinfo=UTC)))
+    bad = next(directories[0].glob("*.tar.zst"))
+    if failure == "manifest":
+        next(directories[0].glob("*.json")).write_text("{}")
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(config.model_dump_json())
+    events: list[VerificationProgress] = []
+    calls: list[str] = []
+    original_discover = workflow.discover_backups
+
+    def discover(destination: JobConfig, **kwargs: Any) -> Any:
+        if (
+            failure == "discovery"
+            and destination.destination.root == destinations[0].destination.root
+        ):
+            raise DestinationError("Cannot list destination")
+        return original_discover(destination, **kwargs)
+
+    def command(args: Any, **kwargs: Any) -> None:
+        assert events[-1].operation == "Zstandard stream test"
+        calls.append("stream")
+        if failure == "stream" and args[-1] == bad:
+            raise ArchiveCreationError("invalid compressed bytes")
+
+    def pipeline(producer: Any, consumer: Any, **kwargs: Any) -> None:
+        assert events[-1].operation == "TAR inspection (Zstandard decompression)"
+        calls.append("tar")
+        listing = b"../unsafe\n" if failure == "tar" and producer[-1] == bad else b"safe/path\n"
+        kwargs["consumer_stdout"].write(listing)
+
+    monkeypatch.setattr(workflow, "discover_backups", discover)
+    monkeypatch.setattr(verification, "run_command", command)
+    monkeypatch.setattr(verification, "run_pipeline", pipeline)
+    if failure:
+        error_type = ArchiveVerificationError if failure in ("stream", "tar") else DestinationError
+        with pytest.raises(error_type):
+            verify_backups(config_path, on_progress=events.append)
+    else:
+        assert verify_backups(config_path, on_progress=events.append).backups == 2
+    discovery_done = next(
+        i for i, e in enumerate(events) if e.phase == "discovery" and e.status == "complete"
+    )
+    assert all(e.phase != "archive" for e in events[:discovery_done])
+    assert all(e.phase != "backup" for e in events[discovery_done:])
+    discovery = events[discovery_done]
+    eligible = (
+        1
+        if failure == "manifest" or (failure == "discovery" and backup_mode == "per_file")
+        else 0
+        if failure == "discovery"
+        else 2
+    )
+    assert discovery.completed == eligible
+    assert discovery.total == (None if failure == "discovery" else 2)
+    assert events[-1].phase == "archive" and events[-1].status == "complete"
+    assert events[-1].total == eligible
+    assert events[-1].completed == eligible - (failure in ("stream", "tar"))
+    if failure in ("stream", "tar"):
+        failed = next(e for e in events if e.status == "failed")
+        assert failed.path == bad and failed.total == 2
+        assert failed.operation == (
+            "Zstandard stream test"
+            if failure == "stream"
+            else "TAR inspection (Zstandard decompression)"
+        )
+    assert calls.count("stream") == eligible
+    assert calls.count("tar") == eligible - (failure == "stream")
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_progress_callback_errors_preserve_verification_result(
+    tmp_path: Path, valid_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch, corrupt: bool
+) -> None:
+    from vaultkeep.archive import verification
+
+    config = _config(tmp_path, valid_config)
+    directory = _create_backup(config, 1, datetime(2026, 7, 23, 1, tzinfo=UTC))
+    if corrupt:
+        next(directory.glob("*.tar.zst")).write_bytes(b"bad")
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(config.model_dump_json())
+
+    def broken(*args: Any) -> None:
+        raise RuntimeError("renderer unavailable")
+
+    monkeypatch.setattr(verification, "run_command", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        verification,
+        "run_pipeline",
+        lambda *args, **kwargs: kwargs["consumer_stdout"].write(b"safe\n"),
+    )
+    if corrupt:
+        with pytest.raises(DestinationError, match="does not match archive content"):
+            verify_backups(config_path, progress=broken, on_progress=broken, on_verified=broken)
+    else:
+        assert (
+            verify_backups(
+                config_path, progress=broken, on_progress=broken, on_verified=broken
+            ).backups
+            == 1
+        )

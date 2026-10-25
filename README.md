@@ -410,6 +410,8 @@ Use the original `--param` selections; for root jobs, omit `--user` and use `sud
 Confirm the selected archive is reported as verified before extracting it.
 [Vaultkeep verification](docs/cli.md#verify-job-backups) checks manifests, archive
 structure, and TAR member paths as well as checksums and archive integrity.
+Progress shows the current backup, SHA-256 bytes and percentage when available,
+and archive validation operations, followed by validation and verification counts.
 
 The standalone checks below support disaster recovery without Vaultkeep or its job
 configuration. They detect corruption but do not perform all of Vaultkeep's structural

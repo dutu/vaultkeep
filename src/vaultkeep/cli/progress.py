@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import unicodedata
+from contextlib import suppress
 from dataclasses import dataclass
 from threading import Event, Lock, Thread
 from time import monotonic
@@ -12,6 +13,7 @@ from types import TracebackType
 from typing import TextIO
 
 from vaultkeep.backup.progress import HEARTBEAT_SECONDS
+from vaultkeep.progress import VerificationProgress
 
 _HEARTBEAT_SECONDS = HEARTBEAT_SECONDS
 _REFRESH_SECONDS = 0.1
@@ -88,10 +90,14 @@ class CliProgress:
         traceback: TracebackType | None,
     ) -> None:
         try:
-            if exc_type is not None:
-                self.fail("Interrupted" if issubclass(exc_type, KeyboardInterrupt) else "Failed")
+            with suppress(Exception):
+                if exc_type is not None:
+                    self.fail(
+                        "Interrupted" if issubclass(exc_type, KeyboardInterrupt) else "Failed"
+                    )
         finally:
-            self.close()
+            with suppress(Exception):
+                self.close()
 
     def start(self, description: str, *, metrics: ProgressMetrics | None = None) -> None:
         """Start reporting an operation; subsequent stage changes use update."""
@@ -104,7 +110,7 @@ class CliProgress:
         with self._lock:
             if self._stopped.is_set() or self._disabled:
                 return
-            if self._description is None and description is not None:
+            if self._worker is None and self._description is None and description is not None:
                 self._started = monotonic()
             changed = description is not None and description != self._description
             if changed:
@@ -128,6 +134,14 @@ class CliProgress:
             self._write(self._safe_text(message) + "\n")
             if self._description is not None and not self._stopped.is_set() and self._interactive:
                 self._render()
+
+    def checkpoint(self, message: str) -> None:
+        """Finish the current stage with a timestamped line, keeping the timer alive."""
+        with self._lock:
+            self._clear()
+            self._description = None
+            self._metrics = ProgressMetrics()
+            self._write(f"{self._elapsed()} {self._safe_text(message)}\n")
 
     def succeed(self, message: str | None = None) -> None:
         self._finish("SUCCESS", message)
@@ -175,6 +189,8 @@ class CliProgress:
         return f"[{minutes:02d}:{seconds:02d}]"
 
     def _render(self, *, heartbeat: bool = False) -> None:
+        if self._description is None:
+            return
         text = f"{self._elapsed()} {self._description}"
         details = self._metrics.format()
         if details:
@@ -224,3 +240,70 @@ class CliProgress:
                 # Optional presentation must not fail the underlying operation.
                 self._disabled = True
                 self._stopped.set()
+
+
+class VerificationDisplay:
+    """Translate verification facts into stages, checkpoints, and a final summary."""
+
+    def __init__(self, progress: CliProgress) -> None:
+        self._progress = progress
+        self._current: tuple[str, int | None] | None = None
+        self._backups: tuple[int, int | None] | None = None
+        self._archives: tuple[int, int | None] | None = None
+
+    @staticmethod
+    def _count(completed: int, total: int | None) -> str:
+        return str(completed) if total is None else f"{completed}/{total}"
+
+    def report(self, event: VerificationProgress) -> None:
+        if event.status == "complete":
+            counts = (event.completed or 0, event.total)
+            if event.phase == "discovery":
+                self._backups = counts
+            else:
+                self._archives = counts
+            self._progress.checkpoint(f"{event.operation} ({self._count(*counts)} passed)")
+            self._current = None
+            return
+        if event.phase == "discovery":
+            self._current = None
+            if event.status == "failed":
+                self._progress.checkpoint(
+                    f"{event.operation}: FAILED | {event.path}: {event.error}"
+                )
+            else:
+                self._progress.checkpoint(f"Found {event.total} backups in {event.path}")
+            return
+
+        label = "Backup" if event.phase == "backup" else "Archive"
+        if event.index is not None:
+            label += f" {self._count(event.index, event.total)}"
+        description = f"{label} | {event.operation}"
+        if event.status in ("ok", "failed"):
+            result = "OK" if event.status == "ok" else "FAILED"
+            details = f": {event.error}" if event.error else ""
+            self._progress.checkpoint(f"{description}: {result} | {event.path}{details}")
+            return
+
+        current = (event.phase, event.index)
+        if current != self._current:
+            self._progress.checkpoint(f"{label}: {event.path}")
+            self._current = current
+        percent = None
+        if event.bytes_processed is not None and event.bytes_total:
+            percent = 100 * event.bytes_processed / event.bytes_total
+        self._progress.update(
+            description,
+            metrics=ProgressMetrics(
+                percent=percent,
+                bytes_processed=event.bytes_processed,
+                bytes_total=event.bytes_total,
+            ),
+        )
+
+    def summary(self, *, success: bool) -> None:
+        if self._backups is not None and self._archives is not None:
+            self._progress.message("")
+            self._progress.message(f"Backups:  {self._count(*self._backups)} validated")
+            self._progress.message(f"Archives: {self._count(*self._archives)} verified")
+            self._progress.message(f"Result:   {'VERIFIED' if success else 'FAILED'}")

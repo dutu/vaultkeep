@@ -4,20 +4,47 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from vaultkeep.errors import ArchiveCreationError, ArchiveVerificationError
+from vaultkeep.progress import VerificationProgress, report_progress
 
 _CHUNK_SIZE = 1024 * 1024
 
 
-def calculate_archive_sha256(path: Path) -> str:
+def calculate_archive_sha256(
+    path: Path, *, on_progress: Callable[[VerificationProgress], None] | None = None
+) -> str:
     """Stream one archive and return its lowercase SHA-256 digest."""
     digest = hashlib.sha256()
     try:
         with path.open("rb") as stream:
+            total = None
+            if on_progress is not None:
+                with suppress(OSError):
+                    total = os.fstat(stream.fileno()).st_size
+            processed = 0
+
+            def report() -> None:
+                if on_progress is not None:
+                    report_progress(
+                        on_progress,
+                        VerificationProgress(
+                            "backup",
+                            "SHA-256",
+                            path=path,
+                            bytes_processed=processed,
+                            bytes_total=total,
+                        ),
+                    )
+
+            report()
             while chunk := stream.read(_CHUNK_SIZE):
                 digest.update(chunk)
+                processed += len(chunk)
+                report()
     except OSError as error:
         raise ArchiveCreationError(f"Cannot calculate archive checksum {path}: {error}") from error
     return digest.hexdigest()
@@ -74,11 +101,20 @@ def read_checksum_sidecar(archive_path: Path, checksum_path: Path) -> str:
     return declared
 
 
-def verify_checksum_sidecar(archive_path: Path, checksum_path: Path) -> str:
+def verify_checksum_sidecar(
+    archive_path: Path,
+    checksum_path: Path,
+    *,
+    on_progress: Callable[[VerificationProgress], None] | None = None,
+) -> str:
     """Strictly validate the checksum sidecar and archive content."""
     declared = read_checksum_sidecar(archive_path, checksum_path)
     try:
-        actual = calculate_archive_sha256(archive_path)
+        actual = (
+            calculate_archive_sha256(archive_path, on_progress=on_progress)
+            if on_progress is not None
+            else calculate_archive_sha256(archive_path)
+        )
     except ArchiveCreationError as error:
         raise ArchiveVerificationError(f"Cannot verify archive checksum: {error}") from error
     if declared != actual:

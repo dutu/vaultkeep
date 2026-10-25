@@ -14,6 +14,7 @@ from vaultkeep.errors import (
     ArchiveCreationError,
     ArchiveVerificationError,
 )
+from vaultkeep.progress import VerificationProgress, report_progress
 from vaultkeep.sources.entries import SourceSnapshot
 from vaultkeep.state.models import BackupStateRecord
 
@@ -23,11 +24,21 @@ def verify_tar_zstd(
     snapshot: SourceSnapshot | None = None,
     *,
     tools: ArchiveTools,
+    on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> None:
     """Verify the stream and safe TAR members, optionally matching a source snapshot."""
+    report_progress(
+        on_progress, VerificationProgress("archive", "Zstandard stream test", path=archive_path)
+    )
     _require_nonempty_archive(archive_path)
     try:
         run_command((tools.zstd, "--test", "--quiet", archive_path))
+        report_progress(
+            on_progress,
+            VerificationProgress(
+                "archive", "TAR inspection (Zstandard decompression)", path=archive_path
+            ),
+        )
         with tempfile.TemporaryFile() as listing:
             run_pipeline(
                 (tools.zstd, "--decompress", "--stdout", "--quiet", archive_path),
@@ -56,8 +67,12 @@ def verify_tar_7z(
     job_id: str,
     password: PasswordSecret,
     tools: ArchiveTools,
+    on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> None:
     """Verify encryption and safe TAR members, optionally matching a source snapshot."""
+    report_progress(
+        on_progress, VerificationProgress("archive", "7-Zip archive test", path=archive_path)
+    )
     _require_nonempty_archive(archive_path)
     inner_name = f"{job_id}.tar"
     password_input = password.terminal_input()
@@ -65,6 +80,12 @@ def verify_tar_7z(
         run_command(
             (tools.seven_zip, "t", "-bd", "-sccUTF-8", "--", archive_path),
             terminal_input=password_input,
+        )
+        report_progress(
+            on_progress,
+            VerificationProgress(
+                "archive", "7-Zip headers and member validation", path=archive_path
+            ),
         )
         unauthenticated = run_command(
             (tools.seven_zip, "l", "-slt", "-ba", "-sccUTF-8", "--", archive_path),
@@ -93,6 +114,10 @@ def verify_tar_7z(
             raise ArchiveVerificationError(
                 f"7z archive must contain exactly one member named {inner_name}"
             )
+        report_progress(
+            on_progress,
+            VerificationProgress("archive", "TAR inspection (7-Zip decryption)", path=archive_path),
+        )
         with tempfile.TemporaryFile() as tar_listing:
             run_pipeline(
                 (

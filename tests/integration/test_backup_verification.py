@@ -165,8 +165,15 @@ def test_verify_real_archives_without_sources_preserves_backups_and_state(
 
     output = capsys.readouterr()
     assert output.out == "verify: verified\n"
+    assert "Backups:  2/2 validated\nArchives: 2/2 verified\nResult:   VERIFIED" in output.err
+    operation = (
+        "Zstandard stream test"
+        if load_validated_config(job).archive.format == "tar.zst"
+        else "7-Zip archive test"
+    )
+    assert output.err.index("SHA-256 verification complete") < output.err.index(operation)
     for archive in archives:
-        assert f"Verified: {archive}" in output.err
+        assert f"Archive verification: OK | {archive}" in output.err
     assert _files(job.parent) == before
 
 
@@ -192,7 +199,8 @@ def test_verify_rejects_invalid_tar_with_matching_checksums(
     assert output.out == ""
     assert str(bad) in output.err
     assert reason in output.err
-    assert f"Verified: {good}" in output.err
+    assert f"Archive verification: OK | {good}" in output.err
+    assert "Backups:  2/2 validated\nArchives: 1/2 verified\nResult:   FAILED" in output.err
     assert _files(job.parent) == before
 
 
@@ -228,7 +236,7 @@ def test_verify_rejects_wrong_password(job: Path, capsys: pytest.CaptureFixture[
     output = capsys.readouterr()
     for archive in archives:
         assert str(archive) in output.err
-    assert "Verified:" not in output.err
+    assert "Archive verification: OK" not in output.err
     assert "wrong-secret" not in output.err
     assert _files(job.parent) == before
 

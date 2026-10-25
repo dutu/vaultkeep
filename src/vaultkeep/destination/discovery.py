@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 import stat
 import string
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from vaultkeep.archive.checksums import read_checksum_sidecar, verify_checksum_sidecar
@@ -14,6 +14,7 @@ from vaultkeep.config.models import JobConfig
 from vaultkeep.destination.manifest import BackupManifest, load_manifest
 from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
 from vaultkeep.errors import DestinationDiscoveryError, ManifestError
+from vaultkeep.progress import VerificationProgress, report_progress
 from vaultkeep.state.models import BackupStateRecord
 
 _FORMATTER = string.Formatter()
@@ -72,6 +73,7 @@ def discover_backups(
     *,
     runtime_params: Mapping[str, str] | None = None,
     verify_archives: bool = True,
+    on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> DiscoveryResult:
     """Validate matching backups, reading archive contents unless explicitly disabled."""
     root = Path(config.destination.root)
@@ -89,25 +91,52 @@ def discover_backups(
 
     backups: list[DiscoveredBackup] = []
     malformed: list[MalformedDestinationEntry] = []
-    for child in children:
-        if child.name.startswith((".", STAGING_DIRECTORY_PREFIX)):
-            continue
-        match = matcher.fullmatch(child.name)
-        if match is None:
-            continue
+    candidates = tuple(
+        child
+        for child in children
+        if not child.name.startswith((".", STAGING_DIRECTORY_PREFIX))
+        and matcher.fullmatch(child.name) is not None
+    )
+    report_progress(
+        on_progress,
+        VerificationProgress("discovery", "Backup discovery", "ok", root, total=len(candidates)),
+    )
+    for index, child in enumerate(candidates, start=1):
+        operation = "Manifest/directory validation"
+        current_path: Path | None = child
+
+        def report(event: VerificationProgress, *, index: int = index) -> None:
+            nonlocal operation, current_path
+            operation = event.operation
+            current_path = event.path
+            report_progress(on_progress, replace(event, index=index, total=len(candidates)))
+
+        report(VerificationProgress("backup", operation, path=child))
         try:
             backups.append(
                 _validate_backup_directory(
-                    child, base_matcher, config, verify_archives=verify_archives
+                    child,
+                    base_matcher,
+                    config,
+                    verify_archives=verify_archives,
+                    on_progress=report if on_progress is not None else None,
                 )
             )
         except (DestinationDiscoveryError, ManifestError) as error:
             malformed.append(MalformedDestinationEntry(child, str(error)))
+            report(
+                VerificationProgress("backup", operation, "failed", current_path, error=str(error))
+            )
     return DiscoveryResult(tuple(backups), tuple(malformed))
 
 
 def _validate_backup_directory(
-    path: Path, base_matcher: re.Pattern[str], config: JobConfig, *, verify_archives: bool
+    path: Path,
+    base_matcher: re.Pattern[str],
+    config: JobConfig,
+    *,
+    verify_archives: bool,
+    on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> DiscoveredBackup:
     try:
         directory_status = path.lstat()
@@ -159,9 +188,15 @@ def _validate_backup_directory(
     _require_regular_file(checksum_path)
     _require_regular_file(manifest_path)
     _require_exact_artifacts(path, {archive_path.name, checksum_path.name, manifest_path.name})
+    report_progress(
+        on_progress,
+        VerificationProgress("backup", "Manifest/directory validation", "ok", path),
+    )
+    operation = "SHA-256" if verify_archives else "Checksum metadata"
+    report_progress(on_progress, VerificationProgress("backup", operation, path=archive_path))
     try:
         digest = (
-            verify_checksum_sidecar(archive_path, checksum_path)
+            verify_checksum_sidecar(archive_path, checksum_path, on_progress=on_progress)
             if verify_archives
             else read_checksum_sidecar(archive_path, checksum_path)
         )
@@ -169,6 +204,7 @@ def _validate_backup_directory(
         raise DestinationDiscoveryError(f"Invalid archive checksum in {path}: {error}") from error
     if manifest.archive_digest != f"sha256:{digest}":
         raise DestinationDiscoveryError(f"Manifest archive digest does not match checksum: {path}")
+    report_progress(on_progress, VerificationProgress("backup", operation, "ok", archive_path))
     return DiscoveredBackup(path, archive_path, checksum_path, manifest_path, base_name, manifest)
 
 
