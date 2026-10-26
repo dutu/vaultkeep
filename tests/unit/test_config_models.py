@@ -18,7 +18,7 @@ EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-schedule.ya
 def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> None:
     config = JobConfig.model_validate(valid_config)
 
-    assert config.config_version == 1
+    assert config.config_version == 2
     assert config.job.id == "app"
     assert config.archive.compression_level == 6
     assert not config.notifications.backup.enabled
@@ -100,9 +100,9 @@ def test_retention_requires_non_negative_strict_integers(
 
 def test_unsupported_config_version_is_rejected(valid_config: dict[str, Any]) -> None:
     candidate = deepcopy(valid_config)
-    candidate["config_version"] = 2
+    candidate["config_version"] = 1
 
-    with pytest.raises(ValidationError, match="Input should be 1"):
+    with pytest.raises(ValidationError, match="Input should be 2"):
         JobConfig.model_validate(candidate)
 
 

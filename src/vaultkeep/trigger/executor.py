@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -53,6 +54,20 @@ def _validate_request(request: Request, attempt_id: str) -> None:
         raise IntegrationError("request has no VaultKeep job configuration")
     if not request.vaultkeep:
         raise IntegrationError("request has no VaultKeep executable")
+    policy = request.execution_policy
+    app = policy.get("application")
+    if (
+        set(policy) != {"consistency", "application", "owner_uid"}
+        or policy["consistency"] not in ("files", "application_offline")
+        or not isinstance(app, dict)
+        or app.get("name") != request.app
+        or app.get("data_dir") != request.data_dir
+        or app.get("matcher") != request.matcher
+        or type(request.owner_uid) is not int
+        or request.owner_uid < 0
+        or policy["owner_uid"] != request.owner_uid
+    ):
+        raise IntegrationError("Frozen application identity and execution policy disagree")
 
 
 def _vaultkeep_argv(request: Request, command: str) -> list[str]:
@@ -76,12 +91,12 @@ def exec_worker(
 ) -> WorkerResult:
     """Run one worker attempt and write its durable receipt."""
     runner = runner or RealChildRunner()
-    provider = provider or PsutilProcessProvider()
 
     request = store.read_request(attempt_id)
     if request is None:
         raise IntegrationError(f"no request found for attempt {attempt_id}")
     _validate_request(request, attempt_id)
+    provider = provider or PsutilProcessProvider(owner_uid=request.owner_uid)
 
     existing = store.read_receipt(attempt_id)
     if existing is not None:
@@ -134,6 +149,7 @@ def exec_worker(
         )
 
     environment = dict(request.environment)
+    environment["VAULTKEEP_EXPECTED_POLICY"] = json.dumps(request.execution_policy, sort_keys=True)
     child = runner.run(_vaultkeep_argv(request, "run"), env=environment)
 
     outcome = {

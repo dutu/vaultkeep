@@ -338,7 +338,7 @@ and managed temporary data, while preserving job configuration, secrets, local j
 state, and every backup destination. `--purge` additionally removes managed core
 configuration and state (`/etc/vaultkeep` and `/var/lib/vaultkeep` by default).
 It preserves every user's core data and Trigger state, requests, launch records,
-receipts, logs, blocks, and review warnings. Neither mode removes archives, wallets,
+receipts, logs, and recovery blocks. Neither mode removes archives, wallets,
 hook executables, or installer-added Debian packages.
 
 Retire user data only deliberately, after workers and queued work are gone and all

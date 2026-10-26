@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import shlex
 import signal
 import subprocess
@@ -153,13 +154,13 @@ def test_triggered_backup_categories_are_independent(job, notification_log, back
     document = json.loads(job.read_text())
     document["notifications"]["backup"]["enabled"] = backup
     document["notifications"]["trigger"]["enabled"] = trigger
-    document["trigger"] = {
-        "enabled": True,
-        "app": "electrum",
+    document["application"] = {
+        "name": "electrum",
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/app/run_app"}]},
-        "confirm_seconds": 1.0,
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
+    document["trigger"] = {"enabled": True, "confirm_seconds": 1.0}
     job.write_text(json.dumps(document))
     (job.parent / "backups").rmdir()
     config = load_trigger_config(job)
@@ -223,8 +224,17 @@ def test_all_initiators_deliver_start_and_diagnostic_failure_before_exit(
         executable = job.parent / "vaultkeep"
         executable.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -m vaultkeep "$@"\n')
         executable.chmod(0o700)
+        document = json.loads(job.read_text())
+        document["application"] = {
+            "name": "electrum",
+            "user": pwd.getpwuid(os.geteuid()).pw_name,
+            "data_dir": str(job.parent / "source"),
+            "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/app/run_app"}]},
+        }
+        document["trigger"] = {"enabled": True}
+        job.write_text(json.dumps(document))
         request = replace(
-            make_request(),
+            make_request(load_trigger_config(job).instances[0]),
             instance_id="app",
             job_config=str(job),
             vaultkeep=str(executable),

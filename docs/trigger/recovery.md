@@ -119,39 +119,16 @@ the deployed systemd version before enabling execution. Code 2 is an integration
 generic failures, timeouts, and unclassified codes remain inconclusive. This is a
 deployment assumption and a remaining validation gap, not a diagnostic proof engine.
 
-## Execution review warnings
+## Unknown execution outcomes
 
-A process restart, ambiguous/unavailable inspection, or an observation gap during
-possible backup execution records a review annotation. It is separate from the worker's
-immutable outcome. Resuming monitoring does not fill that gap. A later successful
-backup, including a newly created archive, cannot establish the safety of the earlier
-attempt or reverse any retention it performed, so it does not clear that risk.
+Unknown worker outcomes and unresolved dispatch retain their operational evidence
+and require investigation without automatic replay. Trigger does not maintain
+archive-consistency review flags or associate attempt IDs with backup IDs. A restart
+or observation gap alone says nothing conclusive about a committed archive.
 
-Gap detection uses the last actual process observation. A notification or other state
-write alone is not proof of observation. A receipt already reconciled before a gap,
-or valid completion timestamps preceding the last process observation, excludes that
-later gap from the child execution. Missing, future, or contradictory timing evidence
-cannot establish such an exclusion. Worker/job termination is still reconciled separately.
-
-A matching `blocked` receipt from the worker's final process check establishes that the
-backup child never ran. The monitor resolves the active execution review for that
-attempt while keeping its historical annotation, summary, and immutable receipt.
-It clears the aggregate warning only when the existing reason identifies that attempt
-and no other reviewed attempt requires attention. Any other outstanding risk remains;
-a legacy aggregate warning with unknown attribution is preserved for evidence review.
-New warnings identify their attempt in the existing reason fields. This requires no
-schema change, migration, or new persistence structure.
-
-Current and unresolved historical safety warnings remain visible in the Trigger
-section of `vaultkeep status`. Historical warnings show a review count; `status --verbose`
-includes affected attempts, execution periods when known, and reasons. Current safety
-warnings remain explicit. They are separate from the latest backup execution result.
-
-Resolved final-check events remain available in retained history and debug status,
-rather than appearing as outstanding execution risks. There is no time-based expiry,
-automatic archive repair, or acknowledgement command. Preserve existing evidence and
-follow the review procedure below when the remaining uncertainty cannot be resolved
-from the stored records.
+Inspect destination-derived suspect markers using `list`, full contents using
+`verify`, and backup execution/cleanup diagnostics using `status`. The engine owns
+policy enforcement, suspect replacement, and retention for every initiator.
 
 ## Operator review and repair
 
@@ -159,7 +136,7 @@ from the stored records.
    and private attempt records. A stopped monitor is not evidence that its workers
    stopped. If the user manager is unreachable, retain the active association and
    wait for reliable evidence rather than assuming absence.
-2. For `review_required` or `outcome_unknown`, review VaultKeep's own archive/state and
+2. For `outcome_unknown`, review VaultKeep's own archive/state and
    the job's consistency method. Archive creation and retention may have occurred
    before a failure or lost receipt. Do not replay an old request by invoking
    `exec-worker`, editing IDs, deleting receipts, or resetting all state. A later,
@@ -177,8 +154,7 @@ from the stored records.
    result and requires subsequent review; do not release the slot or delete evidence
    simply to let another backup start.
 
-V1 has no manual rerun or acknowledgement command. `outcome_unknown` and
-`review_required` require operator review; after an unknown attempt's worker is
+There is no manual replay command. `outcome_unknown` requires operator review; after an unknown attempt's worker is
 confirmed gone, a later independently observed lifecycle may create a new request.
 
 [User guide](../../README.md#logs-and-troubleshooting)

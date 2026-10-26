@@ -25,7 +25,7 @@ Document status: **Core archive/configuration contracts remain schema 1. Shutdow
 
 Specification revision: **2026-10-19**.
 
-The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v1 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, inactive `.example` configuration templates, and Python 3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
+The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v2 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, inactive `.example` configuration templates, and Python 3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
 
 The workspace and repository directory are named `vaultkeep`, matching the approved project name.
 
@@ -34,11 +34,11 @@ Frozen v1 scope:
 - manual `validate`, `run`, `list`, `verify`, and `prune` commands;
 - unencrypted `.tar.zst` and password-protected `.tar.7z` archives;
 - one directory per backup;
-- YAML configuration schema version 1;
+- YAML configuration schema version 2;
 - source traversal for regular files, directories, symbolic links, and defined hard-link behavior;
 - deterministic source hashing and backup-relevant configuration fingerprints;
 - manifests, checksums, atomic finalization, local state recovery, and count-based retention;
-- local, CIFS-mounted, and NFS-mounted destination filesystems;
+- supported local, CIFS/SMB and NFS destination filesystems with shared locking;
 - lifecycle hooks with controlled execution and fixed failure semantics;
 - systemd timer management with deterministic schedule spreading;
 - a root-run Debian installer with versioned releases, atomic updates, rollback, and manifest-driven uninstallation.
@@ -64,7 +64,7 @@ Core backup behavior remains unchanged by shutdown triggering. The integration i
 | Local state reconciliation and unchanged detection | v1 | Implemented |
 | Count-based retention and dry-run pruning | v1 | Implemented |
 | Manual CLI and operational reporting | v1 | Implemented |
-| CIFS and NFS release validation | v1 | Implemented as opt-in release gates — execution on real mounts remains a release requirement |
+| Shared destination locking release validation | v2 | Local and CIFS/NFS protocols implemented; live server and cross-machine release checks remain required |
 | Password-protected `.tar.7z` | v1 | Implemented |
 | Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
@@ -151,11 +151,13 @@ Vaultkeep must not depend on:
 
 ### 3.3 Safe operation on mounted network shares
 
-The destination is one of:
-
-- a CIFS-mounted Samba share;
-- an NFS mount;
-- a local filesystem.
+Mutation supports local Linux filesystems with reliable kernel directory locks
+(ext2/3/4, XFS, Btrfs, ZFS, tmpfs, overlay), and mounted CIFS/SMB and NFS shares with
+server-backed regular-file locks. Network writers share a persistent `.vaultkeep.lock`
+at the mounted whole-share/export root. All clients must expose the same anchor
+and permit read/write access by each backup owner. Client-local locking options,
+unsafe anchors, and unsupported mount layouts are rejected. See the operational
+[network locking requirements](../configuration.md#cifs-and-nfs-locking).
 
 Vaultkeep supports two independent, optional destination safety checks before writes:
 `marker_file` requires a designated regular file below the destination root, and
@@ -485,8 +487,8 @@ propagate normally. The Trigger worker therefore uses its existing result contra
 New filenames create new histories. Deleted or excluded files retain their
 histories; a rename creates a new namespace. Management commands discover the
 reserved per-file directories independently of the current sources. Manual pruning
-validates all discovered histories before deleting any backups and applies retention
-separately to each history. Automatic retention applies to each newly backed-up
+validates and cleans each independent history separately. A failure in one history
+does not prevent safe cleanup in another. Automatic retention applies to each newly backed-up
 file only. Combined backups and legacy ZIPs are not imported.
 
 ## 8.1 Exclusion semantics
@@ -889,9 +891,9 @@ Templates must:
 - include a timestamp;
 - not contain `{backup_id}`.
 
-Vaultkeep uses the rendered backup base name as the preferred directory name. When a path already occupies that name, allocation selects the first available suffix starting at `-2`, then `-3`, and so on. Files, directories, and dangling symbolic links all occupy names. Vaultkeep never overwrites an existing path. A collision after allocation fails safely at staging creation or the atomic no-overwrite rename; a later run selects an available name.
+Vaultkeep uses the rendered backup base name as the preferred directory name. When a path already occupies that name, allocation selects the first available suffix starting at `-2`, then `-3`, and so on. Files, directories, and dangling symbolic links all occupy names. Local/CIFS commits reject collisions atomically. NFS checks for collisions under the shared lock before ordinary atomic rename; the empty-target race with non-cooperating writers is described in [Atomic backup creation](#12-atomic-backup-creation). A later run selects an available name.
 
-The backup manifest is authoritative for backup identity and timestamps. Discovery accepts the configured base-name template with no suffix, a numeric collision suffix, or a legacy backup-ID suffix. The manifest filename identifies the base name without ambiguously stripping numeric template fields. Discovery validates the base name against the template and the directory against that base name. Legacy backup-ID suffixes must match the manifest ID. Discovery does not reconstruct authoritative metadata from directory names.
+The backup manifest is authoritative for backup identity and timestamps. Discovery accepts the configured base-name template with no suffix, a numeric collision suffix, or a backup-ID suffix. The manifest filename identifies the base name without ambiguously stripping numeric template fields. Discovery validates the base name against the template and the directory against that base name. Backup-ID suffixes must match the manifest ID. Discovery does not reconstruct authoritative metadata from directory names.
 
 ## 11.4 Destination discovery
 
@@ -899,7 +901,7 @@ Discovery rules:
 
 1. list only immediate children of the destination root;
 2. ignore dot-prefixed entries and temporary staging directories;
-3. strictly match directory names against the configured base-name template with an optional numeric collision suffix or legacy backup-ID suffix;
+3. strictly match directory names against the configured base-name template with an optional numeric collision suffix or backup-ID suffix;
 4. ignore all nonmatching entries;
 5. require exactly one regular JSON manifest, derive its base name, and validate the base name and directory layout;
 6. validate the manifest and derive the archive and checksum names from its archive format;
@@ -907,7 +909,7 @@ Discovery rules:
 8. warn about malformed matching entries;
 9. never apply retention to unrelated content.
 
-Matching-but-malformed entries are never automatically deleted. Their presence blocks retention plan calculation, including `prune --dry-run`. `verify` reports their paths and reasons; `list` displays the metadata inventory with warnings. Backups with valid damage markers are listed as `DAMAGED` and excluded from state reconstruction and pruning without blocking healthy retention.
+Matching-but-malformed entries are never automatically deleted. Their presence blocks retention plan calculation, including `prune --dry-run`. `verify` reports their paths and reasons; `list` displays the metadata inventory with warnings. Backups with valid suspect markers are publicly `SUSPECT` and excluded from successful state reconstruction and ordinary retention slots. Unresolved suspects are protected; validated compatible replacements permit guarded suspect cleanup.
 
 ---
 
@@ -931,21 +933,21 @@ Backup creation:
 6. flush and `fsync` the archive, checksum, manifest, and temporary directory;
 7. atomically rename the directory to its final name.
 
-The final directory rename is the backup commit point. Before this point, failures remove partial artifacts and leave the previous successful state unchanged. After this point, the backup is committed and must be reported as created even if retention, local-state persistence, or later operations fail.
+The final directory rename is the backup commit point. Before this point, failures remove partial artifacts and leave the previous successful state unchanged. Required post-commit integrity, state, or hook failures fail execution while preserving committed artifacts. Ordinary cleanup failures retain the successful creation outcome with diagnostics.
 
-Temporary and final directories are on the same destination filesystem. Finalization must never overwrite an existing path. Each manifest contains a collision-resistant backup ID; new final directory names use the template base name with a numeric suffix only when needed.
+Temporary and final directories are on the same destination filesystem. Local/CIFS finalization uses native atomic no-overwrite rename. NFS falls back only for unsupported rename flags and only under the covering shared destination lock: check that the final path is absent, then atomically rename. Existing nonempty backup directories remain protected; a non-cooperating writer racing to create an empty target directory can have it replaced. Other rename failures propagate. Each manifest contains a collision-resistant backup ID; new final directory names use the template base name with a numeric suffix only when needed.
 
-After writing files, Vaultkeep flushes file data and directory metadata where the destination filesystem supports it. The documented durability guarantee for CIFS and NFS is limited to behavior verified by the integration-test matrix.
+After writing files, Vaultkeep flushes file data and directory metadata. Durability remains subject to the filesystem and storage device, and to the server honoring flush requests for network shares. Flush errors remain failures.
 
-The archive builder accepts already allocated staging archive and checksum paths, produces and verifies those two artifacts, and leaves manifest creation to the destination commit layer. The no-overwrite directory finalizer is implemented independently and commits a complete staging directory only after the caller has added the manifest.
+The archive builder accepts already allocated staging archive and checksum paths, produces and verifies those two artifacts, and leaves manifest creation to the destination commit layer. The directory finalizer is implemented independently and commits a complete staging directory only after the caller has added the manifest.
 
 ---
 
 ## 13. Manifest and state
 
 New backup manifests, local job state files, and timer ownership registries use
-two-space JSON indentation, sorted keys, and a trailing newline. Existing files
-remain readable without conversion. Canonical JSON used for hashes and
+two-space JSON indentation, sorted keys, and a trailing newline. Schema/layout version 2 uses fresh state and destinations; unsupported versions are
+rejected rather than interpreted or migrated. Canonical JSON used for hashes and
 fingerprints retains its compact serialization.
 
 ## 13.1 Backup manifest
@@ -956,7 +958,7 @@ Example:
 
 ```json
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "application": "vaultkeep",
   "application_version": "0.1.0.dev0",
   "backup_id": "550e8400e29b41d4a716446655440000",
@@ -969,9 +971,20 @@ Example:
   "archive_digest": "sha256:...",
   "archive_format": "tar.zst",
   "encrypted": false,
-  "hostname": "homeserv"
+  "hostname": "homeserv",
+  "replacement_identity": {
+    "identity_version": 1,
+    "source_scope": "{\"backup_mode\":\"combined\",\"exclude\":[],\"job\":\"myapp\",\"source_options\":{\"cross_filesystems\":false,\"follow_symlinks\":false,\"ignore_missing\":false},\"sources\":[{\"archive_path_mode\":\"prefix\",\"archive_prefix\":\"myapp\",\"exclude\":[],\"path\":\"/srv/myapp\"}]}",
+    "consistency_mode": "files"
+  }
 }
 ```
+
+Creation timestamps retain microsecond precision so rapid consecutive archives do
+not collapse into second-resolution ties. Automatic cleanup also refuses a plan
+that would delete the newly created recovery point, preserving the history with a
+cleanup warning when ordering is ambiguous. Calendar retention still uses the
+recorded local time and its existing deterministic tie rules.
 
 The manifest must not contain secrets.
 
@@ -1017,13 +1030,41 @@ After a successful new backup, Vaultkeep sets `last_unchanged_at_utc` to null. A
 
 Before returning `unchanged`, Vaultkeep verifies that the state matches the current configuration fingerprint, matches the current credential-generation fingerprint for a password-protected job, and references a valid backup in the current destination. Missing, corrupt, incompatible, or stale local state is reconstructed from destination manifests. Because manifests contain no credential-generation fingerprint, reconstruction for a password-protected job tests the newest valid encrypted backup with the current password before recording the current local fingerprint.
 
-Run change detection discovers history with manifest, directory, and checksum-sidecar metadata validation, without reading archive contents. It selects the newest unmarked matching backup by manifest UTC creation time, breaking ties by backup ID. If the source and configuration match, the run verifies only that selected archive's SHA-256 before state reconciliation, `on_unchanged`, or recording an unchanged result. A confirmed content checksum mismatch marks the backup as damaged and forces a fresh verified backup. Read and permission errors fail the run without marking damage. Damage detection precedes credential recovery so an unusable encrypted archive is not used to test password continuity.
+Run change detection discovers strict version-2 metadata for both archive formats.
+The active replacement class describes configured source coverage and consistency,
+independently of content, compression, retention, encryption settings, or matcher
+implementation details. Offline classes also identify the logical app, owner, and
+data directory. Incompatible classes are preserved. Suspects never establish local
+successful state or credential continuity. Before `UNCHANGED`, the newest eligible
+archive and any referenced replacements must satisfy current checksums; unresolved
+compatible suspects force a new archive. Operational inspection failures fail closed.
 
-The `.vaultkeep-damaged` JSON marker records the detection timestamp and reason, plus an optional replacement backup ID. It is separate from the immutable archive, checksum sidecar, and manifest. Discovery validates the marker as a small regular file, lists the backup as damaged, skips content reads, and excludes it from state records. Marked backups do not participate in retention selections or deletion. Other malformed entries and unexpected artifacts continue to block pruning. Explicit verification reports marked backups as failures and continues with the healthy history.
+`.vaultkeep-suspect` is a bounded strict regular JSON marker with `reason`,
+`detected_at`, and optional `replacement_backup_id`. Atomic durable writes preserve
+the original reason/time. A reference resolves only to a unique compatible committed
+unmarked archive in the same independent history. Invalid, absent, self/circular,
+cross-history, or suspect targets authorize no deletion. Destination records remain
+authoritative after relocation, restart, or local state loss.
 
-An unresolved damage marker forces creation even when older healthy sources match. After a new backup has been committed and its checksum verified, the workflow atomically records its ID in each unresolved marker before applying retention. This records completed replacement independently of second-resolution manifest timestamp ties and local-state recovery. A failed replacement leaves the marker unresolved for retry. Marker-write failures fail the run and preserve any committed replacement. A completed marker continues to protect the damaged backup after its replacement eventually ages out of retention.
+After reliable creation, required successful state persistence, and `on_success`,
+the engine records compatible replacement references, rediscovers metadata, validates
+the complete per-history cleanup plan, and executes guarded deletion. Suspects do
+not fill ordinary retention slots. Unresolved suspects remain protected; superseded
+suspects can be removed independently of ordinary retention counts. References retain
+their replacement dependencies even if suspect deletion fails. The pruner validates
+exact regular artifacts and current replacement SHA-256 against both immutable
+manifest and sidecar before deletion, without adding full decompression to prune.
+Malformed matching entries block destructive work in the affected namespace.
 
-Full-history checksum verification of unmarked backups remains part of explicit verification and pruning. During `run`, both initial discovery and the finalized-backup discovery used for automatic retention validate manifests, checksum-sidecar metadata, and directory layout without reading historical archive contents. After finalization, the workflow verifies only the new archive's checksum before saving state, recording completed replacements, or applying retention. Older unmarked content corruption does not block automatic retention; metadata errors and unexpected artifacts continue to block pruning.
+Required state/hook failures preserve all archives and fail execution. Ordinary cleanup
+planning, marker-update, or pruning failures preserve `created` with a cleanup warning
+and recorded operational diagnostic; partial deletion counts are retained. Corruption
+found in the newly committed archive fails execution even when discovered during
+cleanup, including when its suspect marker cannot be persisted. No cleanup
+runs for `UNCHANGED`, failed creation, or a suspect new archive. Explicit `verify`
+performs full inspection under the same shared lock and marks demonstrated corruption;
+credentials, missing tools, or temporary I/O failures alone do not establish corruption.
+Inventory and status remain metadata-only and never mutate records.
 
 ## 13.3 Missing or unusable state recovery
 
@@ -1131,18 +1172,19 @@ A finer tier's configured count is a maximum. The tier retains fewer recovery po
 
 ## 14.3 Participation and deletion safety
 
-Only complete, valid, unmarked backups recognized through the configured naming rule and manifest participate in retention. Damaged backups are preserved outside retention counts even after successful replacement.
+Only complete, valid, unmarked backups recognized through the configured naming rule and manifest participate in retention counts. Suspects remain outside those counts. An unresolved suspect is protected; a superseded suspect becomes eligible for guarded deletion after its compatible replacement is validated.
 
-Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `verify` reports matching malformed entries, and `list` displays inventory warnings with incomplete retention decisions. `prune --dry-run` refuses a malformed destination instead of displaying a partial plan. A valid damage marker is recognized metadata; other unexpected files and malformed markers still block pruning.
+Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `verify` reports matching malformed entries, and `list` displays inventory warnings with incomplete retention decisions. `prune --dry-run` refuses a malformed destination instead of displaying a partial plan. A valid suspect marker is recognized metadata; other unexpected files and malformed markers still block pruning.
 
 A backup is eligible for deletion only when:
 
-- it is selected by no enabled retention tier;
-- it is a complete, valid Vaultkeep backup;
+- it is an unmarked backup selected by no enabled retention tier, or a suspect with a valid compatible replacement;
+- its layout and metadata are valid;
 - every destination entry has been classified successfully;
-- the complete retention plan has been calculated successfully.
+- the complete retention plan has been calculated successfully;
+- current checksums establish an eligible recovery point and validate every required replacement before deletion.
 
-The retention module returns a `RetentionPlan` and never deletes files directly. The destination module performs only deletions authorized by that complete plan. The current CLI does not render per-backup keep/delete decisions; a successful dry-run prints `prune: planned`.
+The retention module returns a `RetentionPlan` and never deletes files directly. The destination module performs only deletions authorized by that complete plan. `list` renders per-backup `KEEP`, `PRUNE`, `PROTECTED`, or `UNKNOWN` decisions; `prune --dry-run` displays the cleanup plan without mutation. A replacement reference does not require wall-clock ordering: a clock correction must not invalidate an independently verified replacement.
 
 ---
 
@@ -1191,7 +1233,7 @@ The workflow captures the hostname once per run and uses it for hook templates, 
   - runs only after change detection determines that a backup is required;
   - runs after the backup ID and intended final paths are assigned and before archive source reads begin;
   - quiesces an application or performs final preparation;
-  - does not establish a new source baseline: a modification to selected source content or hashed metadata causes source-consistency failure.
+  - is followed by the repeated offline check and a fresh source snapshot/digest, which becomes the archive baseline. Source changes after that refresh fail consistency checks. Source-hash naming and subsequent hook context use the refreshed digest.
 
 - `after_archive`
   - is armed before `before_archive` is invoked or, when no `before_archive` exists, before archive source reads begin;
@@ -1200,7 +1242,7 @@ The workflow captures the hostname once per run and uses it for hook templates, 
   - releases a quiesced application or removes temporary preparation state before destination commit.
 
 - `on_success`
-  - runs after archive finalization, committed-backup state persistence, and retention complete successfully.
+  - runs after commitment, committed-archive verification, and required successful state persistence, before any replacement references or retention deletion.
 
 - `on_failure`
   - runs once after a caught workflow failure when hook lifecycle execution has started;
@@ -1279,7 +1321,7 @@ Hook command strings and arguments are visible through the operating-system proc
 - A non-zero exit, timeout, signal, or launch failure from `before_check` or `before_archive` fails the pre-commit workflow with hook exit code `11`.
 - `after_archive` failure fails the pre-commit workflow with exit code `11` when no earlier error exists. When an earlier error exists, that error and its exit code remain primary and the cleanup-hook failure is reported as secondary.
 - `on_failure` failure never replaces the primary workflow error or triggers another hook.
-- `on_success` failure leaves the committed backup and completed retention actions intact, records a post-commit hook failure, and returns exit code `11`.
+- `on_success` failure preserves the committed backup and every older backup, records a post-commit hook failure, and returns exit code `11`.
 - `on_unchanged` failure leaves the last successful backup state unchanged, records an unchanged-result hook failure, and returns exit code `11`.
 - Failure of `on_success` or `on_unchanged` does not invoke `on_failure`.
 
@@ -1425,11 +1467,12 @@ vaultkeep --config job.yaml validate --schema-only
 
 Full `validate`, `run` preflight, and non-dry-run `prune` check destination access by
 creating a private temporary directory, writing a small file, atomically renaming the
-nonempty directory with the same no-overwrite operation used for backup finalization,
+nonempty directory with the same filesystem-specific operation used for backup finalization,
 and removing the probe. Configured filesystem type and marker checks precede probe
 creation. Failures name the operation and destination; cleanup failures report the
-remaining probe path and preserve any preceding probe error. A rename collision never removes the existing
-target. The probe checks current access under the calling identity, not future access
+remaining probe path and preserve any preceding probe error. The probe holds or
+reuses a covering destination lock, with the same NFS empty-target race limitation
+as finalization. The probe checks current access under the calling identity, not future access
 or the durability of a completed backup.
 
 `validate --schema-only` does not require sources or destinations to be mounted.
@@ -1895,33 +1938,36 @@ Each job has an independent timer instance.
 
 ## 20. Locking
 
-Each job must have a local lock to prevent overlapping runs of the same configuration.
+A local job lock retains execution/progress ownership using canonical configuration
+path, job ID, and runtime parameters. Per-file state also includes its file key.
+This local lock remains separate from destination mutual exclusion.
 
-The lock identity is derived from:
+`run`, mutating `verify`, and actual `prune` acquire destination locks before
+inspecting mutable histories. For local destinations, canonical physical
+ancestors receive shared locks and the destination root an exclusive lock. This
+serializes aliases and root/user access and rejects overlapping parent/child writers;
+independent sibling histories may proceed. A per-file run locks its parent namespace
+once through every child archive, marker update, post-commit check, and cleanup.
+Automatic cleanup reuses that lock.
 
-- canonical config path;
-- job ID;
-- explicit runtime parameters.
+CIFS/SMB and NFS writers acquire an exclusive server-backed lock on the persistent
+regular `.vaultkeep.lock` file at the mounted whole-share/export root. The file is
+opened read/write, never truncated or removed, and checked for a single regular
+inode and stable identity. All histories on that share serialize, including sibling
+namespaces, aliases, and cooperating clients on other machines. Reject CIFS `nobrl`
+and NFS `nolock`/`local_lock=all`/`local_lock=flock`; there is no machine-local fallback.
+Mount identity and options come from `/proc/self/mountinfo`, selected by the actual
+directory descriptor's mount ID from `/proc/self/fdinfo`, including stacked mounts.
+The held scope/filesystem is tracked in the execution context so validation probes
+reuse a covering lock and the NFS rename fallback cannot run without one.
+Unsupported filesystems, inaccessible anchors, and lock failures stop mutation.
+Subtree mounts (including bind-subtree aliases and mounted Btrfs subvolumes) and
+destinations containing nested mount points are rejected. They can hide physical
+parent/child overlap from this directory-lock protocol. Mount topology must remain
+stable during execution.
 
-Per-file archive state includes the file key; execution ownership uses the parent job identity.
-
-Lock path:
-
-```text
-/run/lock/vaultkeep/<job-id>-<job-identity-hash>.lock
-```
-
-Different jobs can run concurrently.
-
-No destination-level shared lock is required.
-
-V1 requires each job and machine to use a unique destination namespace. Two machines or two job identities must not manage retention in the same destination root. Distributed destination locking is a future enhancement.
-
-If the same job is already running:
-
-- the second invocation exits without starting another backup;
-- return a distinct exit code;
-- log the existing lock condition.
+`list`, `status`, and `prune --dry-run` create no locks and authorize no future
+deletion. Mutation always refreshes locked discovery and candidate validation.
 
 ---
 
@@ -2007,44 +2053,26 @@ The v1 `run` workflow remains concise:
 
 ```text
 parse CLI
-→ load config
-→ validate schema and identify job
-→ acquire job lock and record execution start
-→ validate semantics
-→ runtime preflight
-→ start hook lifecycle
+→ load one effective configuration and resolve the application owner/identity
+→ acquire local execution ownership and shared physical destination exclusion
 → run before_check
-→ discover source entries
-→ validate private local TAR capacity for .tar.7z
-→ calculate source digest
-→ calculate the backup-relevant configuration fingerprint
-→ reconcile local state with destination manifests, reconstructing absent or unusable state
-→ establish encrypted credential continuity when required
-→ compare with the last successful digest, configuration fingerprint, and credential-generation fingerprint
-→ if unchanged:
-     run on_unchanged
-     atomically record the final run result
-     return success
-→ allocate backup ID and intended final paths
-→ arm after_archive
-→ run before_archive
-→ create a temporary .tar.zst archive or private local inner TAR
-→ calculate source digest again
-→ verify source consistency
-→ run after_archive
-→ for .tar.7z, encrypt the completed inner TAR into a temporary destination archive
-→ verify the selected archive format and member structure
-→ write checksum and manifest
-→ remove the private local inner TAR when present
-→ atomically finalize
-→ atomically record the committed backup in local state
-→ discover valid backups
-→ calculate retention plan
-→ prune obsolete backups
+→ preliminary offline check when configured
+→ discover and hash sources; discover the active compatible history
+→ validate eligible recovery points and replacement requirements
+→ if unchanged: run on_unchanged, persist state, return without cleanup
+→ allocate backup ID and intended paths; run before_archive
+→ repeat offline check; refresh source snapshot/digest and hash-based paths
+→ build archive, rehash sources, verify structure/stream/checksums, remove private TAR
+→ final offline check after every source read
+→ attempt after_archive exactly once; only backup artifact reads follow
+→ verify staging integrity; commit immutable manifest and archive atomically
+→ rediscover and verify committed archive
+→ persist required successful backup state
 → run on_success
-→ atomically record the final run result
-→ persist common execution result and release lock
-→ return success
+→ record compatible suspect replacement relationships
+→ rediscover, plan and validate complete per-history cleanup
+→ guarded suspect cleanup and ordinary retention with replacement dependencies
+→ report final result and cleanup diagnostics; release locks
 ```
 
 Pre-commit failure path:
@@ -2130,7 +2158,7 @@ Example:
 # Copy this file to /etc/vaultkeep/jobs/<job-id>.yaml and edit it.
 # The file name without .yaml must match job.id.
 
-config_version: 1
+config_version: 2
 
 job:
   # Unique job identifier. Use letters, numbers, underscores, and hyphens.
@@ -2169,7 +2197,7 @@ source_options:
   ignore_missing: false
 
 destination:
-  # Root directory for this job. It is a local, CIFS, or NFS filesystem path.
+  # Root directory for this job, on a supported local filesystem or CIFS/NFS share.
   root: /mnt/backups/example
 
   # Vaultkeep derives the directory, archive, checksum, and manifest names
@@ -2182,9 +2210,9 @@ destination:
 
   # Optional exact kernel filesystem type backing destination.root.
   # Checked with findmnt in the running process's mount namespace before
-  # destination writes or backup management; cifs rejects host local fallbacks.
+  # destination writes or backup management; the type check rejects unintended fallback filesystems.
   # Independent of marker_file: configure either, both, or neither safety check.
-  # expected_fstype: cifs
+  # expected_fstype: ext4
 
 archive:
   # Supported values: tar.zst, tar.7z.
@@ -2592,8 +2620,7 @@ Use temporary local filesystems for most tests.
 
 V1 integration suites cover:
 
-- CIFS;
-- NFS;
+- shared physical destination exclusion and unsupported-mount rejection;
 - real `tar`;
 - real `zstd`;
 - Debian's real `7z`;
@@ -2602,7 +2629,7 @@ V1 integration suites cover:
 - timer installation, persistence, disablement, and removal;
 - installer execution, update rollback, uninstall preservation, and purge on supported Debian releases.
 
-Real-tool local-filesystem tests run in continuous integration. CIFS, NFS, systemd, and full installer suites can require an explicit Debian VM or container environment, but passing them on every supported Debian release is a v1 release gate.
+Real-tool local-filesystem tests run in continuous integration. Systemd, shared-lock release validation, and full installer suites can require an explicit Debian VM or container environment, but passing them on every supported Debian release is a v1 release gate.
 
 Encrypted-archive integration tests inspect `/proc/<pid>/cmdline` and the captured environment while `7z` runs to prove that the passphrase is absent. They prove that unauthenticated listing does not reveal the inner TAR name, test the installed Debian `7zip` binary's stdin behavior, exercise credential-continuity failures, and force interruption and command failure at every stage to verify cleanup of the private plaintext TAR.
 
@@ -2704,7 +2731,7 @@ A failed run reports:
 
 - validates configuration without requiring source paths;
 - discovers valid and matching-but-malformed backup entries;
-- renders a newest-first inventory of stored UTC creation times, filesystem archive sizes, stored encryption, and retention decisions, with the job, destination, and policy above the table;
+- renders a newest-first inventory of stored UTC creation times, filesystem archive sizes, retention decisions, and inline suspect reasons, with the job, destination, and policy above the table;
 - reports matching malformed entries as warnings and counts them separately;
 - shows current retention selections from the existing prune planner independently per history, with `UNKNOWN` for incomplete histories;
 - shares compact table formatting and narrow-terminal fallback with `verify`, placing complete relative backup directories beneath each row;
@@ -2726,7 +2753,8 @@ A failed run reports:
 - validates the outer `.tar.7z` member and streams its inner TAR for inspection;
 - validates every TAR member list for duplicate, absolute, and traversal paths;
 - reports every verified, failed, and structurally malformed backup;
-- never modifies archives, manifests, checksums, state, or retention.
+- never modifies archives, manifests, checksums, local state, or retention;
+- may atomically record a suspect marker for demonstrated corruption under the shared destination lock.
 
 A v1 release also requires automated restore drills for `.tar.zst` and `.tar.7z`. Each drill extracts a generated archive into an empty temporary directory and compares content, paths, links, permissions, numeric ownership where permitted, and modification times with the source fixture.
 
@@ -2878,7 +2906,7 @@ Status: **Complete**.
 Status: **Complete for repository release gates; external Debian release execution remains required before publishing v1**.
 
 - [x] real `tar`, `zstd`, and `7z` integration tests;
-- [x] CIFS and NFS validation gates;
+- [x] Shared-lock release-host gate;
 - [x] systemd timer and installer release gates for every supported Debian release;
 - [x] crash and failure-injection checklist;
 - [x] restore drills;
@@ -2904,7 +2932,7 @@ V1 Vaultkeep is designed as:
 - able to create independent unencrypted `.tar.zst` archives;
 - able to create password-protected `.tar.7z` archives containing one inner TAR;
 - readable without Vaultkeep;
-- safe for mounted CIFS, NFS, or local destinations;
+- guarded by physical-directory locks locally and shared regular-file locks on CIFS/NFS;
 - configured with one directory per backup;
 - strict about unknown and malformed configuration;
 - count-based and calendar-bucketed for hourly/daily/weekly/monthly/yearly retention with coarser-tier horizons limiting finer-tier selections;

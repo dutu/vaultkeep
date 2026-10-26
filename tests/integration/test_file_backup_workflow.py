@@ -17,7 +17,6 @@ from vaultkeep import hooks
 from vaultkeep.backup import workflow
 from vaultkeep.backup.results import classify_command
 from vaultkeep.cli.commands import main
-from vaultkeep.destination.damage import DAMAGE_MARKER_NAME
 from vaultkeep.errors import ArchiveCreationError, DestinationError, LockError
 from vaultkeep.file_backups import file_key
 from vaultkeep.locking import JobLock, job_lock_path
@@ -75,8 +74,7 @@ def test_damaged_wallet_backup_is_replaced_with_a_restorable_archive(file_job: P
     assert [outcome.result for outcome in result.files] == ["created", "unchanged"]
     replacement = result.files[0].archive_path
     assert replacement is not None and replacement != damaged
-    assert damaged.read_bytes() == b"corrupted compressed archive"
-    assert (damaged.parent / DAMAGE_MARKER_NAME).is_file()
+    assert not damaged.parent.exists()
     restored = subprocess.run(
         [
             "/usr/bin/tar",
@@ -454,7 +452,7 @@ def test_file_replaced_with_symlink_after_selection_is_not_archived(
     assert [outcome.result for outcome in _run(file_job).files] == ["failed", "created"]
 
 
-def test_manual_prune_validates_all_histories_before_deleting_anything(file_job: Path) -> None:
+def test_manual_prune_validates_each_history_independently(file_job: Path) -> None:
     document = json.loads(file_job.read_text())
     document["retention"]["hourly"] = 24
     file_job.write_text(json.dumps(document))
@@ -470,10 +468,11 @@ def test_manual_prune_validates_all_histories_before_deleting_anything(file_job:
     broken = first.files[-1].archive_path.with_suffix(".zst.sha256")
     original = broken.read_bytes()
     broken.write_text("invalid checksum")
-    with pytest.raises(DestinationError, match="malformed"):
+    with pytest.raises(DestinationError, match="Malformed"):
         workflow.prune_backups(file_job, dry_run=False)
-    assert all(outcome.archive_path.is_file() for outcome in first.files)
+    assert not first.files[0].archive_path.exists()
+    assert first.files[-1].archive_path.is_file()
     broken.write_bytes(original)
     assert workflow.prune_backups(file_job, dry_run=True).removed == 0
-    assert workflow.prune_backups(file_job, dry_run=False).removed == 2
+    assert workflow.prune_backups(file_job, dry_run=False).removed == 1
     assert workflow.verify_backups(file_job).backups == 2

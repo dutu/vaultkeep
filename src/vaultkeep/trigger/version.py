@@ -1,8 +1,8 @@
 """Schema versions and internal limits for shutdown monitoring."""
 
 #: On-disk schema versions. An unknown version blocks dispatch instead of guessing.
-INSTANCE_STATE_SCHEMA_VERSION = 1
-REQUEST_SCHEMA_VERSION = 1
+INSTANCE_STATE_SCHEMA_VERSION = 2
+REQUEST_SCHEMA_VERSION = 2
 RECEIPT_SCHEMA_VERSION = 1
 LAUNCH_SCHEMA_VERSION = 1
 BLOCKED_INSTANCE_SCHEMA_VERSION = 1

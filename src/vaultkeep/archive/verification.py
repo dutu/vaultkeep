@@ -11,6 +11,7 @@ from vaultkeep.archive.passwords import PasswordSecret
 from vaultkeep.archive.process import run_command, run_pipeline
 from vaultkeep.archive.tar_input import compare_tar_members, parse_gnu_tar_listing
 from vaultkeep.errors import (
+    ArchiveCorruptionError,
     ArchiveCreationError,
     ArchiveVerificationError,
 )
@@ -57,6 +58,8 @@ def verify_tar_zstd(
     except ArchiveVerificationError:
         raise
     except ArchiveCreationError as error:
+        if _demonstrates_invalid_data(error):
+            raise ArchiveCorruptionError(f"tar.zst verification failed: {error}") from error
         raise ArchiveVerificationError(f"tar.zst verification failed: {error}") from error
 
 
@@ -94,9 +97,7 @@ def verify_tar_7z(
         )
         exposed = unauthenticated.stdout + b"\n" + unauthenticated.stderr
         if inner_name.encode("utf-8") in exposed:
-            raise ArchiveVerificationError(
-                "7z header encryption did not conceal the inner TAR name"
-            )
+            raise ArchiveCorruptionError("7z header encryption did not conceal the inner TAR name")
         listing = run_command(
             (
                 tools.seven_zip,
@@ -111,7 +112,7 @@ def verify_tar_7z(
             capture_stdout=True,
         )
         if _seven_zip_member_paths(listing.stdout) != (inner_name,):
-            raise ArchiveVerificationError(
+            raise ArchiveCorruptionError(
                 f"7z archive must contain exactly one member named {inner_name}"
             )
         report_progress(
@@ -147,6 +148,8 @@ def verify_tar_7z(
     except ArchiveVerificationError:
         raise
     except ArchiveCreationError as error:
+        if _demonstrates_invalid_data(error):
+            raise ArchiveCorruptionError(f"tar.7z verification failed: {error}") from error
         raise ArchiveVerificationError(f"tar.7z verification failed: {error}") from error
 
 
@@ -186,7 +189,7 @@ def _seven_zip_member_paths(output: bytes) -> tuple[str, ...]:
     try:
         text = output.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
-        raise ArchiveVerificationError("7z listing is not valid UTF-8") from error
+        raise ArchiveCorruptionError("7z listing is not valid UTF-8") from error
     return tuple(
         line.removeprefix("Path = ") for line in text.splitlines() if line.startswith("Path = ")
     )
@@ -195,8 +198,44 @@ def _seven_zip_member_paths(output: bytes) -> tuple[str, ...]:
 def _require_nonempty_archive(path: Path) -> None:
     try:
         if path.stat().st_size <= 0:
-            raise ArchiveVerificationError(f"Archive is empty: {path}")
+            raise ArchiveCorruptionError(f"Archive is empty: {path}")
     except ArchiveVerificationError:
         raise
     except OSError as error:
         raise ArchiveVerificationError(f"Cannot inspect archive {path}: {error}") from error
+
+
+def _demonstrates_invalid_data(error: ArchiveCreationError) -> bool:
+    text = str(error).lower()
+    # Never infer corruption from failure to execute or read, or from a password
+    # failure. Positive tool diagnostics about the stream/TAR are required.
+    if any(
+        item in text
+        for item in (
+            "cannot start",
+            "permission denied",
+            "input/output error",
+            "no such file",
+            "wrong password",
+            "password is incorrect",
+        )
+    ):
+        return False
+    return any(
+        item in text
+        for item in (
+            "does not look like a tar archive",
+            "not in gzip format",
+            "unsupported format",
+            "unknown frame descriptor",
+            "restored data doesn't match checksum",
+            "corrupted block detected",
+            "data corruption detected",
+            "unexpected end of file",
+            "unexpected eof in archive",
+            "unexpected end of data",
+            "is not archive",
+            "headers error",
+            "premature end",
+        )
+    )

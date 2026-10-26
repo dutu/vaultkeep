@@ -38,8 +38,8 @@ nano "$job_config"
 
 Keep the complete example. The filename stem must match `job.id` (`electrum-main` here).
 Replace every example path: `sources[].path` selects the files to back up,
-`destination.root` is an existing writable directory, and `trigger.data_dir`
-identifies the application instance. Mount and verify any network share first;
+`destination.root` is an existing writable directory, and `application.data_dir`
+identifies the application instance. Prepare and verify a supported local filesystem or CIFS/NFS share first;
 optional [destination safety checks](../../configuration.md#destination-safety-checks)
 can reject an unintended local directory. Keep destinations independent between jobs.
 
@@ -56,14 +56,17 @@ through another verified entrypoint, such as a wrapper or daemon executable,
 add it as another entry in `entrypoints`:
 
 ```yaml
-trigger:
-  enabled: false
-  app: electrum
+application:
+  name: electrum
+  user: alice
   data_dir: /home/alice/.electrum
   matcher:
     entrypoints:
       - kind: script
         value: /home/alice/.local/opt/electrum/current/run_electrum
+
+trigger:
+  enabled: false
   poll_seconds: 2
   confirm_seconds: 5
 ```
@@ -85,7 +88,7 @@ Trigger resolves the effective data directory in this order:
 2. `-D` or `--dir`
 
 Both separate arguments and `--dir=/path` are accepted. The resolved directory
-is canonicalized and compared with `trigger.data_dir`.
+is canonicalized and compared with `application.data_dir`.
 
 If Electrum uses its default directory without exposing one of those values,
 launch it with an explicit `--dir` argument or configure `ELECTRUMDIR` for the
@@ -108,7 +111,7 @@ sources:
       - "*.tmp"
 ```
 
-Keep `trigger.data_dir: /home/alice/.electrum`; it identifies the application
+Keep `application.data_dir: /home/alice/.electrum`; it identifies the application
 instance, while `sources` selects the wallet files. Set the destination to a new,
 independent root and retain the complete job's archive, encryption, retention,
 and trigger settings. Each wallet gets its own history and only new or changed
@@ -131,24 +134,32 @@ Use a separate job and monitor for each instance:
 
 ```yaml
 # electrum-main.yaml
-trigger:
-  app: electrum
+application:
+  name: electrum
+  user: alice
   data_dir: /home/alice/.electrum-mainnet
   matcher:
     entrypoints:
       - kind: script
         value: /home/alice/.local/opt/electrum/current/run_electrum
+
+trigger:
+  enabled: false
 ```
 
 ```yaml
 # electrum-test.yaml
-trigger:
-  app: electrum
+application:
+  name: electrum
+  user: alice
   data_dir: /home/alice/.electrum-testnet
   matcher:
     entrypoints:
       - kind: script
         value: /home/alice/.local/opt/electrum/current/run_electrum
+
+trigger:
+  enabled: false
 ```
 
 Give the jobs distinct `job.id` values and destinations. Other Electrum

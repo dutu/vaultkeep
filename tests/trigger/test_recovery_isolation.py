@@ -301,7 +301,6 @@ def test_launched_orphan_holds_slot_and_preserves_newer_pending(store: StateStor
     assert (
         state.pending_request is not None and state.pending_request.request_id == newer.request_id
     )
-    assert state.review_required
     assert store.request_path(old.attempt_id).exists() and not controller.started
 
 
@@ -333,8 +332,8 @@ def test_receipt_adoption_preserves_monitor_gap_evidence(store: StateStore) -> N
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
     monitor._startup_reconcile()
     state = store.read_instance(instance.id)
-    assert state is not None and state.review_required
-    assert any("Review required" in title for title, _body in notifier.calls)
+    assert not any("Review required" in title for title, _body in notifier.calls)
+    assert state.attempt_summaries[-1]["outcome"] == "created"
 
 
 def test_notification_markers_follow_retention_without_rearming_delivery(store: StateStore) -> None:

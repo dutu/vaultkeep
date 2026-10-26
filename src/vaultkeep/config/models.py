@@ -1,4 +1,4 @@
-"""Strict configuration models for schema version 1."""
+"""Strict configuration models for schema version 2."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     StringConstraints,
     field_validator,
     model_validator,
@@ -180,20 +181,10 @@ class TriggerConfig(StrictConfigModel):
     """Optional application shutdown trigger for this job."""
 
     enabled: bool = False
-    app: Literal["electrum", "bisq", "wasabi"] | None = None
-    data_dir: NonEmptyString | None = None
-    matcher: TriggerMatcherConfig | None = None
     poll_seconds: TriggerSeconds = 2.0
     confirm_seconds: TriggerSeconds = 5.0
     deadline_seconds: TriggerSeconds | None = None
     params: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("data_dir")
-    @classmethod
-    def _absolute_data_dir(cls, value: str | None) -> str | None:
-        if value is not None and not (value == "~" or value.startswith(("/", "~/"))):
-            raise ValueError("data_dir must be an absolute path or start with ~/")
-        return value
 
     @field_validator("params")
     @classmethod
@@ -206,18 +197,39 @@ class TriggerConfig(StrictConfigModel):
         except ConfigurationError as error:
             raise ValueError(str(error)) from error
 
+
+class ConsistencyConfig(StrictConfigModel):
+    """Source-processing consistency policy shared by all initiators."""
+
+    mode: Literal["files", "application_offline"] = "files"
+
+
+class ApplicationConfig(StrictConfigModel):
+    """One logical application and its process owner."""
+
+    _owner_uid: int | None = PrivateAttr(default=None)
+
+    name: Literal["electrum", "bisq", "wasabi"]
+    user: NonEmptyString
+    data_dir: NonEmptyString
+    matcher: TriggerMatcherConfig
+
+    @field_validator("data_dir")
+    @classmethod
+    def _absolute_data_dir(cls, value: str) -> str:
+        if not (value == "~" or value.startswith(("/", "~/"))):
+            raise ValueError("data_dir must be absolute or start with ~/")
+        return value
+
     @model_validator(mode="after")
-    def _valid_trigger(self) -> Self:
-        if self.enabled and (self.app is None or self.data_dir is None or self.matcher is None):
-            raise ValueError("enabled triggers require app, data_dir, and matcher.entrypoints")
-        if self.matcher is not None:
-            allowed = {"electrum": {"ELECTRUMDIR"}, "wasabi": {"WASABI_DATADIR"}, "bisq": set()}
-            unknown = set(self.matcher.env_eq) - allowed.get(self.app or "", set())
-            if unknown:
-                raise ValueError(
-                    "trigger.matcher.env_eq contains unsupported keys: "
-                    + ", ".join(sorted(unknown))
-                )
+    def _allowed_environment(self) -> Self:
+        allowed = {"electrum": {"ELECTRUMDIR"}, "wasabi": {"WASABI_DATADIR"}, "bisq": set()}
+        unknown = set(self.matcher.env_eq) - allowed[self.name]
+        if unknown:
+            raise ValueError(
+                "application.matcher.env_eq contains unsupported keys: "
+                + ", ".join(sorted(unknown))
+            )
         return self
 
 
@@ -247,9 +259,9 @@ class LoggingConfig(StrictConfigModel):
 
 
 class JobConfig(StrictConfigModel):
-    """Complete Vaultkeep configuration schema version 1."""
+    """Complete Vaultkeep configuration schema version 2."""
 
-    config_version: Literal[1]
+    config_version: Literal[2]
     job: JobIdentityConfig
     backup_mode: Literal["combined", "per_file"] = "combined"
     sources: list[SourceConfig] = Field(min_length=1)
@@ -260,13 +272,28 @@ class JobConfig(StrictConfigModel):
     encryption: EncryptionConfig
     retention: RetentionConfig
     schedule: ScheduleConfig
+    consistency: ConsistencyConfig = Field(default_factory=ConsistencyConfig)
+    application: ApplicationConfig | None = None
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)
     logging: LoggingConfig
 
+    @field_validator("config_version", mode="before")
+    @classmethod
+    def _version_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("config_version must be an integer")
+        return value
+
     @model_validator(mode="after")
     def _exclusive_automatic_execution(self) -> Self:
+        if (
+            self.trigger.enabled or self.consistency.mode == "application_offline"
+        ) and self.application is None:
+            raise ValueError(
+                "application is required for Trigger or application_offline consistency"
+            )
         if self.schedule.enabled and self.trigger.enabled:
             raise ValueError("schedule.enabled and trigger.enabled are mutually exclusive")
         return self

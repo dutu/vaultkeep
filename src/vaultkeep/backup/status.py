@@ -25,6 +25,7 @@ def _unknown_previous(execution_id: str | None, reason: str) -> dict[str, Any]:
         "exit_code": None,
         "signal": None,
         "reason": reason,
+        "cleanup_errors": [],
     }
 
 

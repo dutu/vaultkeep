@@ -1,4 +1,4 @@
-"""No-overwrite atomic destination-directory commit."""
+"""Atomic destination-directory commit with locked NFS compatibility."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 
 from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
@@ -16,6 +17,7 @@ from vaultkeep.errors import (
     DestinationError,
     DestinationFinalizeError,
 )
+from vaultkeep.locking import destination_lock, held_destination_filesystem
 
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
@@ -23,6 +25,13 @@ _RENAME_NOREPLACE = 1
 
 def probe_destination_writability(root: Path) -> None:
     """Check create, write, atomic directory rename, and removal using private probes."""
+    # Full validation may run outside an execution; the NFS rename fallback still
+    # needs the same shared lock used by real backup finalization.
+    with nullcontext() if held_destination_filesystem(root) else destination_lock(root):
+        _probe_destination_writability(root)
+
+
+def _probe_destination_writability(root: Path) -> None:
     probe: Path | None = None
     failure: OSError | None = None
     operation = "create a probe directory"
@@ -53,7 +62,7 @@ def probe_destination_writability(root: Path) -> None:
 
 
 def finalize_backup_directory(staging_path: Path, final_path: Path) -> None:
-    """Flush staging and atomically rename it without replacing any final path."""
+    """Flush staging and atomically commit; NFS fallback requires the shared lock."""
     if staging_path.parent.absolute() != final_path.parent.absolute():
         raise DestinationFinalizeError(
             "Staging and final backup directories must share one destination parent"
@@ -140,11 +149,26 @@ def _rename_noreplace(source: Path, destination: Path) -> None:
         )
         if result != 0:
             error_number = ctypes.get_errno()
+            if error_number in {errno.EINVAL, errno.EOPNOTSUPP} and held_destination_filesystem(
+                source.parent
+            ) in {"nfs", "nfs4"}:
+                _checked_rename(source, destination)
+                return
             raise OSError(error_number, os.strerror(error_number), destination)
         return
 
     # Non-Linux execution exists only for portable unit tests. Debian uses renameat2.
-    if destination.exists() or destination.is_symlink():
+    _checked_rename(source, destination)
+
+
+def _checked_rename(source: Path, destination: Path) -> None:
+    # Under the shared lock all cooperating writers serialize this check/rename.
+    # POSIX rename also refuses to replace an existing nonempty backup directory.
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    else:
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), destination)
     os.rename(source, destination)
 

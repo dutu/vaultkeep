@@ -209,8 +209,6 @@ def _trigger_state_health(
         )
     else:
         report.row("Process observation", state.last_observation.observation.value)
-    if state.review_required:
-        report.problem("Trigger state", f"review required — {state.review_reason}")
     if state.attempt_summaries:
         latest = state.attempt_summaries[-1]
         outcome = latest["outcome"]

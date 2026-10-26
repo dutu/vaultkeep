@@ -20,7 +20,9 @@ from vaultkeep.archive.tar_7z import encrypt_inner_tar
 from vaultkeep.backup.workflow import load_validated_config
 from vaultkeep.cli.commands import main
 from vaultkeep.destination import allocate_job_backup_paths, create_staging_directory
+from vaultkeep.destination.identity import replacement_identity
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
+from vaultkeep.destination.suspect import read_suspect_marker
 from vaultkeep.file_backups import file_config
 
 TOOLS = ArchiveTools()
@@ -124,6 +126,8 @@ def _backup(
     write_manifest(
         paths.manifest_path,
         BackupManifest(
+            manifest_version=2,
+            replacement_identity=replacement_identity(config),
             application_version="0.3.0.dev1",
             backup_id=f"{number:032x}",
             job=config.job.id,
@@ -184,6 +188,7 @@ def test_verify_real_archives_without_sources_preserves_backups_and_state(
         (_tar("app/../escape"), "parent-traversal member path"),
         (_tar("app/data", "app/data"), "duplicate member paths"),
     ],
+    ids=["invalid-tar", "absolute-path", "parent-traversal", "duplicate-members"],
 )
 def test_verify_rejects_invalid_tar_with_matching_checksums(
     job: Path, payload: bytes, reason: str, capsys: pytest.CaptureFixture[str]
@@ -201,7 +206,13 @@ def test_verify_rejects_invalid_tar_with_matching_checksums(
     assert "2026-10-24 02:00  OK        OK       OK" in output.out
     assert str(good) not in output.out + output.err
     assert "Verified:  1/2 backups" in output.out
-    assert _files(job.parent) == before
+    assert {
+        path: value
+        for path, value in _files(job.parent).items()
+        if path.name != ".vaultkeep-suspect"
+    } == before
+
+    assert (bad.parent / ".vaultkeep-suspect").is_file()
 
 
 def test_verify_rejects_invalid_compressed_bytes_with_matching_checksums(
@@ -223,6 +234,15 @@ def test_verify_rejects_invalid_compressed_bytes_with_matching_checksums(
     assert "malformed backup" not in output.err
     assert str(archive) in output.err
     assert "verification failed" in output.err
+    assert read_suspect_marker(archive.parent) is not None
+
+
+def test_verify_records_valid_compression_with_truncated_tar_as_suspect(job):
+    info = tarfile.TarInfo("app/data")
+    info.size = 4096
+    archive = _backup(job, info.tobuf() + b"x" * 512)
+    assert main(["--user", "--config", str(job), "verify"]) == 7
+    assert read_suspect_marker(archive.parent) is not None
 
 
 def test_verify_rejects_wrong_password(job: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -279,7 +299,7 @@ def test_verify_table_separates_metadata_and_checksum_failures(job, capsys, dama
         manifest_path.write_text(json.dumps(manifest))
     before = _files(job.parent)
 
-    assert main(["--user", "--config", str(job), "verify"]) == 5
+    assert main(["--user", "--config", str(job), "verify"]) == (5 if damage == "manifest" else 7)
 
     output = capsys.readouterr()
     bad_row = next(
@@ -293,7 +313,11 @@ def test_verify_table_separates_metadata_and_checksum_failures(job, capsys, dama
     assert "Result:    FAILED" in output.out
     assert str(bad.parent) in output.err
     assert str(good) not in output.out + output.err
-    assert _files(job.parent) == before
+    assert {
+        path: value
+        for path, value in _files(job.parent).items()
+        if path.name != ".vaultkeep-suspect"
+    } == before
 
 
 @pytest.mark.parametrize("backup_mode", ["combined", "per_file"])

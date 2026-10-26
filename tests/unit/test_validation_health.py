@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pwd
 import re
 import subprocess
 from dataclasses import replace
@@ -42,12 +43,13 @@ def write_job(health_job, *, trigger=False, schedule=False):
     path, data = health_job
     data["schedule"]["enabled"] = schedule
     if trigger:
-        data["trigger"] = {
-            "enabled": True,
-            "app": "bisq",
-            "data_dir": str(path.parent / "bisq"),
+        data["application"] = {
+            "name": "bisq",
+            "data_dir": str(path.parent / "source"),
             "matcher": {"entrypoints": [{"kind": "java_main", "value": "bisq.Main"}]},
+            "user": pwd.getpwuid((path.parent / "source").stat().st_uid).pw_name,
         }
+        data["trigger"] = {"enabled": True}
     path.write_text(json.dumps(data))
     return path
 
@@ -119,7 +121,6 @@ def test_healthy_trigger(health_job, monkeypatch, capsys):
     [
         ({"last_monitor_update": "2000-01-01T00:00:00Z"}, "Monitor updates: stale"),
         ({"config_fingerprint": "old"}, "Monitor configuration: differs"),
-        ({"review_required": True, "review_reason": "gap"}, "review required — gap"),
     ],
 )
 def test_trigger_state_health_failures(health_job, monkeypatch, capsys, updates, message):

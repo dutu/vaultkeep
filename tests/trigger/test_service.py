@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
 from dataclasses import replace
 from pathlib import Path
 
@@ -40,12 +42,13 @@ def isolated_services(tmp_path, monkeypatch):
 
 
 def config(tmp_path: Path, valid_config: dict):
-    valid_config["trigger"] = {
-        "enabled": True,
-        "app": "electrum",
+    valid_config["application"] = {
+        "name": "electrum",
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
+    valid_config["trigger"] = {"enabled": True}
     path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))
     return load_config(path)
@@ -134,7 +137,7 @@ def test_legacy_recovery_evidence_blocks_new_monitors(tmp_path: Path, monkeypatc
     legacy = tmp_path / "legacy"
     (legacy / "instances").mkdir(parents=True)
     evidence = legacy / "instances/app.json"
-    evidence.write_text('{"review_required":true}')
+    evidence.write_text('{"instance_id": "app", "active_attempt_id": "unresolved"}')
     binary = tmp_path / "vaultkeep"
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o700)
@@ -142,7 +145,6 @@ def test_legacy_recovery_evidence_blocks_new_monitors(tmp_path: Path, monkeypatc
     candidate = replace(make_config(), scope="a" * 16, vaultkeep=binary)
     with pytest.raises(BlockedError, match="legacy shared Trigger state"):
         runtime_preflight(candidate, FakeController(), tmp_path / "new", runner=FakeRunner([]))
-    assert evidence.read_text() == '{"review_required":true}'
     assert not (tmp_path / "new").exists()
 
 

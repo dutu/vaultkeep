@@ -138,7 +138,7 @@ Electrum, and Wasabi configuration.
 - Each confirmed shutdown receives a request ID and frozen job, matcher, environment, executable/version, boot ID, and relevant configuration fingerprint. Persist the pending request before dispatch.
 - At most one active attempt and one pending request per instance. Independent instances may dispatch concurrently; there is no shared FIFO/global execution slot. Retain only the latest confirmed pending shutdown, recording supersession and a drop count; the monitor logs lifecycle events. A dedicated deduplicated supersession notification remains an unimplemented design requirement.
 - A verified restart before dispatch clears the pending request and arms the next lifecycle. Repeated identical observations do not recreate or replace a request.
-- If an app restarts during its active attempt, persist `review_required` for that attempt while letting it finish. A later confirmed shutdown may create a pending request. Before dispatch, wait for that instance's previous worker to end and revalidate request currency and offline evidence.
+- An app restart may arm a later lifecycle while the active worker finishes. Before dispatch, wait for that worker to end and revalidate request currency and stopped evidence. The shared backup engine enforces the configured consistency policy and owns archive health.
 - SIGTERM/SIGINT stops monitoring without terminating workers. Polling can miss an entire lifecycle between samples; disappearance does not establish a clean exit or complete event capture.
 
 ### Fixed state and durable ownership
@@ -169,10 +169,10 @@ Resolve account home from the effective UID's operating system account record. A
   never authorizes dispatch, replay, recovery, or successful completion. Receipts remain
   authoritative for worker orchestration; unified job status gets backup outcomes
   directly from Backup.
-- Persist UTC timestamps; use monotonic timing only within the current process. Never reuse a saved monotonic timestamp after restart. Unknown schema versions block dispatch and preserve evidence; migrations must be explicit and tested.
+- Persist UTC timestamps; use monotonic timing only within the current process. Never reuse a saved monotonic timestamp after restart. Unknown schema versions block dispatch and preserve evidence; no legacy state migration is provided.
 - Corrupt or contradictory state preserves diagnosis material and blocks uncertain replay for its owning instance. Persist a separate versioned `blocked/<instance-id>.json` diagnostic without rewriting the original state, and continue monitoring healthy instances. The block survives restart until the operator reviews and repairs the evidence and removes the diagnostic. Failure to persist a block prevents further dispatch. The current loader validates schema/types and association checks. A request-file size cap was part of the design requirements but is not currently implemented; it must not be advertised as an enforced bound.
 - Retain the 50 most recent cleanup-eligible completed attempts per instance, excluding active, pending, unreconciled, or otherwise recovery-referenced records. Preserve necessary safety/uncertainty summaries in instance state beyond diagnostic retention.
-- An `outcome_unknown` or `review_required` attempt becomes eligible for cleanup only once it has ended, reconciliation is complete, its summary is durably recorded in instance state, and no recovery association still needs its record. Retain at most 20 completed, reconciled, summarized uncertain-attempt records per instance, removing the oldest eligible records first; this internal history cap does not apply to active or genuinely unresolved execution records. Preserve necessary uncertainty/safety warnings in instance state when detailed history is removed. Detailed completed history is limited to 50 eligible records per instance, with a 20-record sub-cap for `result_unknown`/`outcome_unknown`/`blocked` outcomes. An annotation on a `created` or `unchanged` result does not itself move it into that sub-cap. Summaries are retained independently. The current dispatch guard holds new work when more than 70 records are protected; it never deletes recovery evidence to satisfy a bound.
+- An `outcome_unknown` attempt becomes eligible for cleanup only once it has ended, reconciliation is complete, its summary is durably recorded in instance state, and no recovery association still needs its record. Retain at most 20 completed, reconciled, summarized uncertain-attempt records per instance, removing the oldest eligible records first; this internal history cap does not apply to active or genuinely unresolved execution records. Preserve necessary worker-uncertainty diagnostics in instance state when detailed history is removed. Detailed completed history is limited to 50 eligible records per instance, with a 20-record sub-cap for `result_unknown`/`outcome_unknown`/`blocked` outcomes. Summaries are retained independently. The current dispatch guard holds new work when more than 70 records are protected; it never deletes recovery evidence to satisfy a bound.
 - Prune notification markers when their detailed attempt/request history expires, preserving markers referenced by retained records, active or blocking attempts, current/latest requests, pending requests, and rejection recovery.
 
 ### Dispatch and restart recovery
@@ -256,9 +256,16 @@ If resetting failed units manually, reconcile completed failed template instance
 
 Contradictory ownership or receipt records create a persistent per-instance state-error block instead of being interpreted as a completed unknown outcome.
 
-Keep execution results immutable. A detected restart, relevant ambiguous/unavailable observation during execution, or a monitoring gap overlapping execution records `review_required` separately with its reason. Recovery must annotate affected attempts even if their receipts arrived while the monitor was down. Do not issue unqualified success messaging for such attempts.
+Keep worker results immutable. The request freezes the shared consistency policy,
+complete application identity, and resolved process-owner UID. The worker checks
+that its frozen identity and policy agree; the backup child compares that policy
+with its own single effective loaded configuration before proceeding.
 
-An attempt with uncertain source consistency may already have committed an archive and performed retention. Trigger neither kills it automatically, deletes its archive, nor alters VaultKeep's manifests/state. A later successful result, including `created`, does not establish the earlier archive's safety or resolve its uncertainty. Preserve the outstanding warning and its attempt annotation. A matching final-check `blocked` receipt proves that its backup child never ran and resolves only that attempt's execution risk. Keep the historical annotation; clear the aggregate only with attributable evidence and no other outstanding risk. Preserve unidentifiable legacy aggregate warnings. Gap checks use actual observation/completion evidence rather than generic state-write times. Operator review remains an external action, with no v1 command to acknowledge a warning. See [execution review warnings](../trigger/recovery.md#execution-review-warnings).
+Trigger does not maintain archive-consistency review flags, create suspect markers,
+prune backups, or associate attempt IDs with backup IDs. Restart/gap observations
+alone do not classify archives. Preserve genuine unknown worker outcomes, blocked
+execution, and uncertain dispatch without automatically replaying an old attempt.
+The engine's offline boundaries precede the release hook and retain file hashing.
 
 An optional positive deadline marks an attempt overdue and sends one best-effort notification; it never terminates the worker and never releases the active slot. While recovering an executing attempt, use persisted UTC start/launch evidence conservatively for overdue reporting; deadlines remain advisory. Hung executions require manual operator action.
 
@@ -287,12 +294,12 @@ Do not treat these diagnostics as redacted or publish them without reviewing the
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
 | Wrong/inaccessible process identity | Unsafe automatic backup | Verified strong matchers, writer-process review, fail-closed dispatch |
-| App restart after final recheck | Offline safety uncertain | Persist review_required, let worker finish, retain warning on later unchanged |
+| App restart after final recheck | Engine policy applies | Offline boundary checks fail execution if running; files policy retains source checks |
 | Shared destination/mutable resource | Cross-job archive/retention conflict | Operator-reviewed distinct destination roots and independent jobs; v1 does not enforce job internals |
 | External VaultKeep lock namespace differs | Duplicate same-job executions | Explicit selected HOME/XDG environment; review external direct/timer runs |
 | Crash across request/association/start | Lost request or duplicate execution | Stable request IDs, durable attempt adoption, launch marker, conservative reconciliation |
 | Worker result missing or manager unreachable | Uncertain execution | Retain active association until absence confirmed; no replay of outcome_unknown |
-| Monitor gap during backup | Missing offline evidence | Separate durable review_required annotation without changing worker receipt |
+| Monitor gap during backup | Worker outcome may need recovery | Reconcile dispatch and receipts; do not infer archive health from monitoring gaps |
 | Retention deletes recovery records | Lost associations or safety warnings | Clean only eligible completed attempts; preserve referenced records and summaries |
 | Notification unavailable | Missed alert | Best-effort delivery; diagnostics/status retain outcome |
 

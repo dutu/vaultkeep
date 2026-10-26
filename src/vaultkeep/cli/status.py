@@ -64,7 +64,7 @@ def _collect_valid_status(
     config = resolve_runtime_config(raw, parameters)
     identity = job_identity_hash(config_path, config.job.id, runtime_params=parameters)
     result: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "job_id": config.job.id,
         "backup": backup_status(
             user_workflow_paths() if user_mode else WorkflowPaths(),
@@ -73,14 +73,55 @@ def _collect_valid_status(
             verbose=verbose or config.logging.level == "debug",
         ),
     }
+    from vaultkeep.backup.workflow import list_backups
+    from vaultkeep.destination.discovery import DiscoveryResult
+    from vaultkeep.destination.pruning import valid_replacement
+    from vaultkeep.errors import VaultkeepError
+
+    destination: dict[str, Any] = {
+        "unresolved_suspects": [],
+        "cleanup_pending": [],
+        "diagnostics": [],
+    }
+    result["destination"] = destination
+    try:
+        inventory = list_backups(config_path, runtime_params=parameters)
+        discovery = DiscoveryResult(inventory.backups, inventory.malformed)
+        for backup in inventory.backups:
+            if backup.suspect_reason is not None:
+                key = (
+                    "cleanup_pending"
+                    if valid_replacement(backup, discovery)
+                    else "unresolved_suspects"
+                )
+                destination[key].append(
+                    {"directory": str(backup.directory), "reason": backup.suspect_reason}
+                )
+        destination["diagnostics"].extend(
+            f"{entry.path}: {entry.reason}" for entry in inventory.malformed
+        )
+    except (VaultkeepError, OSError) as error:
+        destination["diagnostics"].append(str(error))
     if "trigger" in raw.model_fields_set:
         if user_mode:
-            trigger = trigger_status(
-                load_trigger_config(config_path, runtime_params=parameters), verbose=verbose
-            )
+            from vaultkeep.trigger.errors import TriggerError
+
+            try:
+                trigger = trigger_status(
+                    load_trigger_config(config_path, runtime_params=parameters), verbose=verbose
+                )
+            except (VaultkeepError, TriggerError, OSError) as error:
+                trigger = {
+                    "enabled": config.trigger.enabled,
+                    "monitor": "UNKNOWN",
+                    "application": "UNKNOWN",
+                    "dispatch": "UNKNOWN",
+                    "diagnostics": [str(error)],
+                    "read_error": True,
+                }
             if trigger is not None:
                 result["trigger"] = trigger
-        elif config.trigger.enabled or config.trigger.app is not None:
+        elif config.trigger.enabled or config.application is not None:
             result["trigger"] = {
                 "enabled": config.trigger.enabled,
                 "monitor": "UNKNOWN",
@@ -116,7 +157,7 @@ def _collect_recovery_status(
         trigger_defaults=isinstance(trigger, dict) and trigger.get("enabled") is True,
     )
     result: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "job_id": identity.job_id,
         "configuration": {
             "status": "INVALID",
@@ -202,7 +243,7 @@ def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False
     output.heading("Job status")
     output.fields([("Job", data["job_id"])])
     configuration = data.get("configuration")
-    if configuration:
+    if configuration and (verbose or configuration["status"] != "VALID"):
         output.fields(
             [("Status", configuration["status"])]
             + [
@@ -236,9 +277,24 @@ def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False
             rows.append(("Signal", str(previous["signal"])))
         if previous.get("reason"):
             rows.append(("Reason", concise(previous["reason"])))
-        if previous.get("log_path") and previous["result"] not in ("SUCCESS", "UNCHANGED"):
+        if previous.get("log_path") and (
+            previous["result"] not in ("SUCCESS", "UNCHANGED") or previous.get("cleanup_errors")
+        ):
             rows.append(("Log", previous["log_path"]))
     output.fields(rows, section="Previous backup")
+    if previous:
+        for error in previous.get("cleanup_errors", ()):
+            output.fields([("Previous cleanup error", concise(error))])
+    destination = data.get("destination", {})
+    for key, label in (
+        ("unresolved_suspects", "Unresolved suspect"),
+        ("cleanup_pending", "Cleanup pending"),
+    ):
+        for item in destination.get(key, []):
+            output.fields([(label, f"{item['directory']}: {item['reason']}")])
+    for diagnostic in destination.get("diagnostics", []):
+        output.fields([("Destination inspection", concise(diagnostic))])
+
     rows = []
     if backup.get("details"):
         rows.append(("Execution record", backup["details"]["execution_record"]))
@@ -272,26 +328,6 @@ def print_status(data: dict[str, Any], output: Console, *, verbose: bool = False
             )
         if trigger.get("worker"):
             rows.append(("Worker", trigger["worker"]))
-        historical = [item for item in trigger.get("safety", []) if not item["current"]]
-        if historical:
-            count = len(historical)
-            description = (
-                f"{count} previous {'attempt' if count == 1 else 'attempts'}"
-                if all(item.get("attempt_id") for item in historical)
-                else "previous executions"
-            )
-            rows.append(("Safety", f"REVIEW REQUIRED ({description})"))
-        for safety in trigger.get("safety", []):
-            if safety["current"] or verbose:
-                rows.append(("Safety", safety["reason"]))
-                if safety.get("attempt_id"):
-                    rows.append(("Attempt", safety["attempt_id"]))
-                if safety.get("execution_period"):
-                    rows.append(("Period", safety["execution_period"]))
-        if trigger.get("safety"):
-            rows.append(
-                ("Action", trigger["safety_guidance"] if verbose else trigger["safety_action"])
-            )
         rows.extend(("Detail", concise(item)) for item in trigger["diagnostics"])
         if trigger.get("log_path"):
             rows.append(("Log", trigger["log_path"]))

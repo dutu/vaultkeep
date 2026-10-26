@@ -18,7 +18,7 @@ def _write_config(path: Path, content: str) -> Path:
 def test_duplicate_yaml_keys_are_rejected(tmp_path: Path) -> None:
     path = _write_config(
         tmp_path / "duplicate.yaml",
-        "config_version: 1\nconfig_version: 1\n",
+        "config_version: 2\nconfig_version: 2\n",
     )
 
     with pytest.raises(ConfigurationError, match="duplicate key"):

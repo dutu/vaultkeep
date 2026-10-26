@@ -20,7 +20,7 @@ For execution identities, locations, permissions, and user-manager setup, see th
 
 ## Job structure
 
-Jobs use strict YAML 1.2 with `config_version: 1`. Unknown properties and duplicate
+Jobs use strict YAML 1.2 with `config_version: 2`. Unknown properties and duplicate
 mapping keys are rejected. Use booleans (`true`/`false`) and integers as their actual
 YAML types, and quote times and patterns. The YAML filename stem must match `job.id`.
 IDs contain 1–128 ASCII letters, digits, underscores, or hyphens.
@@ -36,6 +36,8 @@ IDs contain 1–128 ASCII letters, digits, underscores, or hyphens.
 | `archive`, `encryption` | Yes | Compatible archive format and encryption settings. |
 | `retention` | Yes | All five calendar-bucket counts. |
 | `schedule` | Yes | Automation flag and calendar when enabled. |
+| `consistency` | No | `files` (default) or `application_offline`. |
+| `application` | Conditional | Shared application name, owner, directory, and matcher. |
 | `trigger` | No | Disabled by default; [complete Trigger settings](trigger/configuration.md). |
 | `notifications` | No | Disabled by default; [settings and setup](notifications.md). |
 | `hooks` | No | Six optional phases; each defaults to `null`. |
@@ -47,7 +49,7 @@ with optional settings commented out where appropriate. The
 their values. This complete manual-only job illustrates the shared structure:
 
 ```yaml
-config_version: 1
+config_version: 2
 
 job:
   id: app
@@ -104,6 +106,47 @@ logging:
   level: info
   include_command_output: false
 ```
+
+## Consistency and shared application identity
+
+`consistency.mode` is `files` by default. It preserves source discovery, hashing,
+final source comparison, archive structure/stream tests, and checksums, without
+inspecting application processes. `application_offline` additionally requires reliable
+stopped observations before source discovery, after `before_archive`, and after all
+source reads but before `after_archive`. Running, ambiguous, or unavailable process
+information fails the backup. These boundaries cannot prove clean shutdown or exclude
+short restarts between observations.
+
+```yaml
+consistency:
+  mode: application_offline
+application:
+  name: bisq
+  user: alice
+  data_dir: /home/alice/.local/share/Bisq
+  matcher:
+    entrypoints:
+      - kind: java_main
+        value: bisq.desktop.app.BisqAppMain
+```
+
+`application` is required for offline policy or an enabled Trigger, and optional
+otherwise. A present identity requires all four fields. Supported application names
+are `bisq`, `electrum`, and `wasabi`. The account must exist; its canonical data
+directory must be owned by that account. Home paths expand against that account,
+including when root executes the backup. The engine and Trigger share the same
+matcher and process provider. See [matcher options](trigger/configuration.md#matcher).
+
+Trigger settings contain only enablement, dispatch parameters, and monitoring timing.
+With `files`, Trigger still confirms shutdown before dispatch; the engine performs
+file checks without enforcing continued process absence. Manual, scheduled, and
+Trigger backups all enforce the selected policy. Each run retains one effective
+configuration; a worker rejects changes to its frozen policy/application identity.
+
+Schema and manifest/layout version 2 require fresh configuration, destination, and
+local state. There is no version-1 migration or legacy marker interpretation.
+Recognized unsupported entries block destructive cleanup; preserve old repositories
+separately rather than relabeling their manifests.
 
 ## Sources and exclusions
 
@@ -206,11 +249,32 @@ checksum:  <backup-base-name>.<archive-format>.sha256
 manifest:  <backup-base-name>.json
 ```
 
-If `run` detects a content checksum mismatch while checking an unchanged source,
-it preserves these three artifacts, adds a `.vaultkeep-damaged` marker inside the
-backup directory, and creates a fresh backup. Marked backups appear as `DAMAGED`
-in `list` and are excluded from automatic deletion and retention counts. See
-[run recovery behavior](cli.md#run-a-job-manually).
+A demonstrated checksum or archive-structure problem records a
+`.vaultkeep-suspect` marker with its original reason and detection time. `list`
+shows the `SUSPECT` reason directly below the backup directory. An unresolved
+suspect is protected and forces a fresh archive in the same compatible history.
+After reliable creation, required state persistence, and successful hooks, the engine
+records the replacement ID and may remove the superseded suspect. Suspects do not
+fill ordinary retention slots. Ordinary cleanup failures preserve the new archive and report
+`run: created` with an actionable warning; retry with explicit `prune` or a later
+archive-creating run. `UNCHANGED` never performs cleanup.
+Corruption found in the newly committed archive fails the run, including when
+discovered during cleanup.
+
+Replacement compatibility requires the same configured source coverage and
+consistency policy; offline backups also require the same application name, owner,
+and data directory. Changing compression, retention, archive format, or password-file
+location does not define a different replacement class. Changed coverage or policy
+preserves the incompatible history. A missing or suspect replacement makes the old
+suspect unresolved again. Deletion rechecks the replacement's current SHA-256
+against both the immutable manifest and sidecar under the shared destination lock.
+Replacement validity does not depend on wall-clock ordering. Both `manifest_version: 2`
+and `identity_version: 1` in its replacement identity are required; missing or invalid
+versions make the entry malformed and block destructive work in that history.
+`list`, `status`, and `prune --dry-run` inspect metadata without reading archives or
+writing markers. `verify` performs full archive verification and may mark demonstrated
+corruption; wrong passwords, unavailable tools, and transient I/O errors do not by
+themselves establish corruption.
 
 The supported placeholders are exactly:
 
@@ -271,6 +335,61 @@ Runtime parameter values are part of the effective backup identity. Different pa
 
 ## Destination safety checks
 
+Mutating `run`, `verify`, and actual `prune` serialize through shared destination
+locks. YAML aliases and root/user execution cannot create independent locks for
+overlapping histories. Supported Linux local filesystems are ext2/3/4, XFS, Btrfs,
+ZFS, tmpfs, and overlay; they use locks on physical directories and their ancestors.
+Mounted CIFS/SMB (`cifs`, `smb3`) and NFS (`nfs`, `nfs4`) shares are also supported,
+using the network locking requirements below. Other filesystem types are rejected
+for mutation. Read-only inventory and prune previews remain available. Directory
+read/search access is required along the canonical destination path.
+Subtree mounts (including bind-subtree aliases and mounted Btrfs subvolumes) and
+destinations containing nested mount points are rejected. They can hide physical
+parent/child overlap from this directory-lock protocol. Mount topology must remain
+stable during execution.
+
+### CIFS and NFS locking
+
+Every cooperating writing machine must mount the same whole share/export, using the
+same protocol, so its mounted root exposes the same `.vaultkeep.lock` file. Do not
+use overlapping exports, share-subdirectory mounts, or independent SMB/NFS exports
+of the same backup tree: they can expose different lock anchors or lock domains.
+One exclusive server-backed file lock serializes all Vaultkeep jobs on that
+share/export, including sibling and per-file histories. Lock contention fails
+without waiting; a later invocation can retry.
+
+Vaultkeep creates the regular `.vaultkeep.lock` file at the mounted share/export
+root when absent, with permissions subject to the creating process's umask. That
+root must permit creation, or an administrator must provision the file first.
+Configured marker and filesystem guards are checked before creating the lock file
+and before the destination write probe.
+Grant read/write access to every backup account through server ACLs or a shared
+group. Existing permissions are preserved. The file remains after success or
+failure and is reused; no owner/PID record or stale-file deletion is needed because
+the kernel/server owns the live lock. Never remove or replace it while writers may
+run. Symlinks, hard links, and non-regular lock anchors are rejected.
+
+Keep server locking enabled. CIFS `nobrl`, NFS `nolock`, and NFS
+`local_lock=all`/`local_lock=flock` are rejected. Lock/open failures stop the operation
+without a fallback to machine-local locks. All clients and the server must support
+the protocol's locks; local tests cannot establish cross-machine server behavior.
+Server recovery, permissions and mount topology must remain suitable throughout
+the operation. Backup durability also depends on the server honoring flush requests.
+See the Linux [flock reference](https://man7.org/linux/man-pages/man2/flock.2.html),
+[CIFS mount options](https://man7.org/linux/man-pages/man8/mount.cifs.8.html), and
+[NFS mount options](https://man7.org/linux/man-pages/man5/nfs.5.html).
+
+Linux NFS rejects `renameat2(RENAME_NOREPLACE)`. While the covering shared lock is
+held, Vaultkeep falls back to checking that the final path is absent and then
+performing an ordinary atomic directory rename. Existing nonempty backup
+directories cannot be replaced. A non-cooperating process racing to create an
+empty target directory between those operations can have that empty directory
+replaced. Other rename errors still fail. Local/CIFS commits retain the native
+no-overwrite operation. Full validation acquires the destination lock for its
+write/rename/remove probe, and reuses a covering lock during a backup run.
+
+### Marker and filesystem checks
+
 `destination.root` must be an existing directory. Two optional safety checks can
 be configured independently: use either, both, or neither.
 
@@ -279,49 +398,76 @@ be configured independently: use either, both, or neither.
   not check its contents or create it automatically. A missing or inaccessible
   marker blocks destination writes.
 - `expected_fstype` verifies the actual filesystem backing `destination.root` as
-  seen by Vaultkeep, including inside a container. Use an exact kernel filesystem
-  type such as `cifs`, `nfs`, `nfs4`, or `ext4`.
+  seen by Vaultkeep, including inside a container. Use the exact, case-sensitive
+  kernel filesystem name reported by `findmnt`, as described below. A matching
+  type does not establish shared-lock suitability.
 
-For a CIFS destination, especially one mounted on an LXC host and bind-mounted into
-the container, both checks can be useful:
+#### `expected_fstype` values
+
+For destinations supported by mutating operations, use one of these reported values:
+
+| Filesystem | `expected_fstype` |
+| --- | --- |
+| ext2, ext3, ext4 | `ext2`, `ext3`, or `ext4`, respectively |
+| XFS | `xfs` |
+| Btrfs | `btrfs` |
+| ZFS | `zfs` |
+| tmpfs | `tmpfs` |
+| Overlay filesystem | `overlay` |
+| CIFS/SMB share | `cifs` or `smb3`, matching the reported value |
+| NFS share | `nfs` or `nfs4`, matching the reported value |
+
+Inspect the destination from the same host/container and mount namespace that runs
+Vaultkeep:
+
+```sh
+findmnt --kernel --uniq --noheadings --raw --output FSTYPE --target /mnt/backups/app
+```
+
+For example, if this prints `cifs`, set `expected_fstype: cifs`. These names select
+the filesystem check, not the network protocol version or mount options. Values
+such as `smb`, `SMB3`, or `NFSv4` do not substitute for the reported name.
+
+The schema accepts a single nonempty name containing letters, digits, `.`, `_`, or
+`-`; it is not a fixed enumeration. Other names can be used for inspection, but
+setting `expected_fstype` does not enable mutation on an unsupported filesystem.
+Lists and comma-separated alternatives are not supported. Omit the field or set
+it to YAML `null` to skip this optional type check; destination locking and the
+other safety checks still apply.
+
+Use a marker and filesystem type together when a missing mount could expose an
+underlying fallback directory:
 
 ```yaml
 destination:
   root: /mnt/backups/app
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
-  expected_fstype: cifs
+  expected_fstype: ext4
   marker_file: .vaultkeep-destination
 ```
 
-If an LXC bind mount exposes a host local directory instead of the CIFS share,
-the filesystem type differs and Vaultkeep stops before writing to or
-managing backups on that destination. A type check does not identify a particular
-server or share.
-
-1. Inspect the destination from the environment that runs Vaultkeep
-   (inside LXC when applicable):
+1. Inspect the filesystem from the environment running Vaultkeep:
 
    ```sh
    findmnt --uniq --target /mnt/backups/app --output TARGET,SOURCE,FSTYPE
    ```
 
-   Confirm the expected server/share and `FSTYPE` of `cifs`. A local filesystem
-   such as `ext4` or `zfs` indicates that the intended share is unavailable at that path.
+   Confirm the intended device or share and filesystem. Mount the whole supported
+   filesystem/share; subtree aliases and nested destination mounts are rejected for mutation.
 
-2. After confirming the real share, create the configured marker once:
+2. Create the marker only after confirming that destination:
 
    ```sh
    touch /mnt/backups/app/.vaultkeep-destination
    ```
 
-   Keep this marker absent from the underlying host local directory. Vaultkeep
-   checks that the marker is a file below `destination.root`; it does not check
-   its contents or create it automatically.
+   Keep the marker absent from any underlying fallback directory.
 
-3. Run full validation with your job configuration:
+3. Validate the job, then execute it to check mutation-time locking:
 
    ```sh
    sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+   sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml run
    ```
 
 Filesystem type checks use `findmnt` from the required `util-linux` package and
@@ -520,7 +666,7 @@ Available phases:
 - `before_check`: prepare dumps or source material before discovery;
 - `before_archive`: quiesce an application after changes are detected;
 - `after_archive`: release quiescing or cleanup after source reads;
-- `on_success`: notification after backup and retention succeed;
+- `on_success`: required hook after archive commit and state persistence, before recording suspect replacements and running cleanup;
 - `on_failure`: notification after a workflow failure;
 - `on_unchanged`: notification after an unchanged run.
 

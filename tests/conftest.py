@@ -46,9 +46,9 @@ def installer_wheelhouse() -> Path:
 
 @pytest.fixture
 def valid_config() -> dict[str, Any]:
-    """Return a complete valid schema-v1 configuration mapping."""
+    """Return a complete valid schema-v2 configuration mapping."""
     return {
-        "config_version": 1,
+        "config_version": 2,
         "job": {"id": "app"},
         "sources": [
             {

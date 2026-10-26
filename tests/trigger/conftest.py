@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import pwd
 from dataclasses import replace
 from pathlib import Path
 
@@ -83,6 +85,9 @@ class FakeProvider:
         if not self.env_readable:
             return None
         return {key: self.env.get(pid, {})[key] for key in keys if key in self.env.get(pid, {})}
+
+    def resolve_directory(self, pid: int, value: str) -> str | None:
+        return None  # These fakes provide no verified home/cwd context.
 
     def alive(self, pid: int, create_time: float) -> bool:
         return self.alive_result and any(
@@ -171,6 +176,17 @@ def make_instance(
         enabled=enabled,
         data_dir=Path(data_dir),
         matcher=matcher or make_matcher(),
+        owner_uid=os.geteuid(),
+        execution_policy={
+            "consistency": "files",
+            "owner_uid": os.geteuid(),
+            "application": {
+                "name": app,
+                "user": pwd.getpwuid(os.geteuid()).pw_name,
+                "data_dir": data_dir,
+                "matcher": (matcher or make_matcher()).canonical(),
+            },
+        },
         job=JobSpec(config=Path("/jobs/app.yaml"), params={}),
         poll_seconds=1.0,
         confirm_seconds=confirm_seconds,
@@ -211,6 +227,8 @@ def make_request(instance: InstanceConfig | None = None) -> Request:
         environment={"HOME": "/home/user"},
         preflight_version="0.1.0",
         deadline_seconds=instance.deadline_seconds,
+        execution_policy=instance.execution_policy,
+        owner_uid=instance.owner_uid,
     )
 
 

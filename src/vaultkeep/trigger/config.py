@@ -12,13 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from vaultkeep.application import resolve_application
 from vaultkeep.config import load_config as load_job_config
 from vaultkeep.config.models import TriggerMatcherConfig
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.errors import ConfigurationError
-from vaultkeep.trigger.paths import resolve_absolute_path
 
 SUPPORTED_APPS = ("electrum", "bisq", "wasabi")
 INSTANCE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -83,10 +83,14 @@ class InstanceConfig:
     poll_seconds: float
     confirm_seconds: float
     deadline_seconds: float | None
+    owner_uid: int
+    execution_policy: dict[str, object]
 
     def fingerprint(self) -> str:
         """Return a stable fingerprint of the instance's execution-relevant settings."""
         payload = {
+            "execution_policy": self.execution_policy,
+            "owner_uid": self.owner_uid,
             "id": self.id,
             "app": self.app,
             "enabled": self.enabled,
@@ -150,46 +154,24 @@ def load_config(
     params.update(runtime_params or {})
     scope = job_identity_hash(source, job.job.id, runtime_params=params)
     instances: tuple[InstanceConfig, ...] = ()
-    if trigger.app is not None and trigger.data_dir is not None and trigger.matcher is not None:
-        raw = trigger.matcher
-        entrypoints = tuple(
-            Entrypoint(
-                kind=entry.kind,
-                value=(
-                    entry.value
-                    if entry.kind == "java_main"
-                    else str(
-                        resolve_absolute_path(
-                            entry.value,
-                            what="trigger.matcher.entrypoints.value",
-                        )
-                    )
-                ),
-            )
-            for entry in raw.entrypoints
-        )
-        matcher = MatcherSpec(
-            exe_realpath=str(
-                resolve_absolute_path(raw.exe_realpath, what="trigger.matcher.exe_realpath")
-            )
-            if raw.exe_realpath
-            else None,
-            entrypoints=entrypoints,
-            argv_tokens=tuple(raw.argv_tokens),
-            cmdline_regex=raw.cmdline_regex,
-            env_eq=dict(raw.env_eq),
-        )
+    if job.application is not None:
+        from vaultkeep.backup.workflow import execution_policy
+
+        application, owner_uid = resolve_application(job.application, validate_directory=False)
+        snapshot = job.model_copy(update={"application": application})
         instances = (
             InstanceConfig(
                 id=job.job.id,
-                app=trigger.app,
+                app=application.name,
                 enabled=trigger.enabled,
-                data_dir=resolve_absolute_path(trigger.data_dir, what="trigger.data_dir"),
-                matcher=matcher,
+                data_dir=Path(application.data_dir),
+                matcher=matcher_from_canonical(application.matcher.model_dump()),
                 job=JobSpec(config=source, params=params),
                 poll_seconds=trigger.poll_seconds,
                 confirm_seconds=trigger.confirm_seconds,
                 deadline_seconds=trigger.deadline_seconds,
+                owner_uid=owner_uid,
+                execution_policy=execution_policy(snapshot, owner_uid),
             ),
         )
     # Invoke this installation's own CLI, not an independently configured core binary.

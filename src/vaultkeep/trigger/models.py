@@ -216,7 +216,6 @@ def _attempt_summaries(data: dict[str, Any], *, path: str) -> list[dict[str, Any
         if outcome not in known_outcomes:
             raise ValueError(f"{entry_path}.outcome is not a known attempt outcome")
         _optional_str(item, "reason", path=entry_path)
-        _optional_bool(item, "review_required", path=entry_path, default=False)
         _optional_int(item, "exit_code", path=entry_path)
         _optional_int(item, "signal", path=entry_path)
         _optional_str(item, "recorded_at", path=entry_path)
@@ -281,10 +280,14 @@ class Request:
     environment: dict[str, str]
     preflight_version: str | None
     deadline_seconds: float | None
+    execution_policy: dict[str, Any]
+    owner_uid: int
     schema_version: int = REQUEST_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "execution_policy": self.execution_policy,
+            "owner_uid": self.owner_uid,
             "schema_version": self.schema_version,
             "request_id": self.request_id,
             "attempt_id": self.attempt_id,
@@ -329,6 +332,8 @@ class Request:
             environment=_string_map(data, "environment", path=path),
             preflight_version=_optional_str(data, "preflight_version", path=path),
             deadline_seconds=_optional_number(data, "deadline_seconds", path=path),
+            execution_policy=_required_dict(data, "execution_policy", path=path),
+            owner_uid=_required_int(data, "owner_uid", path=path),
             schema_version=(
                 _required_int(data, "schema_version", path=path)
                 if "schema_version" in data
@@ -515,13 +520,9 @@ class InstanceState:
     active_attempt_id: str | None = None
     active_request_id: str | None = None
     active_outcome_pending: bool = False
-    active_review_required: bool = False
-    active_review_reason: str | None = None
     blocked_wait_started_at: str | None = None
     blocking_attempt_id: str | None = None
     wait_notification_sent: bool = False
-    review_required: bool = False
-    review_reason: str | None = None
     rejection: RejectionState | None = None
     notification_markers: list[str] = field(default_factory=list)
     attempt_summaries: list[dict[str, Any]] = field(default_factory=list)
@@ -547,13 +548,9 @@ class InstanceState:
             "active_attempt_id": self.active_attempt_id,
             "active_request_id": self.active_request_id,
             "active_outcome_pending": self.active_outcome_pending,
-            "active_review_required": self.active_review_required,
-            "active_review_reason": self.active_review_reason,
             "blocked_wait_started_at": self.blocked_wait_started_at,
             "blocking_attempt_id": self.blocking_attempt_id,
             "wait_notification_sent": self.wait_notification_sent,
-            "review_required": self.review_required,
-            "review_reason": self.review_reason,
             "rejection": self.rejection.to_dict() if self.rejection else None,
             "notification_markers": list(self.notification_markers),
             "attempt_summaries": [dict(item) for item in self.attempt_summaries],
@@ -568,14 +565,6 @@ class InstanceState:
         observation_data = _optional_dict(data, "last_observation", path=path)
         pending_data = _optional_dict(data, "pending_request", path=path)
         rejection_data = _optional_dict(data, "rejection", path=path)
-
-        active_review_default = False
-        if active_attempt_id is not None and "active_review_required" not in data:
-            active_review_default = data.get("review_required", False)
-            if not isinstance(active_review_default, bool):
-                raise ValueError(
-                    f"{path}.review_required must be a boolean, got {_kind(active_review_default)}"
-                )
 
         return cls(
             instance_id=_required_str(data, "instance_id", path=path),
@@ -607,20 +596,11 @@ class InstanceState:
             active_outcome_pending=_optional_bool(
                 data, "active_outcome_pending", path=path, default=False
             ),
-            active_review_required=_optional_bool(
-                data,
-                "active_review_required",
-                path=path,
-                default=active_review_default,
-            ),
-            active_review_reason=_optional_str(data, "active_review_reason", path=path),
             blocked_wait_started_at=_optional_str(data, "blocked_wait_started_at", path=path),
             blocking_attempt_id=_optional_str(data, "blocking_attempt_id", path=path),
             wait_notification_sent=_optional_bool(
                 data, "wait_notification_sent", path=path, default=False
             ),
-            review_required=_optional_bool(data, "review_required", path=path, default=False),
-            review_reason=_optional_str(data, "review_reason", path=path),
             rejection=(
                 RejectionState.from_dict(rejection_data) if rejection_data is not None else None
             ),

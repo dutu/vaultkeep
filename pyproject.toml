@@ -27,7 +27,10 @@ vaultkeep = "vaultkeep.cli:main"
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
-    "/examples",
+    "/examples/bisq-trigger.yaml",
+    "/examples/electrum-trigger.yaml",
+    "/examples/vaultkeep-schedule.yaml",
+    "/examples/wasabi-trigger.yaml",
     "/systemd",
     "/install.sh",
     "/LICENSE",

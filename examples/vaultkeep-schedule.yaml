@@ -3,7 +3,7 @@
 ## The filename must match job.id. Replace example paths before enabling.
 ## Convention: ## = explanation; # key: value = disabled option.
 
-config_version: 1                         # Supported: 1
+config_version: 2                         # Supported: 2
 
 ## Job
 job:
@@ -36,10 +36,10 @@ source_options:
 
 ## Destination
 destination:
-  root: /mnt/backups/example            # Local, CIFS or NFS path
+  root: /mnt/backups/example            # Supported local filesystem
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
   # marker_file: ".vaultkeep-target"     # Relative path; create file yourself
-  # expected_fstype: cifs               # Require matching filesystem type
+  # expected_fstype: ext4               # Require matching filesystem type
 
 ## Archive
 archive:
@@ -70,20 +70,27 @@ schedule:
   # day: 1                              # Required for monthly; 1–28
   persistent: true                      # One catch-up activation after downtime
 
-## Shutdown trigger (alternative to schedule)
+## Consistency policy and optional shared application identity
+consistency:
+  mode: files                           # files (default) | application_offline
+## application_offline and an enabled Trigger require the application section.
 ## Electrum identity below is illustrative; see app-specific examples.
+# application:
+#   name: electrum                       # electrum | bisq | wasabi
+#   user: user                           # Account that owns the application
+#   data_dir: /home/user/.electrum       # Application data directory
+#   matcher:
+#     entrypoints:                      # At least one; script | jar | java_main
+#       - kind: script
+#         value: /home/user/.local/opt/electrum/current/run_electrum
+#     exe_realpath: /usr/bin/python3    # Optional process executable check
+#     argv_tokens: []                   # Optional argument tokens
+#     cmdline_regex: 'run_electrum'      # Optional command-line regex
+#     env_eq: {}                        # App-specific permitted environment keys
+
+## Shutdown trigger (alternative to schedule)
 trigger:
   enabled: false
-  # app: electrum                        # electrum | bisq | wasabi
-  # data_dir: /home/user/.electrum       # Application data directory
-  # matcher:
-  #   entrypoints:                      # At least one; script | jar | java_main
-  #     - kind: script
-  #       value: /home/user/.local/opt/electrum/current/run_electrum
-  #   exe_realpath: /usr/bin/python3    # Optional process executable check
-  #   argv_tokens: []                   # Optional argument tokens
-  #   cmdline_regex: 'run_electrum'      # Optional command-line regex
-  #   env_eq: {}                        # App-specific permitted environment keys
   # poll_seconds: 2                     # Process observation interval
   # confirm_seconds: 5                  # Continuous absence before shutdown
   # deadline_seconds: 3600              # Advisory; never terminates backup

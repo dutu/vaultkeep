@@ -135,8 +135,11 @@ def test_discovery_ignores_unrelated_entries_and_refuses_managed_symlinks(
     (tmp_path / "file-looks-managed").touch()
     assert file_destinations(config) == ()
     (tmp_path / file_key("wallet")).symlink_to(tmp_path, target_is_directory=True)
+    from vaultkeep.destination.discovery import discover_backups
+
+    (destination,) = file_destinations(config)
     with pytest.raises(DestinationError, match="not a real directory"):
-        file_destinations(config)
+        discover_backups(destination, metadata_only=True)
 
 
 def test_early_file_failure_reports_failure_before_continuing(

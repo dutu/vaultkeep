@@ -3,7 +3,7 @@
 ## Launch Bisq GUI/API daemon with the same explicit --appDataDir.
 ## Setup guide: docs/trigger/apps/bisq.md
 
-config_version: 1                        # Configuration schema
+config_version: 2                        # Configuration schema
 job:
   id: bisq-main                          # Unique job ID
 
@@ -32,7 +32,7 @@ destination:
   root: /mnt/backups/bisq-main           # Backup directory
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
   # marker_file: ".vaultkeep-target"     # Verify file under root
-  # expected_fstype: cifs                # Required filesystem type
+  # expected_fstype: ext4                # Required filesystem type
 
 ## Archive
 archive:
@@ -65,9 +65,12 @@ schedule:
   # persistent: true                     # Run once after missed activation
 
 ## Shutdown trigger
-trigger:
-  enabled: false                         # Shutdown-triggered backups off
-  app: bisq                              # Application matcher
+consistency:
+  mode: application_offline              # Require stopped observations during source processing
+
+application:
+  user: user                              # Account that owns the application
+  name: bisq                              # Application matcher
   data_dir: /home/user/.local/share/Bisq # Must match Bisq --appDataDir
   matcher:
     entrypoints:                         # Accepted process entrypoints
@@ -83,6 +86,9 @@ trigger:
     # exe_realpath: /usr/bin/java        # Executable path predicate
     # cmdline_regex: '(Bisq|bisq)'       # Optional regex (max 200 chars)
     # env_eq: {}                         # Bisq: no environment predicates
+
+trigger:
+  enabled: false                         # Shutdown-triggered backups off
   poll_seconds: 2                        # Process check interval
   confirm_seconds: 5                     # Shutdown confirmation delay
   # deadline_seconds: 3600               # Advisory; never stops a backup

@@ -21,7 +21,7 @@ during or after inspection. An idle report is not permission to start a writer.
 
 ## Invalid configurations
 
-The `Configuration` section reports installed-schema and runtime-parameter validation
+The `Configuration` section, shown when invalid or with verbose output, reports installed-schema and runtime-parameter validation
 as `VALID` or `INVALID`, with individual error paths and messages. It does not check
 runtime backup prerequisites; use `validate` for that.
 
@@ -65,7 +65,7 @@ current phase. It is not a claim that a new backup archive was created on every 
 | --- | --- |
 | `SUCCESS` | The execution created an archive and completed its remaining lifecycle. |
 | `UNCHANGED` | The execution completed without needing a new archive. |
-| `FAILED` | Execution failed, including runtime validation, finalization, retention, hooks, or cleanup. An archive may already have been committed. |
+| `FAILED` | Execution failed, including source/offline validation, finalization, required state persistence, or hooks. An archive may already have been committed. |
 | `INTERRUPTED` | A caught termination or interruption ended execution. |
 | `UNKNOWN` | Completion cannot be established; for example, the process was killed or completion persistence failed. |
 | `NONE` | No previous execution evidence is available. |
@@ -125,12 +125,9 @@ Inspect this section as the non-root application owner with `--user`.
 - `Dispatch` describes requests and worker orchestration: idle, pending, active,
   awaiting reconciliation, blocked, or unknown. Pending requests and worker health
   remain separate from actual backup activity.
-- Diagnostics retain rejected submissions, final-recheck blocks, uncertain
-  dispatches, and unresolved safety warnings. A blocked final recheck did not run a
-  backup. Historical safety warnings are summarized as `REVIEW REQUIRED (N previous
-  attempts)` with an action to review affected executions, even after a later
-  successful execution. Current safety warnings remain explicit. Use `status --verbose`
-  for historical attempt IDs, execution intervals, reasons, and recovery guidance.
+- Diagnostics retain rejected submissions, final-recheck blocks, uncertain dispatches,
+  and unknown worker outcomes. A blocked final recheck did not start a backup.
+  Application restarts or monitoring gaps do not independently classify archives.
 
 Verbose and debug details include monitor service and state paths, observations, and arming
 state. Request, launch, receipt, and capped child logs remain Trigger recovery
@@ -155,11 +152,11 @@ The human report and JSON use the same collected interpretation. The JSON object
 
 | Field | Value |
 | --- | --- |
-| `schema_version` | `1` for this job-status schema. |
+| `schema_version` | `2` for this job-status schema. |
 | `job_id` | Selected YAML job ID. The YAML path, mode, and runtime parameters select the storage namespace. |
 | `configuration` | `status` (`VALID` or `INVALID`) and `errors`, each with `path` and `message`. |
 | `backup` | Always present: `activity`, `current`, `previous`, and `diagnostics`. |
-| `trigger` | Present when configured/retained or during user-mode recovery inspection; enablement, monitor and application state, dispatch, diagnostics, and available safety annotations. |
+| `trigger` | Present when configured/retained or during user-mode recovery inspection; enablement, monitor and application state, dispatch and diagnostics. |
 | `schedule` | Present when configured or during recovery inspection; enablement, `timer`, `installed`, `health`, `timer_enabled`, `next_execution`, and diagnostics. |
 
 `backup.current` is null without verified live progress. Otherwise it contains
@@ -175,18 +172,23 @@ Verbose and debug reports can add `backup.details`, `backup.diagnostic_tail`, an
 
 Trigger fields include `enabled`, `monitor`, `monitor_updated_seconds_ago`,
 `application`, `application_detail`, `dispatch`, `pending_request_id`,
-`active_attempt_id`, `diagnostics`, and `safety`. A root-mode inspection reports
+`active_attempt_id` and `diagnostics`. A root-mode inspection reports
 Trigger as unknown with an instruction to inspect the owner's user-mode job.
 Worker and dispatch-age fields are included when observed.
 Recovery inspection adds `last_exit` when systemd provides it. Its automation `enabled`
 fields reflect actual systemd enablement and are null when unverified. Normal reports
 retain configured enablement. Recovery reports can omit unavailable observation and
-safety fields; available backup history remains independent of configuration validity.
-The `safety` array always retains detailed warnings, including attempt IDs and
-execution periods when available. Each warning's `current` flag separates current
-safety concerns from historical review requirements. `safety_action` and
-`safety_guidance` provide review instructions when warnings exist. `--verbose` can be
-combined with `--json`; normal JSON already includes historical safety details.
+observation fields; backup history remains independent of configuration validity.
+
+`destination` is a best-effort metadata inspection with `unresolved_suspects`,
+`cleanup_pending`, and `diagnostics`. Each suspect entry contains `directory` and its
+original `reason`. Unavailable destinations do not prevent local execution reporting.
+A metadata-valid reference indicates pending cleanup; deletion requires locked current
+checksum validation. `backup.previous.cleanup_errors` contains recorded cleanup
+failures for that attempt (an empty list when none were recorded). Human output
+separates **Cleanup pending** from **Previous cleanup error**. A cleanup error after
+reliable creation leaves the result `SUCCESS` and the command exit code zero.
+There is no `safety` array or historical archive-review annotation in Trigger status.
 
 Missing/unavailable next-execution information is null. A subsystem inspection error
 sets its `read_error` field to true and retains diagnostics. Exit 0 means collection

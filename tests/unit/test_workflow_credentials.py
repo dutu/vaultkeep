@@ -16,7 +16,6 @@ from vaultkeep.archive import verification as verification_module
 from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum_sidecar
 from vaultkeep.archive.process import CommandResult
 from vaultkeep.backup import workflow
-from vaultkeep.destination.damage import DAMAGE_MARKER_NAME
 from vaultkeep.errors import ArchiveCreationError, CredentialContinuityError
 from vaultkeep.state import LocalState, calculate_credential_fingerprint, job_state_path
 
@@ -118,8 +117,7 @@ def test_corrupt_encrypted_backup_is_replaced_before_credential_recovery(
 
     assert result.result == "created"
     assert result.archive_path != first.archive_path
-    assert first.archive_path.read_bytes() == b"corrupted encrypted bytes"
-    assert (first.archive_path.parent / DAMAGE_MARKER_NAME).is_file()
+    assert not first.archive_path.parent.exists()
     assert tested == []  # A damaged archive cannot establish password continuity.
     assert _run(job).result == "unchanged"
 

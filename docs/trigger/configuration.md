@@ -11,14 +11,17 @@ Disable the old timer/monitor and drain running work before changing mechanisms.
 ```yaml
 schedule:
   enabled: false
-trigger:
-  enabled: true
-  app: electrum
+application:
+  name: electrum
+  user: alice
   data_dir: /home/alice/.electrum
   matcher:
     entrypoints:
       - kind: script
         value: /home/alice/.local/opt/electrum/current/run_electrum
+
+trigger:
+  enabled: true
   poll_seconds: 2
   confirm_seconds: 5
 ```
@@ -44,19 +47,16 @@ Application-specific setup and multiple-instance guidance:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | Opt this job into shutdown monitoring; service activation is explicit. |
-| `app` | absent | `electrum`, `bisq`, or `wasabi`; required when enabled. |
-| `data_dir` | absent | App instance's absolute data directory; required when enabled. |
-| `matcher` | absent | Strong process identity; required when enabled. |
 | `poll_seconds` | `2` | Observation interval in seconds. |
 | `confirm_seconds` | `5` | Continuous reliable absence required to confirm shutdown. |
 | `deadline_seconds` | absent | Advisory overdue threshold; never terminates a backup. |
 | `params` | `{}` | String runtime parameters passed to this same backup job. |
 
 Unknown keys are rejected. Booleans must be booleans; timing values must be finite
-positive numbers. While disabled, `app`, `data_dir`, and `matcher` are optional; a
-minimal block can be `enabled: false`. Identity fields and other settings are still
-validated when present, as in the complete disabled application examples. An enabled
-block requires `app`, `data_dir`, and a non-empty `matcher.entrypoints` list.
+positive numbers. Application identity is configured once in top-level `application`:
+`name`, `user`, `data_dir`, and `matcher` are all required when that section exists.
+An enabled Trigger requires it, as does `consistency.mode: application_offline`.
+See [shared consistency settings](../configuration.md#consistency-and-shared-application-identity).
 
 The backup job's `job.id` identifies the monitored instance. Its `logging.level`
 controls monitor logging. The monitor invokes this installation's own `vaultkeep`
@@ -115,8 +115,9 @@ application-state changes, dispatch, and recovery. Backup owns execution start, 
 and results for every initiation method. Neither category requires the other.
 See [notifications and session setup](../notifications.md).
 
-Requests freeze matcher settings, job paths, parameters and environment, rather than
-job contents or executable bytes. Review live file replacements with the same care as
-configuration edits. See [recovery](recovery.md#boot-and-configuration-fingerprints).
+Requests freeze the effective consistency policy, complete application identity,
+resolved owner UID, job selection, and environment. The child compares that frozen
+policy/identity with its own single loaded snapshot before executing. Other job
+contents and executable bytes are not frozen. See [recovery](recovery.md#boot-and-configuration-fingerprints).
 
 [User guide](../../README.md#configure-and-validate-trigger)

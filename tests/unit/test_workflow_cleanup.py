@@ -217,8 +217,9 @@ def test_failure_after_commit_preserves_backup(job: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(workflow, "execute_prune_plan", fail)
 
-    with pytest.raises(OSError, match="retention failed"):
-        _run(job)
+    result = _run(job)
+    assert result.result == "created"
+    assert result.cleanup_errors == ("retention failed",)
 
     (backup,) = (job.parent / "backups").iterdir()
     assert not backup.name.startswith("~$.partial-")

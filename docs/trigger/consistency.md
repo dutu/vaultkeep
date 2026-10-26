@@ -22,16 +22,13 @@ data is consistent.
   not enumerate all writers or validate cross-instance overlap. Runtime config checks
   do not establish these properties. Review the [process limitations](process-detection.md)
   and [deployment requirements](service-operation.md#deployment-checks).
-- A restart or a monitoring gap during a backup records `review_required` separately
-  from the VaultKeep result. A later `unchanged` result does not clear an unresolved
-  source-consistency warning.
-- Recovery checks for gaps before reporting receipts received while monitoring was
-  down. A delayed poll beyond twice the larger configured monitor/instance interval
-  also marks possible execution for review. Affected success messages explicitly carry
-  that warning. Later successful backups, including `created`, do not resolve an
-  earlier attempt's uncertainty. A matching final-check refusal can resolve its own
-  execution risk because the child never ran, while keeping historical annotations.
-  See [warning evidence and resolution](recovery.md#execution-review-warnings).
+- Archive consistency is enforced by the backup engine according to the shared
+  `consistency.mode`. Offline policy requires reliable stopped observations before
+  discovery, before archival, and after source reads. The final check precedes
+  `after_archive`, which may restart the application; no source reads follow it.
+- Process absence does not prove clean shutdown, transactional consistency, or the
+  absence of short restarts. File hashing remains necessary. A monitoring gap alone
+  does not classify a backup or add a historical archive-health warning.
 
 ## Deadlines
 

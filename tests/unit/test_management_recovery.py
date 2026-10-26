@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,12 +39,13 @@ def resources(tmp_path, monkeypatch, valid_config):
     monkeypatch.setattr(TimerManager, "require_environment", lambda _: None)
     path = tmp_path / "config/vaultkeep/jobs/app.yaml"
     path.parent.mkdir(parents=True)
-    valid_config["trigger"] = {
-        "enabled": True,
-        "app": "electrum",
+    valid_config["application"] = {
+        "name": "electrum",
         "data_dir": str(tmp_path / "wallet"),
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
+    valid_config["trigger"] = {"enabled": True}
     path.write_text(json.dumps(valid_config))
     config = load_trigger(path)
     monitor = service.service_name(config)
@@ -324,7 +327,7 @@ def test_unrelated_or_unverified_timer_cannot_be_disabled(resources, damage):
     assert resources.commands == []
 
 
-@pytest.mark.parametrize("state", ["active", "orphan", "review", "blocked", "corrupt", "blocking"])
+@pytest.mark.parametrize("state", ["active", "orphan", "blocked", "corrupt", "blocking"])
 def test_monitor_stop_is_blocked_by_unreconciled_or_unsafe_state(resources, state):
     invalidate(resources)
     store = StateStore(state_root(resources.config.scope))
@@ -333,8 +336,6 @@ def test_monitor_stop_is_blocked_by_unreconciled_or_unsafe_state(resources, stat
     elif state == "corrupt":
         store.ensure()
         store.instance_path("app").write_text("broken")
-    elif state == "review":
-        store.write_instance(InstanceState(instance_id="app", active_review_required=True))
     elif state == "blocking":
         store.write_instance(InstanceState(instance_id="app", blocking_attempt_id="unreconciled"))
     else:

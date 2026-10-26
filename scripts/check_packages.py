@@ -150,12 +150,17 @@ def check() -> None:
         )
         command = str(venv / "bin/vaultkeep")
         assert run(command, "--version").strip() == version
-        for example in (ROOT / "examples").glob("*.yaml"):
+        examples = tuple(sorted((extracted / "examples").glob("*.yaml")))
+        assert examples, "Source archive must ship job examples"
+        for example in examples:
             run(command, "--config", str(example), "validate", "--schema-only")
             run(command, "--user", "--config", str(example), "validate", "--schema-only")
         assert not (venv / "bin/vaultkeep-trigger").exists()
         run(python, "-m", "pip", "check")
-        print("Unified wheel, source archive, installer preview and all job examples passed.")
+        print(
+            "Unified wheel, source archive, installer preview and "
+            f"all {len(examples)} shipped job examples passed."
+        )
 
 
 if __name__ == "__main__":

@@ -123,20 +123,9 @@ def _receipt(
     return receipt
 
 
-def _review_problem(reason: str | None) -> str:
-    if reason:
-        if "monitoring gap" in reason:
-            return "Monitoring was interrupted during possible backup execution"
-        if "observation was delayed" in reason:
-            return "Application observation was delayed during backup execution"
-        if "observation was running" in reason:
-            return "Application restarted during backup execution"
-    return "Application stopped state could not be verified during backup execution"
-
-
 def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str, Any] | None:
     """Return configured monitoring or retained recovery evidence; omit unused placeholders."""
-    configured = bool(config.instances)
+    configured = bool(config.enabled_instances())
     diagnostics: list[str] = []
     result: dict[str, Any] = {
         "enabled": bool(config.enabled_instances()),
@@ -148,7 +137,6 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
         "pending_request_id": None,
         "active_attempt_id": None,
         "diagnostics": diagnostics,
-        "safety": [],
     }
     blocked = None
     try:
@@ -311,54 +299,18 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
                     log = store.log_path(last["attempt_id"])
                     if log.is_file():
                         result["log_path"] = str(log)
-            if state.review_required:
-                for summary in state.attempt_summaries:
-                    if summary.get("review_required") and summary["outcome"] != "blocked":
-                        result["safety"].append(
-                            {
-                                "attempt_id": summary["attempt_id"],
-                                "current": bool(
-                                    state.active_review_required
-                                    and summary["attempt_id"] == state.active_attempt_id
-                                ),
-                                "execution_period": (
-                                    f"{receipt.started_at} — {receipt.ended_at}"
-                                    if (
-                                        receipt := _receipt(
-                                            store,
-                                            summary["attempt_id"],
-                                            config.job_id,
-                                            summary["request_id"],
-                                        )
-                                    )
-                                    else "Exact execution interval unavailable"
-                                ),
-                                "reason": "Backup outcome could not be established"
-                                if summary["outcome"] == "outcome_unknown"
-                                else _review_problem(state.review_reason),
-                            }
-                        )
-                if not result["safety"] and not state.active_review_required:
-                    result["safety"].append(
-                        {"current": False, "reason": "Earlier backup execution requires review"}
+            for summary in state.attempt_summaries:
+                if summary["outcome"] in ("outcome_unknown", "result_unknown"):
+                    diagnostics.append(
+                        "Worker outcome UNKNOWN; preserve dispatch records "
+                        "and do not replay the attempt"
                     )
-            if state.active_review_required and state.active_attempt_id not in {
-                item.get("attempt_id") for item in result["safety"]
-            }:
-                result["safety"].append(
-                    {
-                        "attempt_id": state.active_attempt_id,
-                        "current": True,
-                        "reason": _review_problem(state.active_review_reason),
-                    }
-                )
             if verbose or config.log_level == "DEBUG":
                 result["details"].update(
                     {
                         "instance": config.job_id,
                         "monitor_session": started_at,
                         "armed": state.armed,
-                        "review_reason": state.review_reason,
                         "observation": state.last_observation.observation.value
                         if state.last_observation
                         else None,
@@ -373,9 +325,4 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
         result["dispatch"] = "BLOCKED" if blocked else "UNKNOWN"
         result["application"] = "UNKNOWN"
         result["read_error"] = True
-    if result["safety"]:
-        result["safety_action"] = "Review affected backup executions"
-        result["safety_guidance"] = (
-            "Review backup and app activity; obtain a new backup with the app stopped"
-        )
     return result if configured else None

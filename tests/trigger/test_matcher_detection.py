@@ -1,14 +1,86 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import psutil
+import pytest
 
 from tests.trigger.conftest import FakeProvider, make_matcher
+from vaultkeep.trigger import process as process_module
 from vaultkeep.trigger.config import Entrypoint, MatcherSpec
 from vaultkeep.trigger.detection import detect_spec
 from vaultkeep.trigger.matcher import ProcessInfo, match_identity
 from vaultkeep.trigger.models import Observation
+from vaultkeep.trigger.process import PsutilProcessProvider
+
+
+@pytest.mark.parametrize("value", ["~/.electrum", ".electrum"])
+@pytest.mark.parametrize("source", ["env", "argv"])
+def test_directory_uses_process_owner_home_and_cwd(tmp_path, monkeypatch, value, source):
+    owner_uid = 4242
+    owner_home = tmp_path / "owner"
+    owner_home.mkdir()
+    executor_home = tmp_path / "executor"
+    executor_home.mkdir()
+    monkeypatch.setenv("HOME", str(executor_home))
+    monkeypatch.chdir(executor_home)
+
+    def account(uid):
+        assert uid == owner_uid
+        return SimpleNamespace(pw_dir=str(owner_home))
+
+    monkeypatch.setattr(process_module.pwd, "getpwuid", account)
+    live = SimpleNamespace(
+        environ=lambda: {"ELECTRUMDIR": value} if source == "env" else {},
+        cwd=lambda: str(owner_home),
+        is_running=lambda: True,
+        create_time=lambda: 1.0,
+        uids=lambda: SimpleNamespace(real=owner_uid),
+    )
+    monkeypatch.setattr(process_module.psutil, "Process", lambda pid: live)
+    provider = PsutilProcessProvider(owner_uid=owner_uid)
+    provider._last = {100: 1.0}
+    cmdline = ("/opt/app/run_app", "--dir", value) if source == "argv" else ("/opt/app/run_app",)
+    monkeypatch.setattr(provider, "snapshot", lambda: [_proc(cmdline=cmdline)])
+    result = detect_spec(
+        app="electrum",
+        data_dir=str(owner_home / ".electrum"),
+        matcher=make_matcher(),
+        provider=provider,
+    )
+    assert result.observation is Observation.RUNNING
+
+
+@pytest.mark.parametrize("failure", ["cwd", "home", "identity"])
+def test_unavailable_process_directory_context_never_reports_stopped(
+    tmp_path, monkeypatch, failure
+):
+    provider = PsutilProcessProvider(owner_uid=4242)
+    provider._last = {100: 1.0}
+    value = "~/.electrum" if failure == "home" else ".electrum"
+    monkeypatch.setattr(provider, "snapshot", lambda: [_proc(cmdline=("/opt/app/run_app",))])
+    monkeypatch.setattr(provider, "alive", lambda *args: True)
+    monkeypatch.setattr(provider, "read_env", lambda *args: {"ELECTRUMDIR": value})
+
+    def account(uid):
+        raise KeyError(uid)
+
+    def cwd():
+        if failure == "identity":
+            monkeypatch.setattr(provider, "alive", lambda *args: False)
+            return str(tmp_path)
+        raise psutil.AccessDenied(100)
+
+    monkeypatch.setattr(process_module.pwd, "getpwuid", account)
+    monkeypatch.setattr(process_module.psutil, "Process", lambda pid: SimpleNamespace(cwd=cwd))
+    result = detect_spec(
+        app="electrum",
+        data_dir=str(tmp_path / ".electrum"),
+        matcher=make_matcher(),
+        provider=provider,
+    )
+    assert result.observation is Observation.INSPECTION_UNAVAILABLE
 
 
 def _proc(

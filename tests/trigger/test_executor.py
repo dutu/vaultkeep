@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -41,6 +43,17 @@ def _bound_request() -> Request:
         environment={"HOME": "/home/user"},
         preflight_version=None,
         deadline_seconds=None,
+        owner_uid=os.geteuid(),
+        execution_policy={
+            "consistency": "files",
+            "owner_uid": os.geteuid(),
+            "application": {
+                "name": "electrum",
+                "user": "test",
+                "data_dir": "/home/user/.app",
+                "matcher": MATCHER,
+            },
+        },
     )
 
 
@@ -71,7 +84,9 @@ def test_created_receipt(store: StateStore) -> None:
     assert receipt.vaultkeep_version == "0.1.0"
     assert runner.calls[1][-1] == "run"
     assert runner.environments[0] == request.environment
-    assert runner.environments[1] == request.environment
+    assert runner.environments[1] == request.environment | {
+        "VAULTKEEP_EXPECTED_POLICY": json.dumps(request.execution_policy, sort_keys=True)
+    }
     assert {p.name for p in store.attempt_dir(request.attempt_id).iterdir()} == {
         "request.json",
         "receipt.json",

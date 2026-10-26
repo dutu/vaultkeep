@@ -23,8 +23,7 @@ Do not publish a release until every gate below is checked:
 - [ ] Installer normal-uninstall gate passed.
 - [ ] Installer purge-uninstall gate passed.
 - [ ] Restore drills passed on local filesystem destination.
-- [ ] Restore drills passed on CIFS destination.
-- [ ] Restore drills passed on NFS/NFS4 destination.
+- [ ] Shared destination locks and unsupported filesystem/mount rejection verified.
 - [ ] Restore drills passed for `.tar.zst`.
 - [ ] Restore drills passed for password-protected `.tar.7z`.
 - [ ] Scheduling gate passed.
@@ -145,16 +144,16 @@ For every upgrade case, verify retained-release paths, data preservation and rol
 of the old links, templates and metadata. Core-only and combined layouts are legacy
 inputs, not current installation selections.
 
-Provide dedicated disposable user accounts with running user managers and one
-writable CIFS mount and one writable NFS mount for release validation.
+Provide dedicated disposable user accounts with running user managers and a
+writable supported local filesystem for release validation. Network destinations
+and subtree/nested destination mounts are unsupported.
 
 For each host, record:
 
 - [ ] Host:
 - [ ] Debian codename:
 - [ ] Architecture:
-- [ ] CIFS mount:
-- [ ] NFS mount:
+- [ ] Local destination mount and filesystem:
 
 ### 3.1 Host Preparation
 
@@ -188,24 +187,8 @@ For each host, record:
   - `python3`, `tar`, `zstd`, `7z`, `rsync`, `findmnt`, `systemctl`, and
     `systemd-analyze` are present in `PATH`.
 
-- [ ] Confirm CIFS and NFS mounts.
-
-  ```bash
-  export VAULTKEEP_RELEASE_CIFS_MOUNT=/mnt/vaultkeep-release-cifs
-  export VAULTKEEP_RELEASE_NFS_MOUNT=/mnt/vaultkeep-release-nfs
-
-  findmnt --target "$VAULTKEEP_RELEASE_CIFS_MOUNT" --output TARGET,FSTYPE,OPTIONS
-  findmnt --target "$VAULTKEEP_RELEASE_NFS_MOUNT" --output TARGET,FSTYPE,OPTIONS
-
-  sudo sh -c 'echo cifs-write-test > "$1/.vaultkeep-release-write-test" && rm "$1/.vaultkeep-release-write-test"' sh "$VAULTKEEP_RELEASE_CIFS_MOUNT"
-  sudo sh -c 'echo nfs-write-test > "$1/.vaultkeep-release-write-test" && rm "$1/.vaultkeep-release-write-test"' sh "$VAULTKEEP_RELEASE_NFS_MOUNT"
-  ```
-
-  Acceptable result:
-
-  - CIFS mount reports `FSTYPE` as `cifs`.
-  - NFS mount reports `FSTYPE` as `nfs` or `nfs4`.
-  - Both write tests succeed and leave no test file behind.
+- [ ] Confirm the local destination mount and supported filesystem, with no subtree
+  aliases or nested mount points. See [destination locking restrictions](docs/configuration.md#destination-safety-checks).
 
 ### 3.2 Release-Gate Tests
 
@@ -214,8 +197,6 @@ For each host, record:
   ```bash
   sudo env \
     VAULTKEEP_RELEASE_GATE=1 \
-    VAULTKEEP_RELEASE_CIFS_MOUNT="$VAULTKEEP_RELEASE_CIFS_MOUNT" \
-    VAULTKEEP_RELEASE_NFS_MOUNT="$VAULTKEEP_RELEASE_NFS_MOUNT" \
     python3 -m pytest -vv -m release_gate
   ```
 
@@ -225,7 +206,7 @@ For each host, record:
   - Release-gate tests are collected and run.
   - No release-gate test is skipped.
   - The host check confirms Debian, root, systemd, and required tools.
-  - The filesystem check confirms CIFS and NFS filesystem types.
+  - The locking check confirms exclusion through a physical destination alias.
   - Installer dry-runs complete or report the explicitly accepted clean-host
     update precondition.
 
@@ -386,8 +367,7 @@ Run for every destination type and archive format:
 Destination types:
 
 - [ ] Local filesystem
-- [ ] CIFS mount
-- [ ] NFS/NFS4 mount
+- [ ] Unsupported network/subtree/nested mounts are rejected before mutation
 
 Archive formats:
 
@@ -410,7 +390,7 @@ For each combination, create a fixture containing:
   - `job.id` matches the config filename stem.
   - `destination.root` points to the tested destination.
   - `destination.marker_file` is present and exists in the destination.
-  - `destination.expected_fstype` matches the actual CIFS or NFS filesystem type.
+  - `destination.expected_fstype` matches the tested local filesystem type.
   - `archive.format` is the format being tested.
   - `encryption.mode` is `password` only for `.tar.7z`.
   - `encryption.password_file` points to a root-owned mode-`0600` file for
@@ -715,7 +695,7 @@ Acceptable result:
 - [ ] Local quality gate passed.
 - [ ] Unified installation and schema-1/schema-2 upgrade cases passed on both Debian 13 architectures.
 - [ ] Installer install/update/uninstall/purge passed.
-- [ ] Restore drills passed for local, CIFS, and NFS destinations.
+- [ ] Restore drills passed for supported local destinations; unsupported filesystem and mount layouts reject mutation.
 - [ ] Restore drills passed for `.tar.zst` and `.tar.7z`.
 - [ ] Scheduling gate passed.
 - [ ] Failure-injection gate passed.

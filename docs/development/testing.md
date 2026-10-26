@@ -75,8 +75,12 @@ rendered timer commands, and Trigger workers in both backup modes, including res
 read back through the installed `status --json` command with matching mode, parameters,
 and state environment. Process tests check SIGTERM completion evidence and SIGKILL
 uncertainty. Status tests separate lock activity from missing, corrupt, inaccessible,
-stale, and contradictory history and verify compact historical safety warnings,
-verbose details, and JSON without mutation.
+stale, and contradictory history and verify cleanup-pending versus unresolved
+suspects, notification cleanup diagnostics, verbose details, and JSON without mutation.
+Safety regressions cover owner-correct home and process working-directory resolution,
+post-commit corruption outcomes, required metadata versions, backward clock changes,
+circular and conflicting references, interrupted marker updates, and committed
+replacements across archive formats and encryption changes.
 Real archive tests use disposable files. Each test in `test_archive_tools.py` has a
 60-second deadline, including encrypted creation, verification, and restore; a
 timeout fails the test and lets the archive runners clean up their subprocesses.
@@ -129,3 +133,37 @@ coverage, systemd user lifecycle/lingering, network restore behavior or arm64
 execution. Run the [release gates](../../RELEASE.md) and
 [deployment checks](../plans/trigger-validation.md) on prepared hosts. Keep app-specific
 examples disabled until the installed process model has been reviewed.
+
+## Backup safety regression coverage
+
+Schema/layout-2 tests use disposable sources, destinations and local state. The
+safety suite covers offline boundaries and release hooks, source refresh, physical
+destination locks across aliases/parent-child paths, suspect markers and compatible
+references, protected dependencies, unsupported/malformed barriers, cleanup warnings,
+and failure after commitment. Metadata-only inventory/status and dry-run checks do
+not read archives or write classification. Installed workers exercise the same
+engine for both backup modes. Installer fixtures copy only shipped templates and
+exclude private local examples. Filesystem and live application release gates remain
+separate from these local tests.
+
+Network regressions emulate mount metadata while using real file locks, separate
+process contention, real archive tools, both backup modes, and encrypted/unencrypted
+archives. They cover unsafe mount options and lock anchors, permissions/server-lock
+failures, the NFS rename fallback and its lock requirement, existing-target safety,
+verification, suspect replacement, and pruning. They do not establish live server
+or cross-machine semantics.
+
+To test actual shares, mount disposable CIFS and NFS test shares with server locking
+enabled, and grant the test account access to their root `.vaultkeep.lock` files.
+Then run:
+
+```sh
+VAULTKEEP_TEST_CIFS_ROOT=/mnt/vaultkeep-test-cifs \
+VAULTKEEP_TEST_NFS_ROOT=/mnt/vaultkeep-test-nfs \
+pytest --no-cov -q tests/integration/test_network_destinations.py -k live_network
+```
+
+These opt-in tests create and remove private test directories and leave the stable
+share-root lock file in place. They check real commit/verify/retention and separate
+process contention. Release validation must additionally check contention from two
+writing machines, server recovery, and the deployed mount/permission configuration.

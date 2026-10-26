@@ -4,14 +4,23 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
-from vaultkeep.errors import ManifestError
-from vaultkeep.state.models import BackupId, Digest, UtcTimestamp, utc_timestamp
+from vaultkeep.destination.identity import ReplacementIdentity
+from vaultkeep.errors import ManifestError, UnsupportedManifestError
+from vaultkeep.state.models import BackupId, Digest, UtcTimestamp
 
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 ArchiveName = Annotated[str, StringConstraints(min_length=1, pattern=r"^[^/\\\x00]+$")]
@@ -35,7 +44,8 @@ class BackupManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    manifest_version: Literal[1] = 1
+    manifest_version: Literal[2]
+    replacement_identity: ReplacementIdentity
     application: Literal["vaultkeep"] = "vaultkeep"
     application_version: NonEmptyString
     backup_id: BackupId
@@ -50,10 +60,19 @@ class BackupManifest(BaseModel):
     encrypted: bool
     hostname: NonEmptyString
 
+    @field_validator("manifest_version", mode="before")
+    @classmethod
+    def _version_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("manifest_version must be an integer")
+        return value
+
     @model_validator(mode="after")
     def validate_relationships(self) -> Self:
+        if json.loads(self.replacement_identity.source_scope)["job"] != self.job:
+            raise ValueError("replacement source scope does not match manifest job")
         local_time = datetime.fromisoformat(self.created_at)
-        if utc_timestamp(local_time) != self.created_at_utc:
+        if local_time.astimezone(UTC) != self.created_datetime_utc:
             raise ValueError("created_at and created_at_utc must describe the same instant")
         expected_suffix = f".{self.archive_format}"
         if not self.archive.endswith(expected_suffix):
@@ -95,7 +114,14 @@ def write_manifest(path: Path, manifest: BackupManifest) -> None:
 def load_manifest(path: Path) -> BackupManifest:
     """Load exactly one strict UTF-8 JSON manifest."""
     try:
-        payload = path.read_text(encoding="utf-8")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ManifestError(f"Manifest must be a regular file: {path}")
+            data = stream.read(1024 * 1024 + 1)
+            if len(data) > 1024 * 1024:
+                raise ManifestError(f"Manifest is oversized: {path}")
+            payload = data.decode("utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise ManifestError(f"Cannot read backup manifest {path}: {error}") from error
     try:
@@ -104,6 +130,12 @@ def load_manifest(path: Path) -> BackupManifest:
         raise ManifestError(f"Invalid JSON backup manifest {path}: {error}") from error
     if not isinstance(decoded, dict):
         raise ManifestError(f"Backup manifest {path} must contain a JSON object")
+    version = decoded.get("manifest_version")
+    if version is not None and (type(version) is not int or version != 2):
+        raise UnsupportedManifestError(
+            f"Unsupported manifest_version {version!r} in {path}; "
+            "expected 2 and refusing to modify this history"
+        )
     try:
         return BackupManifest.model_validate(decoded)
     except ValueError as error:

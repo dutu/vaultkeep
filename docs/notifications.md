@@ -240,3 +240,7 @@ prevent this. When several desktop buses exist, a working inherited
 still follows the desktop's notification settings. See [session selection](#session-bus).
 
 [User guide](../README.md#desktop-notifications)
+
+A reliable new archive with a cleanup failure still sends a successful backup
+completion with the cleanup diagnostic. Trigger does not duplicate backup-health
+alerts or add archive-review warnings for application restarts or monitoring gaps.

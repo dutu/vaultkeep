@@ -236,27 +236,34 @@ An unchanged run does not create an archive or apply retention.
 Change detection validates backup metadata and compares the sources against the
 newest matching backup, ordered by manifest UTC creation time and then backup ID.
 Before returning `unchanged`, it reads only that archive to verify its SHA-256
-checksum. A content checksum mismatch marks the backup as damaged and creates a
+checksum. A content checksum mismatch marks the backup SUSPECT and creates a
 fresh verified backup, reporting `created` on success. It does not skip creation
-based on an older backup after detecting damage. Permission and read errors still
+based on an older backup after detecting corruption. Permission and read errors still
 fail the run, without marking the archive as corrupt.
 
-Damage is recorded in a `.vaultkeep-damaged` JSON file inside the affected backup
-directory. The archive, checksum sidecar, and manifest are preserved. After the
-new backup is committed and its checksum verified, the marker records its backup
-ID. If replacement creation fails, a later run retries creation. Marked backups
-are excluded from unchanged checks and retention counts, and are never
-automatically deleted. Failure to persist a marker or replacement record fails
-the run; a replacement already committed remains on disk.
+A demonstrated checksum or archive-structure problem records a
+`.vaultkeep-suspect` marker with its original reason and detection time. `list`
+shows the `SUSPECT` reason directly below the backup directory. An unresolved
+suspect is protected and forces a fresh archive in the same compatible history.
+After reliable creation, required state persistence, and successful hooks, the engine
+records the replacement ID and may remove the superseded suspect. Suspects do not
+fill ordinary retention slots. Ordinary cleanup failures preserve the new archive and report
+`run: created` with an actionable warning; retry with explicit `prune` or a later
+archive-creating run. `UNCHANGED` never performs cleanup.
+Corruption found in the newly committed archive fails the run, including when
+discovered during cleanup.
 
-After creating a backup, `run` validates the destination metadata and verifies
-only the newly finalized archive's checksum before saving state and applying
-retention. Automatic retention checks manifests, checksum-sidecar metadata, and
-directory layout without reading older archive contents. Content damage in older
-unmarked archives is detected by full-history checks; automatic retention follows
-the configured policy without checking their content integrity. Use `verify` to
-check the entire history; explicit `prune` also retains its full checksum checks
-before deletion.
+Replacement compatibility requires the same configured source coverage and
+consistency policy; offline backups also require the same application name, owner,
+and data directory. Changing compression, retention, archive format, or password-file
+location does not define a different replacement class. Changed coverage or policy
+preserves the incompatible history. A missing or suspect replacement makes the old
+suspect unresolved again. Deletion rechecks the replacement's current SHA-256
+against both the immutable manifest and sidecar under the shared destination lock.
+`list`, `status`, and `prune --dry-run` inspect metadata without reading archives or
+writing markers. `verify` performs full archive verification and may mark demonstrated
+corruption; wrong passwords, unavailable tools, and transient I/O errors do not by
+themselves establish corruption.
 
 Temporary backups use `~$.partial-vaultkeep-<job>-<backup-id>` directory names.
 On destinations managed by synchronization software, verify that temporary
@@ -277,22 +284,25 @@ vaultkeep [--user] --config <job.yaml> list
 
 `list` prints a `Vaultkeep — Backups` inventory with the job ID, destination,
 and configured retention counts. Rows show `Created (UTC)`, compressed archive
-`Size`, `Enc` (`yes` or `no`), `Decision`, and `Retained by`, newest first. Creation
-and encryption facts come from stored manifests, including backups in either
+`Size`, `Decision`, and `Tiers`, newest first. Creation
+facts come from stored manifests, including backups in either
 supported format after an archive-setting change. Each row is followed by
 `  Backup: <directory>` with the complete directory path relative to the destination.
-Marked damaged backups show `DAMAGED` with the recorded diagnostic in the warnings.
-They are preserved outside the retention policy; their presence does not make
-healthy backup retention decisions unknown.
+Suspects show their original reason immediately below their directory. Unresolved
+suspects show `PROTECTED`; a metadata-valid replacement permits a `PRUNE` preview.
+An unmarked archive has no health label; marker absence is not full verification.
 For `per_file` jobs, this includes the file history directory.
 
 Retention decisions reuse the existing pruning planner, calculated independently
 for each file history:
 
-- `KEEP`: selected by at least one retention tier. `Retained by` lists every tier
+- `KEEP`: selected by at least one retention tier. `Tiers` lists every tier
   that actually selects this backup, rather than all calendar buckets it belongs to.
 - `PRUNE`: eligible for removal under the current policy and inventory. Listing
   never deletes anything; pruning performs its own checks before deletion.
+- `PROTECTED`: an unresolved suspect; no reliable compatible replacement is recorded.
+- `—`: retention is disabled (except for unresolved suspects), or the history is
+  incompatible with this configuration.
 - `UNKNOWN`: a reliable plan cannot be established, for example because matching
   invalid entries or duplicate backup IDs make that history incomplete.
 
@@ -301,9 +311,10 @@ UTC. They are recalculated when the available backups or current policy change.
 The final summary gives total backups and Keep/Prune counts, plus Unknown when
 needed. An empty inventory says `No backups found.`
 
-All-zero retention counts are shown as `Retention: disabled`, with `—` in both
-retention columns and no Keep/Prune/Unknown counts. This is supported for read-only
-inspection with `list`; validation, `run`, and `prune` still require an enabled tier.
+All-zero retention counts are shown as `Retention: disabled`, with `—` in `Tiers`
+and no Keep/Prune/Unknown counts. `Decision` is `—` except for unresolved suspects,
+which remain `PROTECTED`. This is supported for read-only inspection with `list`;
+validation, `run`, and `prune` still require an enabled tier.
 
 Missing or invalid metadata and archive layouts appear under `Warnings`, with
 available diagnostics and a separate `Invalid entries` count. Invalid entries are
@@ -344,14 +355,14 @@ Verification checks:
   inner `{job}.tar` member for `.tar.7z`;
 - TAR member paths, rejecting duplicate, absolute, and parent-traversal paths.
 
-Verification works without the original sources and never changes backups, local
-state, or retention. Encrypted jobs require a password file containing the archive's
+Verification works without the original sources. It records a suspect marker when
+checksum or structural checks demonstrate corruption, without rewriting archive
+contents, updating local backup state, or running retention. Encrypted jobs require a password file containing the archive's
 passphrase, with the same ownership and permissions required by `run`.
-Marked damaged backups are reported as failures without rereading their archive
-contents. Verification continues checking the remaining backups and exits nonzero
-while marked backups remain in the destination. A successful replacement run does
-not clear a damage marker; inspect the preserved backup before manually moving or
-removing its directory.
+Suspects retain their marker and are reported as failures. Verification checks their
+archive contents too; successful verification alone never clears a suspect marker. Verification continues checking the remaining backups and exits nonzero
+while marked backups remain in the destination. A successful compatible replacement
+can make a suspect eligible for guarded cleanup, including its marker.
 
 Verification continues after individual backup failures. Invalid backups are excluded
 from archive verification. Failures are reported immediately with their full paths
@@ -430,11 +441,13 @@ Pruning does not require the original sources. `--dry-run` validates the retenti
 plan and prints `prune: planned`; the current CLI does not print individual keep/delete
 paths. Applying it prints `prune: pruned` and probes destination writability before
 deletion. Matching malformed backups block plan calculation in both dry-run and
-apply modes; use `verify` to identify them. In `per_file` mode, every discovered
-history is validated before any deletion, and policy is applied separately per file.
-Backups with valid damage markers are preserved, excluded from retention counts,
-and do not block pruning of healthy backups. Malformed markers and unexpected
-artifacts still block pruning.
+apply modes; use `verify` to identify them. Each independent per-file history is
+planned and validated separately. A failed file does not prevent safe cleanup of
+another file. Unresolved suspects are protected; superseded suspects can be removed
+after validating the replacement and its current checksum. Retention preserves
+replacement dependencies even if a suspect deletion fails. Malformed markers and
+unexpected artifacts block destructive work in their affected history. Prune does
+not add a decompression pass; use `verify` for full stream verification.
 
 ## Configure a job timer
 
@@ -600,7 +613,7 @@ Use `vaultkeep --user --config JOB.yaml validate` to validate the complete job a
 check Trigger runtime prerequisites, installation, and health. It reports enabled
 features explicitly, checks the monitor's systemd enablement/activity, recent updates
 (with a freshness limit of twice the poll interval), configuration fingerprint,
-process observation, recovery blocks/review warnings, and recorded backup failures.
+process observation, recovery blocks, and recorded backup failures.
 Missing state or ambiguous/unavailable process observations cannot establish health.
 Backup history is read without reconstruction or repair. Use matching `--param`
 values; enabled Trigger's `trigger.params` defaults apply to this validation command.
@@ -652,8 +665,8 @@ service separately. See [service operation](trigger/service-operation.md).
 ### Job status
 
 Use the shared [job status command](#check-job-status), including `--verbose` for
-historical safety-warning details and diagnostic paths. The [status reference](status.md)
-separates Backup execution from Trigger monitoring, dispatch, and recovery warnings.
+diagnostic paths and details. The [status reference](status.md) separates Backup
+execution and cleanup diagnostics from Trigger monitoring, dispatch, and recovery blocks.
 
 ### Trigger exit codes
 

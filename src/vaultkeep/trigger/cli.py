@@ -59,7 +59,7 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     monitor = Monitor(
         config,
         store=store,
-        provider=PsutilProcessProvider(),
+        provider=PsutilProcessProvider(owner_uid=config.enabled_instances()[0].owner_uid),
         controller=RealSystemdController(),
         notifier=build_notifier(config.notifications),
     )

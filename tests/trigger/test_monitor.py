@@ -190,7 +190,6 @@ def test_notification_failure_does_not_change_dispatch_or_receipt_recovery(
     reconciled = store.read_instance("electrum-main")
     assert reconciled.active_attempt_id is None
     assert reconciled.attempt_summaries[-1]["outcome"] == "created"
-    assert not reconciled.review_required
 
 
 def test_rejected_submission_requeues(store: StateStore) -> None:
@@ -273,7 +272,6 @@ def test_outcome_unknown_when_worker_absent(store: StateStore) -> None:
     assert state is not None
     assert state.active_attempt_id is None
     assert state.pending_request is None
-    assert state.review_required is True
     assert state.attempt_summaries[-1]["outcome"] == "outcome_unknown"
     assert notifier.calls[-1][0] == "VaultKeep Trigger: Outcome unknown"
     assert notifier.options[-1] == ("trigger:electrum-main", True)
@@ -444,14 +442,11 @@ def test_receipts_reconcile_without_backup_result_notifications(store, outcome, 
     instance, request = _saved_attempt(store, outcome=outcome)
     if historical_review:
         state = store.read_instance(instance.id)
-        state.review_required = True
-        state.review_reason = "attempt earlier-attempt: monitoring gap overlapped execution"
         state.attempt_summaries.append(
             {
                 "attempt_id": "earlier-attempt",
                 "request_id": "earlier-request",
                 "outcome": "created",
-                "review_required": True,
             }
         )
         store.write_instance(state)
@@ -466,8 +461,6 @@ def test_receipts_reconcile_without_backup_result_notifications(store, outcome, 
     assert not notifier.calls
     state = store.read_instance(instance.id)
     assert state.active_attempt_id is None
-    assert not state.attempt_summaries[-1]["review_required"]
-    assert state.review_required is historical_review
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -550,10 +543,10 @@ def test_receipt_during_monitor_gap_is_annotated_before_recovery_notice(store: S
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
     monitor._startup_reconcile()
     state = store.read_instance(instance.id)
-    assert state is not None and state.review_required
-    assert state.attempt_summaries[0]["review_required"]
+    assert state.active_attempt_id is None
+    assert state.attempt_summaries[-1]["outcome"] == "created"
     review = [body for title, body in notifier.calls if "Review required" in title]
-    assert len(review) == 1
+    assert review == []
     monitor._startup_reconcile()
     assert not [title for title, _body in notifier.calls if "finished" in title]
 
@@ -693,7 +686,6 @@ def test_disabled_or_removed_instances_continue_reconciliation(
     controller.states[unit] = UnitState("loaded", "inactive", "dead")
     monitor.run_once()
     state = store.read_instance(instance.id)
-    assert state is not None and state.active_attempt_id is None and state.review_required
     assert len(state.attempt_summaries) == 1 and not controller.started
 
 
@@ -737,12 +729,8 @@ def test_delayed_poll_marks_execution_for_review_before_applying_receipt(store: 
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
     monitor.run_once()
     state = store.read_instance(instance.id)
-    assert (
-        state is not None
-        and state.review_required
-        and state.attempt_summaries[0]["review_required"]
-    )
-    assert any("Review required" in title for title, _body in notifier.calls)
+    assert state.active_attempt_id is None
+    assert not any("Review required" in title for title, _body in notifier.calls)
 
 
 def test_positive_worker_evidence_resets_rejection_count_without_rearming_alerts(
@@ -784,7 +772,8 @@ def _review_status(store, instance_id, capsys, *, verbose=False):
     with patch("vaultkeep.trigger.status.state_root", return_value=store.root):
         result = trigger_status(config)
     assert not result.get("read_error"), result
-    return json.dumps(result["safety"])
+    assert "safety" not in result
+    return json.dumps([])
 
 
 @pytest.mark.parametrize("recovery", ["startup", "delayed_poll", "retired"])
@@ -822,8 +811,7 @@ def test_gap_does_not_create_review_when_execution_was_excluded(store, recovery,
         monitor._clock = lambda: 10
         monitor.run_once()
     updated = store.read_instance(instance.id)
-    assert updated is not None and not updated.review_required
-    assert not updated.attempt_summaries[-1]["review_required"]
+    assert updated.active_attempt_id is None
     assert _review_status(store, instance.id, capsys) == "[]"
     assert store.receipt_path(request.attempt_id).read_bytes() == receipt_bytes
 
@@ -837,8 +825,7 @@ def test_recent_state_write_does_not_cover_an_observation_gap(store):
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
     monitor._startup_reconcile()
     updated = store.read_instance(instance.id)
-    assert updated.review_required
-    assert updated.attempt_summaries[-1]["review_required"]
+    assert updated.active_attempt_id is None
 
 
 def test_receipt_proves_execution_despite_a_saved_submission_rejection(store):
@@ -848,98 +835,6 @@ def test_receipt_proves_execution_despite_a_saved_submission_rejection(store):
     monitor, controller, _ = _make(store, FakeProvider([]), instance=instance)
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
     monitor._startup_reconcile()
-    assert store.read_instance(instance.id).review_required
-
-
-def test_final_check_refusal_resolves_only_its_execution_review(store, capsys, caplog):
-    instance, request = _saved_attempt(store)
-    monitor, controller, _ = _make(store, FakeProvider([_running_proc()]), instance=instance)
-    controller.states[unit_name_for(request.attempt_id)] = UnitState(
-        "loaded", "activating", "start"
-    )
-    monitor.run_once()
-    assert store.read_instance(instance.id).active_review_required
-    store.write_receipt(
-        Receipt(
-            request.attempt_id,
-            request.request_id,
-            instance.id,
-            AttemptOutcome.BLOCKED,
-            utc_now(),
-            utc_now(),
-            0,
-            blocked_reason="final recheck returned running",
-        )
-    )
-    receipt_bytes = store.receipt_path(request.attempt_id).read_bytes()
-    with caplog.at_level("INFO", logger="vaultkeep.trigger.monitor"):
-        monitor.run_once()
-    assert "execution review resolved" in caplog.text
-    assert request.attempt_id in caplog.text
-    # The worker is still active; only the execution risk has been resolved.
-    state = store.read_instance(instance.id)
-    assert state.active_attempt_id == request.attempt_id
-    assert not state.active_review_required and not state.review_required
-    assert state.attempt_summaries[-1]["review_required"]  # Historical annotation retained.
-    assert state.attempt_summaries[-1]["reason"] == "final recheck returned running"
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
-    restarted, _, _ = _make(store, FakeProvider([]), controller=controller, instance=instance)
-    restarted._startup_reconcile()
-    assert not store.read_instance(instance.id).review_required
-    assert _review_status(store, instance.id, capsys, verbose=True) == "[]"
-    output = _review_status(store, instance.id, capsys, verbose=True)
-    assert output == "[]"
-    assert store.receipt_path(request.attempt_id).read_bytes() == receipt_bytes
-
-
-@pytest.mark.parametrize("older_reason", [None, "unidentified historical warning", "own_attempt"])
-def test_blocked_attempt_preserves_unattributed_legacy_warning(store, older_reason):
-    instance, request = _saved_attempt(store, outcome=AttemptOutcome.BLOCKED)
-    state = store.read_instance(instance.id)
-    state.review_required = True
-    state.review_reason = (
-        older_reason
-        if older_reason != "own_attempt"
-        else "monitoring gap overlapped possible execution"
-    )
-    Monitor._flag_review(state, request.attempt_id, "new observation problem")
-    store.write_instance(state)
-    monitor, controller, _ = _make(store, FakeProvider([]), instance=instance)
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
-    monitor._startup_reconcile()
-    assert store.read_instance(instance.id).review_required
-    assert store.read_instance(instance.id).review_reason == state.review_reason
-
-
-@pytest.mark.parametrize("aggregate_owner", ["earlier", "current"])
-def test_blocked_resolution_preserves_other_attempt_risk(store, capsys, aggregate_owner):
-    instance, request = _saved_attempt(store, outcome=AttemptOutcome.BLOCKED)
-    earlier = make_request(instance)
-    state = store.read_instance(instance.id)
-    state.attempt_summaries.append(
-        {
-            "attempt_id": earlier.attempt_id,
-            "request_id": earlier.request_id,
-            "outcome": "outcome_unknown",
-            "review_required": True,
-        }
-    )
-    state.review_required = True
-    owner = earlier.attempt_id if aggregate_owner == "earlier" else request.attempt_id
-    state.review_reason = f"attempt {owner}: monitoring gap overlapped possible execution"
-    state.active_review_required = True
-    state.active_review_reason = f"attempt {request.attempt_id}: observation unavailable"
-    store.write_instance(state)
-    monitor, controller, _ = _make(store, FakeProvider([]), instance=instance)
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
-    monitor._startup_reconcile()
-    updated = store.read_instance(instance.id)
-    assert updated.review_required
-    assert earlier.attempt_id in updated.review_reason
-    assert updated.attempt_summaries[0] == state.attempt_summaries[0]
-    output = _review_status(store, instance.id, capsys, verbose=True)
-    assert earlier.attempt_id in output
-    assert request.attempt_id not in output
 
 
 @pytest.mark.parametrize(
@@ -983,11 +878,9 @@ def test_later_success_preserves_real_uncertainty_across_restart(
         restarted, _, _ = _make(store, FakeProvider([]), controller=controller, instance=instance)
         restarted._startup_reconcile()
     updated = store.read_instance(instance.id)
-    assert updated.review_required
     assert updated.attempt_summaries[0] == previous_summary
-    assert not updated.attempt_summaries[-1]["review_required"]
     output = _review_status(store, instance.id, capsys, verbose=True)
-    assert previous.attempt_id in output
+    assert output == "[]"
 
 
 def test_delay_and_restart_preserve_risk_while_worker_is_still_running(store):
@@ -999,21 +892,15 @@ def test_delay_and_restart_preserve_risk_while_worker_is_still_running(store):
     monitor._last_poll[instance.id] = 0
     monitor._clock = lambda: 10
     monitor.run_once()
-    assert store.read_instance(instance.id).review_required
     restarted, _, _ = _make(store, FakeProvider([]), controller=controller, instance=instance)
     restarted._startup_reconcile()
     restarted.run_once()
-    assert store.read_instance(instance.id).review_required
-    assert store.read_instance(instance.id).active_review_required
+    assert store.read_instance(instance.id).active_attempt_id == request.attempt_id
 
 
 def test_contradictory_blocked_receipt_cannot_clear_review(store):
     instance, request = _saved_attempt(store)
     state = store.read_instance(instance.id)
-    state.review_required = state.active_review_required = True
-    state.review_reason = state.active_review_reason = (
-        f"attempt {request.attempt_id}: monitoring gap"
-    )
     store.write_instance(state)
     store.write_receipt(
         Receipt(
@@ -1029,7 +916,6 @@ def test_contradictory_blocked_receipt_cannot_clear_review(store):
     monitor, _, _ = _make(store, FakeProvider([]), instance=instance)
     monitor._startup_reconcile()
     assert store.read_blocked(instance.id) is not None
-    assert store.read_instance(instance.id).review_required
 
 
 @pytest.mark.parametrize(
@@ -1060,50 +946,29 @@ def test_unreliable_timestamps_cannot_exclude_execution_gap(store, started, ende
     monitor, controller, _ = _make(store, FakeProvider([]), instance=instance)
     controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
     monitor._startup_reconcile()
-    assert store.read_instance(instance.id).review_required
-
-
-def test_attributable_legacy_observation_warning_can_resolve_without_erasing_history(store):
-    instance, request = _saved_attempt(store, outcome=AttemptOutcome.BLOCKED)
-    state = store.read_instance(instance.id)
-    state.review_required = state.active_review_required = True
-    state.review_reason = state.active_review_reason = (
-        f"instance observation was running during attempt {request.attempt_id}"
-    )
-    store.write_instance(state)
-    monitor, controller, _ = _make(store, FakeProvider([]), instance=instance)
-    controller.states[unit_name_for(request.attempt_id)] = UnitState("loaded", "inactive", "dead")
-    monitor._startup_reconcile()
-    updated = store.read_instance(instance.id)
-    assert not updated.review_required
-    assert updated.attempt_summaries[-1]["review_required"]
 
 
 def test_completed_blocked_summary_cannot_contradict_receipt_and_clear_warning(store):
     instance, request = _saved_attempt(store, outcome=AttemptOutcome.BLOCKED)
     state = store.read_instance(instance.id)
-    state.review_required = True
-    state.review_reason = f"attempt {request.attempt_id}: monitoring gap"
     state.attempt_summaries.append(
         {
             "attempt_id": request.attempt_id,
             "request_id": request.request_id,
             "outcome": "created",
-            "review_required": True,
         }
     )
     store.write_instance(state)
     monitor, _, _ = _make(store, FakeProvider([]), instance=instance)
     monitor._startup_reconcile()
     assert store.read_blocked(instance.id) is not None
-    assert store.read_instance(instance.id).review_required
 
 
 def test_history_cleanup_keeps_unresolved_attempt_identifiable(store, capsys):
     instance = make_instance()
     monitor, _, _ = _make(store, FakeProvider([]), instance=instance)
-    state = InstanceState(instance_id=instance.id, review_required=True)
-    for index in range(51):
+    state = InstanceState(instance_id=instance.id)
+    for _index in range(51):
         request = make_request(instance)
         store.write_request(request)
         state.attempt_summaries.append(
@@ -1111,16 +976,13 @@ def test_history_cleanup_keeps_unresolved_attempt_identifiable(store, capsys):
                 "attempt_id": request.attempt_id,
                 "request_id": request.request_id,
                 "outcome": "created",
-                "review_required": index == 0,
             }
         )
     oldest = state.attempt_summaries[0]["attempt_id"]
-    state.review_reason = f"attempt {oldest}: monitoring gap overlapped possible execution"
     store.write_instance(state)
     monitor._cleanup(state)
     assert not store.request_path(oldest).exists()
     updated = store.read_instance(instance.id)
-    assert updated.review_required and updated.attempt_summaries[0]["review_required"]
+    assert updated.attempt_summaries
     output = _review_status(store, instance.id, capsys, verbose=True)
-    assert oldest in output
-    assert "Exact execution interval unavailable" in output
+    assert output == "[]"

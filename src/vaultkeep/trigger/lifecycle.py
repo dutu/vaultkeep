@@ -58,6 +58,8 @@ def _build_request(
         environment=dict(context.environment),
         preflight_version=context.preflight_version,
         deadline_seconds=instance.deadline_seconds,
+        execution_policy=instance.execution_policy,
+        owner_uid=instance.owner_uid,
     )
 
 

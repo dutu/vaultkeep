@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from vaultkeep.errors import ArchiveVerificationError
+from vaultkeep.errors import ArchiveCorruptionError
 from vaultkeep.sources.entries import SourceEntry, SourceEntryType, SourceSnapshot
 
 _SIMPLE_ESCAPES = {
@@ -70,7 +70,7 @@ def expected_tar_members(snapshot: SourceSnapshot) -> tuple[bytes, ...]:
 def parse_gnu_tar_listing(output: bytes) -> tuple[bytes, ...]:
     """Decode GNU TAR's escape quoting into lossless raw member names."""
     if not output:
-        raise ArchiveVerificationError("TAR listing produced no members")
+        raise ArchiveCorruptionError("TAR listing produced no members")
     lines = output.splitlines()
     members = tuple(_decode_escape_quoting(line) for line in lines)
     validate_tar_members(members)
@@ -83,13 +83,13 @@ def validate_tar_members(members: tuple[bytes, ...]) -> None:
     for member in members:
         normalized = member[:-1] if member.endswith(b"/") else member
         if not normalized:
-            raise ArchiveVerificationError("TAR contains an empty member path")
+            raise ArchiveCorruptionError("TAR contains an empty member path")
         if normalized.startswith(b"/"):
-            raise ArchiveVerificationError("TAR contains an absolute member path")
+            raise ArchiveCorruptionError("TAR contains an absolute member path")
         if b".." in normalized.split(b"/"):
-            raise ArchiveVerificationError("TAR contains a parent-traversal member path")
+            raise ArchiveCorruptionError("TAR contains a parent-traversal member path")
         if normalized in seen:
-            raise ArchiveVerificationError("TAR contains duplicate member paths")
+            raise ArchiveCorruptionError("TAR contains duplicate member paths")
         seen.add(normalized)
 
 
@@ -98,7 +98,7 @@ def compare_tar_members(snapshot: SourceSnapshot, actual: tuple[bytes, ...]) -> 
     expected = set(expected_tar_members(snapshot))
     normalized_actual = {member[:-1] if member.endswith(b"/") else member for member in actual}
     if expected != normalized_actual or len(actual) != len(expected):
-        raise ArchiveVerificationError("TAR member list does not match the source snapshot")
+        raise ArchiveCorruptionError("TAR member list does not match the source snapshot")
 
 
 def snapshot_uses_followed_symlinks(snapshot: SourceSnapshot) -> bool:
@@ -211,7 +211,7 @@ def _decode_escape_quoting(value: bytes) -> bytes:
             continue
         index += 1
         if index == len(value):
-            raise ArchiveVerificationError("TAR listing ends with an incomplete escape")
+            raise ArchiveCorruptionError("TAR listing ends with an incomplete escape")
         escaped = value[index]
         simple = _SIMPLE_ESCAPES.get(escaped)
         if simple is not None:
@@ -225,5 +225,5 @@ def _decode_escape_quoting(value: bytes) -> bytes:
             decoded.append(int(value[index:end], 8))
             index = end
             continue
-        raise ArchiveVerificationError("TAR listing contains an unsupported escape")
+        raise ArchiveCorruptionError("TAR listing contains an unsupported escape")
     return bytes(decoded)

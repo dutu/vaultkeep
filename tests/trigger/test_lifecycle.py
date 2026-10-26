@@ -145,7 +145,7 @@ def test_supersession_counts_drops() -> None:
 
 def _dummy_request() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "request_id": "11111111-1111-4111-8111-111111111111",
         "attempt_id": "",
         "instance_id": "electrum-main",
@@ -154,6 +154,8 @@ def _dummy_request() -> dict:
         "boot_id": "boot-1",
         "config_fingerprint": "x",
         "app": "electrum",
+        "execution_policy": {},
+        "owner_uid": 1000,
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/app/run_app"}]},
         "job_config": "/jobs/app.yaml",

@@ -7,6 +7,7 @@ import copy
 import fcntl
 import json
 import os
+import pwd
 import subprocess
 import sys
 from pathlib import Path
@@ -137,7 +138,12 @@ def test_configuration_check_reports_managed_job_failures(
         assert error["issues"][0]["path"] == "destination.root"
     else:
         assert error["issues"][0]["path"] == "<root>"
-        assert "Unable to parse YAML configuration" in error["issues"][0]["message"]
+        expected = {
+            "missing": "Configuration file does not exist",
+            "unreadable": "Unable to read YAML configuration",
+            "malformed": "Unable to parse YAML configuration",
+        }
+        assert expected[problem] in error["issues"][0]["message"]
 
 
 def test_configuration_check_includes_custom_monitor_paths_and_all_directory_jobs(
@@ -175,12 +181,13 @@ def monitor_job(tmp_path, valid_config):
     spec = document(tmp_path, user=True)
     root = Path(spec["unit_roots"][0])
     root.mkdir()
-    valid_config["trigger"] = {
-        "enabled": True,
-        "app": "electrum",
+    valid_config["application"] = {
+        "name": "electrum",
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
+    valid_config["trigger"] = {"enabled": True}
     config = tmp_path / "directory with spaces/app.yaml"
     config.parent.mkdir()
     config.write_text(json.dumps(valid_config))

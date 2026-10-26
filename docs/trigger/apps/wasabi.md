@@ -38,8 +38,8 @@ nano "$job_config"
 
 Keep the complete example. The filename stem must match `job.id` (`wasabi-main` here).
 Replace every example path: `sources[].path` selects the files to back up,
-`destination.root` is an existing writable directory, and `trigger.data_dir`
-identifies the application instance. Mount and verify any network share first;
+`destination.root` is an existing writable directory, and `application.data_dir`
+identifies the application instance. Prepare and verify a supported local filesystem or CIFS/NFS share first;
 optional [destination safety checks](../../configuration.md#destination-safety-checks)
 can reject an unintended local directory. Keep destinations independent between jobs.
 
@@ -55,15 +55,18 @@ Add every verified GUI or daemon entrypoint for this installation to
 `entrypoints`. The list uses OR semantics:
 
 ```yaml
-trigger:
-  enabled: false
-  app: wasabi
+application:
+  name: wasabi
+  user: alice
   data_dir: /home/alice/.walletwasabi/client
   matcher:
     entrypoints:
       - kind: script
         value: /opt/wasabi/WalletWasabi
     argv_tokens: []
+
+trigger:
+  enabled: false
   poll_seconds: 2
   confirm_seconds: 5
 ```
@@ -72,6 +75,7 @@ For a separately packaged daemon, add its observed executable path as another
 entrypoint:
 
 ```yaml
+application:
   matcher:
     entrypoints:
       - kind: script
@@ -88,12 +92,13 @@ assume that helper or backend processes share the GUI executable identity.
 Trigger checks the process environment for `WASABI_DATADIR` first and then the
 `--datadir` command-line option. Separate option/value arguments and
 `--datadir=/path` are accepted. The effective directory is canonicalized and
-compared with `trigger.data_dir`.
+compared with `application.data_dir`.
 
 `matcher.env_eq` can require the same directory when the environment key is
 available:
 
 ```yaml
+application:
   matcher:
     entrypoints:
       - kind: script

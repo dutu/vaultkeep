@@ -245,6 +245,7 @@ def test_common_workflow_uses_only_backup_notification_setting(
         "backup": {"enabled": backup},
         "trigger": {"enabled": trigger},
     }
+    valid_config["destination"]["root"] = str(tmp_path)
     path = tmp_path / "job.yaml"
     path.write_text(json.dumps(valid_config))
     monkeypatch.setattr("vaultkeep.backup.workflow.validate_semantics", lambda *_a, **_k: None)

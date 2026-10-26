@@ -40,6 +40,8 @@ def _request(instance_id: str = "electrum-main") -> Request:
         environment={"HOME": "/home/user"},
         preflight_version=None,
         deadline_seconds=None,
+        owner_uid=1000,
+        execution_policy={},
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -10,12 +11,13 @@ import stat
 import subprocess
 import uuid
 from collections.abc import Callable, Mapping
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
 
+from vaultkeep.application import require_application_offline, resolve_application
 from vaultkeep.archive import (
     ArchiveBuildRequest,
     ArchiveTools,
@@ -39,10 +41,17 @@ from vaultkeep.destination import (
     execute_prune_plan,
     probe_destination_writability,
 )
-from vaultkeep.destination.damage import mark_backup_damaged, record_damage_replacement
-from vaultkeep.destination.discovery import DiscoveredBackup, MalformedDestinationEntry
+from vaultkeep.destination.discovery import (
+    DiscoveredBackup,
+    DiscoveryResult,
+    MalformedDestinationEntry,
+)
+from vaultkeep.destination.identity import replacement_identity
+from vaultkeep.destination.pruning import valid_replacement, verify_backup_checksum
+from vaultkeep.destination.suspect import mark_backup_suspect, record_suspect_replacement
 from vaultkeep.errors import (
     ArchiveChecksumMismatchError,
+    ArchiveCorruptionError,
     ArchiveVerificationError,
     ConfigurationError,
     DestinationError,
@@ -59,6 +68,7 @@ from vaultkeep.file_backups import (
     select_files,
 )
 from vaultkeep.hooks import HookContext, require_success, run_hook, validate_hook_shell
+from vaultkeep.locking import destination_lock
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.progress import VerificationProgress, report_progress
 from vaultkeep.retention.planner import RetentionTier
@@ -102,6 +112,7 @@ class CommandResult:
     archive_path: Path | None = None
     archive_size: int | None = None
     files: tuple[FileBackupResult, ...] = ()
+    cleanup_errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +126,7 @@ class BackupInventory:
     retention: RetentionConfig
     retained_by: dict[Path, tuple[RetentionTier, ...] | None]
     retention_warnings: tuple[tuple[Path, str], ...]
+    decisions: dict[Path, str]
 
 
 class _HookRunKwargs(TypedDict, total=False):
@@ -142,6 +154,9 @@ def load_validated_config(
         issues = tuple(issue for issue in error.issues if issue.code != "retention_empty")
         if issues:
             raise ConfigurationError(issues) from error
+    if config.application is not None:
+        application, _uid = resolve_application(config.application, validate_directory=False)
+        config = config.model_copy(update={"application": application})
     return config
 
 
@@ -158,6 +173,8 @@ def validate_job(
 
     config = load_validated_config(config_path, runtime_params=runtime_params)
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
+    if config.application is not None:
+        resolve_application(config.application)
     if config.backup_mode == "per_file":
         select_files(config)
     return CommandResult("validate", "valid")
@@ -180,18 +197,35 @@ def list_backups(
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
     report("Listing backup metadata")
     destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
-    discovered = tuple(
-        discover_backups(destination, runtime_params=parameters, metadata_only=True)
-        for destination in destinations
-    )
+    histories: list[DiscoveryResult] = []
+    for destination in destinations:
+        try:
+            histories.append(
+                discover_backups(destination, runtime_params=parameters, metadata_only=True)
+            )
+        except (DestinationError, OSError) as error:
+            histories.append(
+                DiscoveryResult(
+                    (), (MalformedDestinationEntry(Path(destination.destination.root), str(error)),)
+                )
+            )
+    discovered = tuple(histories)
     retained_by: dict[Path, tuple[RetentionTier, ...] | None] = {}
+    decisions: dict[Path, str] = {}
     retention_warnings: list[tuple[Path, str]] = []
     for destination, history in zip(destinations, discovered, strict=True):
+        decisions.update((backup.directory, "—") for backup in history.backups)
+        history = _active_history(history, destination)
         if not any(config.retention.model_dump().values()):
+            for backup in history.backups:
+                if backup.suspect_reason and valid_replacement(backup, history) is None:
+                    decisions[backup.directory] = "PROTECTED"
             continue
         try:
-            plan = build_prune_plan(history, config.retention).retention
+            complete_plan = build_prune_plan(history, config.retention)
+            plan = complete_plan.retention
         except (PruneError, RetentionError) as error:
+            decisions.update((backup.directory, "UNKNOWN") for backup in history.backups)
             retained_by.update((backup.directory, None) for backup in history.backups)
             retention_warnings.append((Path(destination.destination.root), str(error)))
             continue
@@ -199,8 +233,17 @@ def list_backups(
             backup.directory: [] for backup in history.backups
         }
         for tier, selected in reversed(plan.selections.items()):
-            for backup in selected:
-                tiers_by_directory[backup.directory].append(tier)
+            for retained in selected:
+                tiers_by_directory[retained.directory].append(tier)
+        deleting = {backup.directory for backup in complete_plan.backups_to_delete}
+        for backup in history.backups:
+            decisions[backup.directory] = (
+                "PRUNE"
+                if backup.directory in deleting
+                else "PROTECTED"
+                if backup.suspect_reason
+                else "KEEP"
+            )
         retained_by.update(
             (directory, tuple(tiers)) for directory, tiers in tiers_by_directory.items()
         )
@@ -225,6 +268,7 @@ def list_backups(
         config.retention,
         retained_by,
         tuple(retention_warnings),
+        decisions,
     )
 
 
@@ -235,19 +279,29 @@ def prune_backups(
     parameters = dict(runtime_params or {})
     config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=False, require_writable_destination=not dry_run)
-    destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
-    # Validate every history before deleting anything in any history.
-    plans = []
-    for destination in destinations:
-        discovered = discover_backups(destination, runtime_params=parameters)
-        plans.append((discovered, build_prune_plan(discovered, config.retention)))
-    removed = (
-        ()
-        if dry_run
-        else tuple(
-            path for discovered, plan in plans for path in execute_prune_plan(plan, discovered)
+    removed: list[Path] = []
+    failures: list[str] = []
+    with nullcontext() if dry_run else destination_lock(Path(config.destination.root)):
+        destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
+        for destination in destinations:
+            try:
+                discovered = _active_history(
+                    discover_backups(destination, runtime_params=parameters, metadata_only=True),
+                    destination,
+                )
+                plan = build_prune_plan(discovered, config.retention)
+                if not dry_run:
+                    removed.extend(execute_prune_plan(plan, discovered))
+            except (VaultkeepError, OSError) as error:
+                if isinstance(error, PruneError):
+                    removed.extend(Path(path) for path in error.removed)
+                failures.append(f"{destination.destination.root}: {error}")
+    if failures:
+        raise PruneError(
+            f"Pruning stopped in affected histories after {len(removed)} deletions: "
+            + "; ".join(failures),
+            removed=tuple(str(path) for path in removed),
         )
-    )
     return CommandResult("prune", "planned" if dry_run else "pruned", removed=len(removed))
 
 
@@ -270,6 +324,27 @@ def verify_backups(
     parameters = dict(runtime_params or {})
     report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
+    _validate_runtime(config, require_sources=False, require_writable_destination=False)
+    with destination_lock(Path(config.destination.root)):
+        return _verify_backups(
+            config,
+            parameters=parameters,
+            user_mode=user_mode,
+            report=report,
+            on_verified=on_verified,
+            on_progress=on_progress,
+        )
+
+
+def _verify_backups(
+    config: JobConfig,
+    *,
+    parameters: Mapping[str, str],
+    user_mode: bool,
+    report: Callable[[str], None],
+    on_verified: Callable[[Path], None] | None,
+    on_progress: Callable[[VerificationProgress], None] | None,
+) -> CommandResult:
     report("Checking destination")
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
     report("Verifying backup manifests, checksums, and archive contents")
@@ -298,7 +373,10 @@ def verify_backups(
         for destination in destinations:
             try:
                 discovered = discover_backups(
-                    destination, runtime_params=parameters, on_progress=on_progress
+                    destination,
+                    runtime_params=parameters,
+                    metadata_only=True,
+                    on_progress=on_progress,
                 )
             except (DestinationError, OSError) as error:
                 failures.append(f"{destination.destination.root}: {error}")
@@ -316,11 +394,39 @@ def verify_backups(
                 continue
             if backup_total is not None:
                 backup_total += len(discovered.backups) + len(discovered.malformed)
-            backups.extend(backup for backup in discovered.backups if backup.damage_reason is None)
+            for backup in discovered.backups:
+
+                def checksum_progress(
+                    event: VerificationProgress, *, backup: DiscoveredBackup = backup
+                ) -> None:
+                    report_progress(
+                        on_progress,
+                        replace(
+                            event,
+                            backup_directory=backup.directory,
+                            created_at=backup.manifest.created_at,
+                            backup_id=backup.manifest.backup_id,
+                        ),
+                    )
+
+                try:
+                    verify_backup_checksum(backup, on_progress=checksum_progress)
+                except (VaultkeepError, OSError) as error:
+                    archive_failed = True
+                    if isinstance(error, ArchiveCorruptionError):
+                        mark_backup_suspect(backup.directory, str(error))
+                    failures.append(f"{backup.directory}: SHA-256: {error}")
+                    checksum_progress(
+                        VerificationProgress(
+                            "backup", "SHA-256", "failed", backup.archive_path, error=str(error)
+                        )
+                    )
+                    continue
+                backups.append(backup)
             failures.extend(
-                f"{backup.directory}: marked damaged: {backup.damage_reason}"
+                f"{backup.directory}: SUSPECT: {backup.suspect_reason}"
                 for backup in discovered.backups
-                if backup.damage_reason is not None
+                if backup.suspect_reason is not None
             )
             failures.extend(
                 f"{entry.path}: malformed backup: {entry.reason}" for entry in discovered.malformed
@@ -375,6 +481,8 @@ def verify_backups(
                         on_progress=archive_progress,
                     )
             except (VaultkeepError, OSError) as error:
+                if isinstance(error, (ArchiveChecksumMismatchError, ArchiveCorruptionError)):
+                    mark_backup_suspect(backup.directory, str(error))
                 archive_failed = True
                 failures.append(f"{backup.archive_path}: {operation}: {error}")
                 archive_progress(
@@ -438,17 +546,39 @@ def run_backup(
         execution.report("Loading and validating configuration")
         config = resolve_runtime_config(config, parameters)
         validate_semantics(config, config_path=config_path, runtime_params=parameters)
+        application_uid = None
+        if config.application is not None:
+            application, application_uid = resolve_application(config.application)
+            config = config.model_copy(update={"application": application})
+        expected_policy = os.environ.get("VAULTKEEP_EXPECTED_POLICY")
+        if expected_policy is not None and json.loads(expected_policy) != execution_policy(
+            config, application_uid
+        ):
+            raise SourceDiscoveryError(
+                "Execution policy or application identity changed after Trigger dispatch"
+            )
         if user_mode:
             _prepare_user_paths(paths)
-        result = (_run_file_backups if config.backup_mode == "per_file" else _run_single_backup)(
-            config_path,
-            config,
-            runtime_params=parameters,
-            paths=paths,
-            user_mode=user_mode,
-            progress=execution.report,
+        # Check operator-selected mount/marker guards before a network lock file
+        # can be created, then repeat normal preflight under the acquired lock.
+        _validate_runtime(config, require_sources=False, require_writable_destination=False)
+        with destination_lock(Path(config.destination.root)):
+            result = (
+                _run_file_backups if config.backup_mode == "per_file" else _run_single_backup
+            )(
+                config_path,
+                config,
+                runtime_params=parameters,
+                paths=paths,
+                user_mode=user_mode,
+                progress=execution.report,
+                application_uid=application_uid,
+            )
+        execution.complete(
+            result.result,
+            errors=[f.error for f in result.files if f.error],
+            cleanup_errors=result.cleanup_errors,
         )
-        execution.complete(result.result, errors=[f.error for f in result.files if f.error])
         return result
 
 
@@ -460,13 +590,16 @@ def _run_file_backups(
     paths: WorkflowPaths,
     user_mode: bool,
     progress: Callable[[str], None] | None,
+    application_uid: int | None = None,
 ) -> CommandResult:
     report = progress if progress is not None else lambda message: None
-    _validate_runtime(config, require_sources=True, require_writable_destination=True)
+    _validate_runtime(config, require_sources=False, require_writable_destination=True)
     _validate_configured_hooks(config, user_mode=user_mode)
     outcomes: list[FileBackupResult] = []
     removed = 0
+    cleanup_errors: list[str] = []
     archive_size = 0
+    require_application_offline(config, owner_uid=application_uid)
     report("Discovering files for independent backups")
     for source in select_files(config):
         report(f"Backing up {source.name!r}")
@@ -483,8 +616,10 @@ def _run_file_backups(
                 user_mode=user_mode,
                 progress=progress,
                 source_file_key=file_key(source.name),
+                application_uid=application_uid,
             )
             outcomes.append(FileBackupResult(source, result.result, result.archive_path))
+            cleanup_errors.extend(f"{source}: {error}" for error in result.cleanup_errors)
             removed += result.removed
             archive_size += result.archive_size or 0
         except (VaultkeepError, OSError) as error:
@@ -506,6 +641,7 @@ def _run_file_backups(
         removed=removed,
         archive_size=archive_size,
         files=tuple(outcomes),
+        cleanup_errors=tuple(cleanup_errors),
     )
 
 
@@ -518,6 +654,7 @@ def _run_single_backup(
     user_mode: bool = False,
     progress: Callable[[str], None] | None = None,
     source_file_key: str | None = None,
+    application_uid: int | None = None,
 ) -> CommandResult:
     """Execute the same verified archive workflow for one backup unit."""
     report = progress if progress is not None else lambda message: None
@@ -531,7 +668,7 @@ def _run_single_backup(
     hook_kwargs["progress"] = report
     parameters = dict(runtime_params or {})
     report("Checking sources, destination, and hooks")
-    _validate_runtime(config, require_sources=True, require_writable_destination=True)
+    _validate_runtime(config, require_sources=False, require_writable_destination=True)
     if user_mode:
         _validate_configured_hooks(config, user_mode=True)
     else:
@@ -559,8 +696,11 @@ def _run_single_backup(
     failure_context = replace(base_hook_context, destination=config.destination.root)
     terminal_hook_failed = False
     staging_path: Path | None = None
+    release_armed = False
+    release_attempted = False
 
     try:
+        release_armed = True
         _run_configured_hook(
             "before_check",
             config,
@@ -569,6 +709,7 @@ def _run_single_backup(
             hook_outcomes,
             **hook_kwargs,
         )
+        require_application_offline(config, owner_uid=application_uid)
         report("Discovering source files")
         if source_file_key is not None:
             source = Path(config.sources[0].path)
@@ -584,18 +725,25 @@ def _run_single_backup(
         failure_context = replace(failure_context, source_digest=source_digest)
         config_fingerprint = calculate_config_fingerprint(config, runtime_params=parameters)
         report("Checking existing backups")
-        discovered = discover_backups(config, runtime_params=parameters, verify_archives=False)
+        discovered = _active_history(
+            discover_backups(config, runtime_params=parameters, metadata_only=True), config
+        )
+        if any(entry.unsupported_format for entry in discovered.malformed):
+            raise DestinationError(
+                "Unsupported destination format; use a fresh schema-2 destination "
+                "and preserve this history separately"
+            )
         newest = max(
-            (backup for backup in discovered.backups if backup.damage_reason is None),
+            (backup for backup in discovered.backups if backup.suspect_reason is None),
             key=lambda backup: (backup.manifest.created_datetime_utc, backup.manifest.backup_id),
             default=None,
         )
         replacement_required = any(
-            backup.damage_reason is not None and backup.replacement_backup_id is None
+            backup.suspect_reason is not None and valid_replacement(backup, discovered) is None
             for backup in discovered.backups
         )
         if replacement_required:
-            report("Damaged backup needs replacement; creating fresh backup")
+            report("Unresolved suspect needs replacement; creating fresh backup")
         if (
             newest is not None
             and not replacement_required
@@ -604,12 +752,12 @@ def _run_single_backup(
         ):
             report("Verifying latest backup checksum")
             try:
-                verify_checksum_sidecar(newest.archive_path, newest.checksum_path)
+                verify_backup_checksum(newest)
             except ArchiveChecksumMismatchError as error:
-                report("Latest backup damaged; creating replacement")
-                mark_backup_damaged(newest.directory, str(error))
+                report("Latest backup suspect; creating replacement")
+                mark_backup_suspect(newest.directory, str(error))
                 logging.getLogger(__name__).warning(
-                    "Backup %s is damaged and will be preserved; creating a fresh backup: %s",
+                    "Backup %s is suspect and will be preserved; creating a fresh backup: %s",
                     newest.archive_path,
                     error,
                 )
@@ -617,7 +765,7 @@ def _run_single_backup(
                 discovered = replace(
                     discovered,
                     backups=tuple(
-                        replace(backup, damage_reason=str(error)) if backup == newest else backup
+                        replace(backup, suspect_reason=str(error)) if backup == newest else backup
                         for backup in discovered.backups
                     ),
                 )
@@ -625,6 +773,20 @@ def _run_single_backup(
                 raise ArchiveVerificationError(
                     f"Latest backup checksum verification failed for {newest.archive_path}: {error}"
                 ) from error
+        if not replacement_required:
+            for suspect in discovered.backups:
+                replacement = valid_replacement(suspect, discovered)
+                if replacement is not None:
+                    try:
+                        verify_backup_checksum(replacement)
+                    except ArchiveChecksumMismatchError as error:
+                        mark_backup_suspect(replacement.directory, str(error))
+                        replacement_required = True
+                        discovered = _active_history(
+                            discover_backups(config, runtime_params=parameters, metadata_only=True),
+                            config,
+                        )
+                        break
         loaded_password = (
             load_password_file(
                 Path(config.encryption.password_file),
@@ -714,7 +876,6 @@ def _run_single_backup(
             version=installed_version(),
         )
         failure_context = hook_context
-        after_archive_attempted = False
         try:
             _run_configured_hook(
                 "before_archive",
@@ -724,6 +885,31 @@ def _run_single_backup(
                 hook_outcomes,
                 **hook_kwargs,
             )
+            require_application_offline(config, owner_uid=application_uid)
+            snapshot = discover_sources(config)
+            if source_file_key is not None and (
+                len(snapshot.entries) != 1
+                or snapshot.entries[0].entry_type is not SourceEntryType.FILE
+            ):
+                raise SourceDiscoveryError("Selected source is no longer a single regular file")
+            source_digest = calculate_source_digest(snapshot)
+            allocated = allocate_job_backup_paths(
+                config.destination,
+                job_id=config.job.id,
+                backup_id=backup_id,
+                hostname=base_hook_context.hostname,
+                created_at=now,
+                source_digest=source_digest,
+                archive_format=config.archive.format,
+                runtime_params=parameters,
+            )
+            hook_context = replace(
+                hook_context,
+                source_digest=source_digest,
+                archive=str(allocated.final_directory / allocated.archive_path.name),
+                backup_directory=str(allocated.final_directory),
+            )
+            failure_context = hook_context
             artifact = build_archive(
                 ArchiveBuildRequest(
                     snapshot=snapshot,
@@ -742,29 +928,36 @@ def _run_single_backup(
                 password=loaded_password.secret if loaded_password else None,
                 progress=report,
             )
+            require_application_offline(config, owner_uid=application_uid)
         except BaseException:
-            try:
-                after_archive_attempted = True
-                _run_configured_hook(
-                    "after_archive",
-                    config,
-                    config_path,
-                    hook_context,
-                    hook_outcomes,
-                    **hook_kwargs,
-                )
-            except BaseException:
-                pass
             raise
-        if not after_archive_attempted:
-            _run_configured_hook(
-                "after_archive",
-                config,
-                config_path,
-                hook_context,
-                hook_outcomes,
-                **hook_kwargs,
-            )
+        release_attempted = True
+        _run_configured_hook(
+            "after_archive", config, config_path, hook_context, hook_outcomes, **hook_kwargs
+        )
+        # The release hook may restart the app. Only backup artifacts are read now.
+        for staged_artifact in (
+            allocated.staging_directory,
+            allocated.archive_path,
+            allocated.checksum_path,
+        ):
+            mode = staged_artifact.lstat().st_mode
+            if not (
+                stat.S_ISDIR(mode)
+                if staged_artifact == allocated.staging_directory
+                else stat.S_ISREG(mode)
+            ):
+                raise DestinationError(
+                    f"Release hook changed staging artifact type: {staged_artifact}"
+                )
+        if {path.name for path in allocated.staging_directory.iterdir()} != {
+            allocated.archive_path.name,
+            allocated.checksum_path.name,
+        }:
+            raise DestinationError("Release hook left unexpected staging artifacts")
+        staged_digest = verify_checksum_sidecar(allocated.archive_path, allocated.checksum_path)
+        if staged_digest != artifact.sha256:
+            raise ArchiveChecksumMismatchError("Release hook changed staged archive artifacts")
         report("Finalizing backup")
         manifest = commit_archive_artifact(
             allocated,
@@ -774,17 +967,27 @@ def _run_single_backup(
             hostname=base_hook_context.hostname,
             created_at=now,
             config_fingerprint=config_fingerprint,
+            replacement_identity=replacement_identity(config),
         )
         staging_path = None
         report("Checking finalized backup")
-        committed = discover_backups(config, runtime_params=parameters, verify_archives=False)
-        record = next(
-            record for record in committed.state_records if record.backup_id == manifest.backup_id
+        committed = _active_history(
+            discover_backups(config, runtime_params=parameters, metadata_only=True), config
         )
-        verify_checksum_sidecar(
-            allocated.final_directory / allocated.archive_path.name,
-            allocated.final_directory / allocated.checksum_path.name,
+        candidates = tuple(
+            backup
+            for backup in committed.backups
+            if backup.manifest.backup_id == manifest.backup_id
         )
+        if len(candidates) != 1:
+            raise DestinationError("Committed archive cannot be rediscovered unambiguously")
+        created = candidates[0]
+        record = created.state_record
+        try:
+            verify_backup_checksum(created)
+        except ArchiveChecksumMismatchError as error:
+            mark_backup_suspect(created.directory, str(error))
+            raise
         from vaultkeep.state.atomic import write_local_state
 
         latest_state = state_after_created(
@@ -801,12 +1004,6 @@ def _run_single_backup(
             state_path,
             latest_state,
         )
-        for backup in discovered.backups:
-            if backup.damage_reason is not None and backup.replacement_backup_id is None:
-                record_damage_replacement(backup.directory, record.backup_id)
-        report("Applying retention")
-        plan = build_prune_plan(committed, config.retention)
-        removed = execute_prune_plan(plan, committed)
         terminal_hook_failed = True
         _run_configured_hook(
             "on_success",
@@ -828,14 +1025,85 @@ def _run_single_backup(
         )
         report("Saving backup state")
         write_local_state(state_path, latest_state)
+        committed = _active_history(
+            discover_backups(config, runtime_params=parameters, metadata_only=True), config
+        )
+        candidates = tuple(
+            backup for backup in committed.backups if backup.manifest.backup_id == record.backup_id
+        )
+        if len(candidates) != 1 or candidates[0].suspect_reason is not None:
+            raise DestinationError(
+                "Newly committed backup is ambiguous, unavailable or SUSPECT after success hooks"
+            )
+        current = candidates[0]
+        try:
+            verify_backup_checksum(current)
+        except ArchiveChecksumMismatchError as error:
+            mark_backup_suspect(current.directory, str(error))
+            raise
+        cleanup_errors: tuple[str, ...] = ()
+        removed: tuple[Path, ...] = ()
+        try:
+            if committed.malformed:
+                raise PruneError("Matching malformed destination entries block cleanup")
+            for backup in committed.backups:
+                if (
+                    backup.suspect_reason is not None
+                    and valid_replacement(backup, committed) is None
+                ):
+                    record_suspect_replacement(backup.directory, record.backup_id)
+            committed = _active_history(
+                discover_backups(config, runtime_params=parameters, metadata_only=True), config
+            )
+            report("Applying retention")
+            plan = build_prune_plan(committed, config.retention)
+            if any(
+                backup.manifest.backup_id == record.backup_id for backup in plan.backups_to_delete
+            ):
+                raise PruneError(
+                    "Retention ordering would delete the newly created backup; "
+                    "preserving the history for inspection"
+                )
+            removed = execute_prune_plan(plan, committed)
+        except (VaultkeepError, OSError) as cleanup_error:
+            if (
+                isinstance(cleanup_error, PruneError)
+                and record.backup_id in cleanup_error.corrupt_backup_ids
+            ):
+                raise ArchiveChecksumMismatchError(
+                    "Newly committed backup failed integrity checks during cleanup: "
+                    f"{cleanup_error}"
+                ) from cleanup_error
+            if isinstance(cleanup_error, PruneError):
+                removed = tuple(Path(path) for path in cleanup_error.removed)
+            cleanup_errors = (str(cleanup_error),)
+            logging.getLogger(__name__).warning(
+                "Backup created; cleanup failed: %s. Retry with prune or a later new backup.",
+                cleanup_error,
+            )
         return CommandResult(
             "run",
             "created",
             removed=len(removed),
             archive_path=Path(record.backup_path),
             archive_size=artifact.size,
+            cleanup_errors=cleanup_errors,
         )
     except BaseException as error:
+        if release_armed and not release_attempted:
+            release_attempted = True
+            try:
+                _run_configured_hook(
+                    "after_archive",
+                    config,
+                    config_path,
+                    failure_context,
+                    hook_outcomes,
+                    **hook_kwargs,
+                )
+            except BaseException as release_error:
+                error.add_note(f"after_archive also failed: {release_error}")
+                logging.getLogger(__name__).error("Release hook also failed: %s", release_error)
         report("Handling backup failure")
         if staging_path is not None:
             try:
@@ -997,3 +1265,57 @@ def _run_configured_hook(
         )
         outcomes.append(execution.outcome)
         require_success(execution)
+
+
+def execution_policy(config: JobConfig, owner_uid: int | None) -> dict[str, object]:
+    """Canonical policy used to bind a frozen Trigger request to the child snapshot."""
+    return {
+        "consistency": config.consistency.mode,
+        "application": config.application.model_dump() if config.application else None,
+        "owner_uid": owner_uid,
+    }
+
+
+def _active_history(discovered: DiscoveryResult, config: JobConfig) -> DiscoveryResult:
+    identity = replacement_identity(config)
+    seen: set[str] = set()
+    duplicate_entries: list[MalformedDestinationEntry] = []
+    for backup in discovered.backups:
+        if backup.manifest.backup_id in seen:
+            duplicate_entries.append(
+                MalformedDestinationEntry(
+                    backup.directory, "Duplicate backup identities block cleanup"
+                )
+            )
+        seen.add(backup.manifest.backup_id)
+
+    def compatible(backup: DiscoveredBackup) -> bool:
+        if backup.manifest.replacement_identity == identity:
+            return True
+        if config.backup_mode != "per_file":
+            return False
+        # Parent inventory/prune must resolve each file's coverage without requiring
+        # source availability. Deleted/excluded/changed source histories stay intact.
+        from vaultkeep.sources.exclusions import compile_exclusions
+
+        try:
+            scope = json.loads(backup.manifest.replacement_identity.source_scope)
+            source_path = Path(scope["sources"][0]["path"])
+            parent = Path(config.sources[0].path)
+            matcher = compile_exclusions((*config.exclude, *config.sources[0].exclude))
+            if (
+                source_path.parent != parent
+                or backup.directory.parent.name != file_key(source_path.name)
+                or matcher.matches(source_path.name, is_directory=False)
+            ):
+                return False
+            return backup.manifest.replacement_identity == replacement_identity(
+                file_config(config, source_path)
+            )
+        except (ValueError, KeyError, IndexError, TypeError):
+            return False
+
+    return DiscoveryResult(
+        tuple(backup for backup in discovered.backups if compatible(backup)),
+        discovered.malformed + tuple(duplicate_entries),
+    )

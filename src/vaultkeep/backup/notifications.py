@@ -84,6 +84,8 @@ class BackupNotifications:
         }[attempt.result or "UNKNOWN"]
         if attempt.reason:
             body += f": {concise(attempt.reason)}"
+        if attempt.cleanup_errors:
+            body += f"; cleanup failed: {concise(attempt.cleanup_errors[0])}"
         ended = parse_utc(attempt.completed_at)
         local_time = ended.astimezone() if ended else datetime.now().astimezone()
         body += f"\n{local_time:%Y-%m-%d %H:%M:%S %Z} (local time)"

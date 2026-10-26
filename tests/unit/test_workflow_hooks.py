@@ -126,11 +126,21 @@ def _patch_creation_workflow(
     monkeypatch: pytest.MonkeyPatch, config: JobConfig, tmp_path: Path
 ) -> list[LocalState]:
     """Replace archive I/O with stable values while leaving lifecycle control intact."""
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(workflow, "destination_lock", lambda root: nullcontext())
+    monkeypatch.setattr(workflow, "_active_history", lambda history, config: history)
+    monkeypatch.setattr(workflow, "verify_backup_checksum", lambda *args, **kwargs: None)
     record = _record()
+    backup = SimpleNamespace(
+        manifest=SimpleNamespace(backup_id=record.backup_id),
+        state_record=record,
+        suspect_reason=None,
+    )
     discovered = iter(
         [
-            SimpleNamespace(state_records=(), backups=()),
-            SimpleNamespace(state_records=(record,), backups=()),
+            SimpleNamespace(state_records=(), backups=(), malformed=()),
+            SimpleNamespace(state_records=(record,), backups=(backup,), malformed=()),
         ]
     )
     states: list[LocalState] = []
@@ -150,7 +160,10 @@ def _patch_creation_workflow(
     monkeypatch.setattr(
         workflow, "calculate_config_fingerprint", lambda *args, **kwargs: "sha256:" + "b" * 64
     )
-    monkeypatch.setattr(workflow, "discover_backups", lambda *args, **kwargs: next(discovered))
+    final_discovery = SimpleNamespace(state_records=(record,), backups=(backup,), malformed=())
+    monkeypatch.setattr(
+        workflow, "discover_backups", lambda *args, **kwargs: next(discovered, final_discovery)
+    )
     monkeypatch.setattr(workflow, "verify_checksum_sidecar", lambda *args, **kwargs: "0" * 64)
     monkeypatch.setattr(
         workflow,
@@ -163,16 +176,26 @@ def _patch_creation_workflow(
         lambda *args, **kwargs: SimpleNamespace(unchanged=False),
     )
     monkeypatch.setattr(workflow, "allocate_job_backup_paths", lambda *args, **kwargs: allocated)
-    monkeypatch.setattr(workflow, "create_staging_directory", lambda value: None)
+
+    def create_stage(value):
+        value.staging_directory.mkdir()
+        value.archive_path.touch()
+        value.checksum_path.touch()
+
+    monkeypatch.setattr(workflow, "create_staging_directory", create_stage)
     monkeypatch.setattr(
-        workflow, "build_archive", lambda *args, **kwargs: SimpleNamespace(size=1234)
+        workflow,
+        "build_archive",
+        lambda *args, **kwargs: SimpleNamespace(size=1234, sha256="0" * 64),
     )
     monkeypatch.setattr(
         workflow,
         "commit_archive_artifact",
         lambda *args, **kwargs: SimpleNamespace(backup_id=record.backup_id),
     )
-    monkeypatch.setattr(workflow, "build_prune_plan", lambda *args: object())
+    monkeypatch.setattr(
+        workflow, "build_prune_plan", lambda *args: SimpleNamespace(backups_to_delete=())
+    )
     monkeypatch.setattr(workflow, "execute_prune_plan", lambda *args: ())
     monkeypatch.setattr(workflow, "installed_version", lambda: "1.0.0")
     monkeypatch.setattr(

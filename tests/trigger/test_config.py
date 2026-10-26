@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,14 +21,20 @@ from vaultkeep.trigger.errors import ConfigurationError
 def trigger_settings() -> dict:
     return {
         "enabled": True,
-        "app": "electrum",
-        "data_dir": "/home/user/.electrum",
-        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum"}]},
     }
 
 
 def write_job(tmp_path: Path, valid_config: dict, trigger: dict | None = None) -> Path:
     valid_config["trigger"] = trigger if trigger is not None else trigger_settings()
+    valid_config.setdefault(
+        "application",
+        {
+            "name": "electrum",
+            "user": pwd.getpwuid(os.geteuid()).pw_name,
+            "data_dir": "/home/user/.electrum",
+            "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum"}]},
+        },
+    )
     path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))
     return path
@@ -104,11 +112,17 @@ def test_invalid_trigger_settings_rejected(
         load_config(write_job(tmp_path, valid_config, settings))
 
 
-@pytest.mark.parametrize("field", ["app", "data_dir", "matcher"])
+@pytest.mark.parametrize("field", ["name", "user", "data_dir", "matcher"])
 def test_enabled_trigger_requires_identity(tmp_path: Path, valid_config: dict, field) -> None:
     settings = trigger_settings()
-    del settings[field]
-    with pytest.raises(ConfigurationError, match="enabled triggers require"):
+    valid_config["application"] = {
+        "name": "electrum",
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
+        "data_dir": "/home/user/.electrum",
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum"}]},
+    }
+    del valid_config["application"][field]
+    with pytest.raises(ConfigurationError):
         load_config(write_job(tmp_path, valid_config, settings))
 
 
@@ -138,7 +152,14 @@ def test_enabled_trigger_requires_identity(tmp_path: Path, valid_config: dict, f
 )
 def test_weak_or_invalid_matcher_rejected(tmp_path: Path, valid_config: dict, matcher) -> None:
     settings = trigger_settings()
-    settings["matcher"] = matcher
+    valid_config.setdefault(
+        "application",
+        {
+            "name": "electrum",
+            "user": pwd.getpwuid(os.geteuid()).pw_name,
+            "data_dir": "/home/user/.electrum",
+        },
+    )["matcher"] = matcher
     with pytest.raises(ConfigurationError):
         load_config(write_job(tmp_path, valid_config, settings))
 
@@ -147,28 +168,54 @@ def test_unknown_entrypoint_property_reports_path_and_suggestion(
     tmp_path: Path, valid_config: dict
 ) -> None:
     settings = trigger_settings()
-    settings["matcher"] = {
+    valid_config.setdefault(
+        "application",
+        {
+            "name": "electrum",
+            "user": pwd.getpwuid(os.geteuid()).pw_name,
+            "data_dir": "/home/user/.electrum",
+        },
+    )["matcher"] = {
         "entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum", "valeu": "/bad"}]
     }
 
     with pytest.raises(ConfigurationError) as captured:
         load_config(write_job(tmp_path, valid_config, settings))
 
-    assert "trigger.matcher.entrypoints[0].valeu" in str(captured.value)
-    assert "trigger.matcher.entrypoints.value" in str(captured.value)
+    assert "application.matcher.entrypoints[0].valeu" in str(captured.value)
+    assert "application.matcher.entrypoints.value" in str(captured.value)
 
 
 def test_matcher_canonical_roundtrip(tmp_path: Path, valid_config: dict) -> None:
     settings = trigger_settings()
-    settings["matcher"]["env_eq"] = {"ELECTRUMDIR": "/home/user/.electrum"}
+    valid_config.setdefault(
+        "application",
+        {
+            "name": "electrum",
+            "user": pwd.getpwuid(os.geteuid()).pw_name,
+            "data_dir": "/home/user/.electrum",
+        },
+    ).setdefault(
+        "matcher", {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum"}]}
+    )["env_eq"] = {"ELECTRUMDIR": "/home/user/.electrum"}
     matcher = load_config(write_job(tmp_path, valid_config, settings)).instances[0].matcher
     assert matcher_from_canonical(matcher.canonical()) == matcher
 
 
 def test_alternative_entrypoints_load_and_roundtrip(tmp_path: Path, valid_config: dict) -> None:
     settings = trigger_settings()
-    settings["app"] = "bisq"
-    settings["matcher"] = {
+    valid_config.setdefault(
+        "application",
+        {"user": pwd.getpwuid(os.geteuid()).pw_name, "data_dir": "/home/user/.electrum"},
+    )["name"] = "bisq"
+    valid_config.setdefault(
+        "application",
+        {
+            "name": "electrum",
+            "user": pwd.getpwuid(os.geteuid()).pw_name,
+            "data_dir": "/home/user/.electrum",
+        },
+    )["matcher"] = {
         "entrypoints": [
             {"kind": "java_main", "value": "bisq.desktop.app.BisqAppMain"},
             {"kind": "jar", "value": "/opt/bisq-daemon/daemon.jar"},

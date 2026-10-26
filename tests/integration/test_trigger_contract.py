@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,12 @@ def test_installed_worker_core_contract(
     config["destination"] = {
         "root": str(destination / "{NETWORK}"),
         "name_template": "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%S%fZ}",
+    }
+    config["application"] = {
+        "name": "electrum",
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
+        "data_dir": str(source),
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/disposable/wallet"}]},
     }
     config["hooks"] = {}
     config["schedule"] = {"enabled": False}
@@ -139,14 +146,16 @@ class NoProcesses:
 store = StateStore(base / 'trigger-state')
 store.ensure()
 now = utc_now()
+instance = load_config(job).instances[0]
 request = Request(request_id=new_uuid(), attempt_id=new_uuid(), instance_id='test-instance',
     created_at=now, confirmed_at=now, boot_id=None, config_fingerprint='disposable',
-    app='electrum', data_dir=str(base / 'app'),
+    app=instance.app, data_dir=str(instance.data_dir),
     matcher={'exe_realpath': None,
              'entrypoints': [{'kind': 'script', 'value': '/disposable/wallet'}],
              'argv_tokens': [], 'cmdline_regex': None, 'env_eq': {}},
     job_config=str(job), job_params=params, vaultkeep=str(binary), environment=env,
-    preflight_version=core_version, deadline_seconds=None)
+    preflight_version=core_version, deadline_seconds=None,
+    owner_uid=instance.owner_uid, execution_policy=instance.execution_policy)
 
 def attempt(expected):
     current = replace(request, request_id=new_uuid(), attempt_id=new_uuid())
@@ -187,6 +196,7 @@ from vaultkeep.destination import finalize
 from vaultkeep.backup import workflow
 failure = Path({str(base / 'force-failure')!r})
 rename, build, cleanup = finalize._rename_noreplace, workflow.build_archive, workflow.shutil.rmtree
+prune = workflow.execute_prune_plan
 def checked_rename(source, target):
     if (failure.exists() and failure.read_text() == 'finalize'
         and source.name.startswith('~$.partial')):
@@ -201,6 +211,11 @@ def checked_cleanup(path, *args, **kwargs):
         and Path(path).name.startswith('~$.partial')):
         raise PermissionError('cleanup denied')
     return cleanup(path, *args, **kwargs)
+def checked_prune(*args, **kwargs):
+    if failure.exists() and failure.read_text() == 'retention':
+        raise OSError('retention cleanup denied')
+    return prune(*args, **kwargs)
+workflow.execute_prune_plan = checked_prune
 finalize._rename_noreplace = checked_rename
 workflow.build_archive = checked_build
 workflow.shutil.rmtree = checked_cleanup
@@ -250,16 +265,18 @@ scheduled = shlex.split(next(line[10:] for line in service.splitlines()
     if line.startswith('ExecStart=')))
 assert scheduled[1:] == argv[1:] + ['run']
 for mode in ('manual', 'schedule', 'trigger'):
-    for expected in ('SUCCESS', 'UNCHANGED', 'FAILED', 'CLEANUP_FAILED'):
+    for expected in ('SUCCESS', 'UNCHANGED', 'FAILED', 'CLEANUP_FAILED', 'CLEANUP_WARNING'):
         failure = base / 'force-failure'
         if expected in ('FAILED', 'CLEANUP_FAILED'):
             failure.write_text('finalize' if expected == 'FAILED' else 'cleanup')
+        elif expected == 'CLEANUP_WARNING':
+            failure.write_text('retention')
         elif failure.exists():
             failure.unlink()
         if expected != 'UNCHANGED':
             (base / 'source/payload.txt').write_text(mode + expected)
         if mode == 'trigger':
-            outcome = (AttemptOutcome.CREATED if expected == 'SUCCESS'
+            outcome = (AttemptOutcome.CREATED if expected in ('SUCCESS', 'CLEANUP_WARNING')
                 else AttemptOutcome.UNCHANGED if expected == 'UNCHANGED'
                 else AttemptOutcome.BACKUP_FAILED)
             _, receipt = attempt(outcome)
@@ -269,7 +286,8 @@ for mode in ('manual', 'schedule', 'trigger'):
             child = runner.run(command, env=env)
             code = child.exit_code
         observed = backup_status(paths, 'app', identity)['previous']
-        assert observed['result'] == ('FAILED' if 'FAILED' in expected else expected), observed
+        assert observed['result'] == ('FAILED' if 'FAILED' in expected
+            else 'SUCCESS' if expected == 'CLEANUP_WARNING' else expected), observed
         assert observed['exit_code'] == code
         # Check the installed user-facing command with exactly the child's mode,
         # YAML path, parameters, and XDG state namespace, not just in-process reads.
@@ -283,6 +301,10 @@ for mode in ('manual', 'schedule', 'trigger'):
         assert visible['previous']['duration_seconds'] >= 0
         if expected == 'FAILED':
             assert observed['reason'] == 'Permission denied during finalization', observed
+        if expected == 'CLEANUP_WARNING':
+            assert observed['cleanup_errors']
+            assert 'retention cleanup denied' in observed['cleanup_errors'][0]
+            assert code == 0
         if expected == 'CLEANUP_FAILED':
             assert observed['reason'] == 'Archive failed', observed
             assert 'cleanup denied' in Path(observed['log_path']).read_text()

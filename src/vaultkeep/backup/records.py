@@ -23,6 +23,7 @@ class Attempt(BaseModel):
     duration_seconds: float | None = Field(default=None, ge=0)
     exit_code: int | None = None
     signal: int | None = Field(default=None, ge=1)
+    cleanup_errors: list[str] = Field(default_factory=list)
     reason: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")

@@ -40,7 +40,7 @@ Read each named check. A missing monitor has `Monitor service` set to `NOT INSTA
 and `Result: SETUP INCOMPLETE`; correct any runtime failures and explicitly run
 `vaultkeep --user --config /absolute/path/job.yaml trigger install`, then validate again.
 For an installed monitor, disabled/inactive/failed systemd state, stale monitor updates,
-a configuration fingerprint mismatch, recovery blocks/review warnings, and recorded
+a configuration fingerprint mismatch, recovery blocks, and recorded
 backup failures require attention. Check its exact service name and journal. Validation
 only reports evidence; it does not repair it. A schema-only pass skips these checks.
 
@@ -207,14 +207,11 @@ new-archive claim.
 
 ## `outcome_unknown` or `review required`
 
-`outcome_unknown` means the worker is confirmed absent but execution completion could
-not be established. `review_required` is a separate safety warning, for example after
-a restart or monitoring gap overlapped execution. Neither means a backup is safe to
-replay or an archive is safe to discard. A later `unchanged` result does not clear a
-consistency warning; neither does a later newly created archive. A final-check refusal
-can resolve its own execution risk because the child never ran, while keeping the
-historical annotation. See [warning evidence](recovery.md#execution-review-warnings).
-Preserve state and follow [manual review](recovery.md#operator-review-and-repair).
+`outcome_unknown` means the worker is confirmed absent but completion could not be
+established. Preserve dispatch records and follow [manual review](recovery.md#operator-review-and-repair).
+Never replay that attempt or infer archive health from its timestamp. Trigger has no
+archive-review flags; the engine enforces configured consistency and records
+suspect classification in the destination.
 
 ## Runtime config checks pass but backup fails
 

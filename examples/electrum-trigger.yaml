@@ -4,7 +4,7 @@
 ## Verify the Electrum process and data directory before enabling the trigger.
 ## Setup guide: docs/trigger/apps/electrum.md
 
-config_version: 1                        # Configuration schema
+config_version: 2                        # Configuration schema
 job:
   id: electrum-main                      # Unique job ID
 
@@ -36,7 +36,7 @@ destination:
   root: /mnt/backups/electrum-main       # Backup directory
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
   # marker_file: ".vaultkeep-target"      # Verify file under root
-  # expected_fstype: cifs                # Required filesystem type
+  # expected_fstype: ext4                # Required filesystem type
 
 ## Archive
 archive:
@@ -69,9 +69,12 @@ schedule:
   # persistent: true                     # Run once after missed activation
 
 ## Shutdown trigger
-trigger:
-  enabled: false                         # Shutdown-triggered backups off
-  app: electrum                          # Application matcher
+consistency:
+  mode: application_offline              # Require stopped observations during source processing
+
+application:
+  user: user                              # Account that owns the application
+  name: electrum                          # Application matcher
   data_dir: /home/user/.electrum         # Must match Electrum data directory
   matcher:
     entrypoints:                         # Accepted process entrypoints
@@ -81,6 +84,9 @@ trigger:
     # argv_tokens: []                    # Required command-line arguments
     # cmdline_regex: 'run_electrum'      # Optional regex (max 200 chars)
     # env_eq: {}                         # Only ELECTRUMDIR is supported
+
+trigger:
+  enabled: false                         # Shutdown-triggered backups off
   poll_seconds: 2                        # Process check interval
   confirm_seconds: 5                     # Shutdown confirmation delay
   # deadline_seconds: 3600               # Advisory; never stops a backup

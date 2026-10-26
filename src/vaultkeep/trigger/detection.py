@@ -19,7 +19,6 @@ from vaultkeep.trigger.matcher import (
     required_env_keys,
 )
 from vaultkeep.trigger.models import Observation
-from vaultkeep.trigger.paths import expand_user_path
 from vaultkeep.trigger.process import ProcessProvider, boot_id
 
 _DIRECTORY_ENV_KEY: dict[str, str] = {
@@ -44,7 +43,7 @@ class DetectionResult:
 
 
 def _canonical(value: str) -> str:
-    return os.path.realpath(expand_user_path(value))
+    return os.path.realpath(value)
 
 
 def _option_value(cmdline: tuple[str, ...], options: tuple[str, ...]) -> str | None:
@@ -61,17 +60,26 @@ def _resolve_directory(
     app: str, proc: ProcessInfo, provider: ProcessProvider
 ) -> tuple[str | None, str]:
     """Return (canonical directory, status) where status is resolved/unresolved/inaccessible."""
+
+    def resolve(value: str) -> tuple[str | None, str]:
+        if os.path.isabs(value):
+            return _canonical(value), "resolved"
+        # Unsupported/unavailable process context is uncertainty, never evidence
+        # that this process belongs to another application instance.
+        directory = provider.resolve_directory(proc.pid, value)
+        return (directory, "resolved") if directory is not None else (None, "inaccessible")
+
     env_key = _DIRECTORY_ENV_KEY.get(app)
     if env_key is not None:
         env = provider.read_env(proc.pid, [env_key])
         if env is None:
             return None, "inaccessible"
         if env.get(env_key):
-            return _canonical(env[env_key]), "resolved"
+            return resolve(env[env_key])
 
     value = _option_value(proc.cmdline, _DIRECTORY_OPTIONS.get(app, ()))
     if value:
-        return _canonical(value), "resolved"
+        return resolve(value)
     return None, "unresolved"
 
 
@@ -94,6 +102,12 @@ def detect_spec(
 ) -> DetectionResult:
     """Return an observation from a frozen app/data-dir/matcher snapshot."""
     current_boot = boot_id()
+    if not os.path.isabs(data_dir):
+        return DetectionResult(
+            Observation.AMBIGUOUS,
+            boot_id=current_boot,
+            reason="configured data directory is not resolved",
+        )
     wanted_dir = _canonical(data_dir)
     try:
         snapshot = provider.snapshot()
@@ -130,7 +144,13 @@ def detect_spec(
 
     resolved_matches: list[ProcessInfo] = []
     for candidate in identity_matches:
+        if not provider.alive(candidate.pid, candidate.create_time):
+            unavailable_reason = "process identity changed before metadata inspection"
+            continue
         directory, status = _resolve_directory(app, candidate, provider)
+        if not provider.alive(candidate.pid, candidate.create_time):
+            unavailable_reason = "process identity changed during metadata inspection"
+            continue
         if status == "inaccessible":
             unavailable_reason = "data directory metadata is not readable"
             continue

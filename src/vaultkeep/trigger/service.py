@@ -126,11 +126,7 @@ def _require_safe_stop(config: TriggerConfig | JobIdentity) -> None:
     state = store.read_instance(config.job_id)
     blocked = store.read_blocked(config.job_id)
     _, attempt = store.dispatch_activity(config.job_id, state, blocked)
-    if (
-        blocked
-        or attempt
-        or (state and (state.active_review_required or state.blocking_attempt_id))
-    ):
+    if blocked or attempt or (state and state.blocking_attempt_id):
         raise BlockedError(
             "Cannot stop monitor with active or unreconciled backup/safety state; "
             "inspect status and review Trigger recovery records before retrying"

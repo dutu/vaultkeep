@@ -86,7 +86,11 @@ class ArchiveVerificationError(ArchiveError):
     """A created archive does not satisfy the v1 integrity contract."""
 
 
-class ArchiveChecksumMismatchError(ArchiveVerificationError):
+class ArchiveCorruptionError(ArchiveVerificationError):
+    """Demonstrated invalid archive data, distinct from operational verification errors."""
+
+
+class ArchiveChecksumMismatchError(ArchiveCorruptionError):
     """Readable archive content differs from its recorded checksum."""
 
 
@@ -118,6 +122,10 @@ class ManifestError(DestinationError):
     """A backup manifest cannot be created or validated safely."""
 
 
+class UnsupportedManifestError(ManifestError):
+    """A recognized history uses an unsupported immutable destination format."""
+
+
 class DestinationDiscoveryError(DestinationError):
     """The destination root cannot be inspected safely."""
 
@@ -128,6 +136,17 @@ class RetentionError(DestinationError):
 
 class PruneError(DestinationError):
     """A destination backup cannot be safely removed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        removed: tuple[str, ...] = (),
+        corrupt_backup_ids: tuple[str, ...] = (),
+    ) -> None:
+        self.removed = removed
+        self.corrupt_backup_ids = corrupt_backup_ids
+        super().__init__(message)
 
 
 class HookError(VaultkeepError):

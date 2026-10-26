@@ -4,7 +4,7 @@
 ## Verify the Wasabi process and data directory before enabling the trigger.
 ## Setup guide: docs/trigger/apps/wasabi.md
 
-config_version: 1                        # Configuration schema
+config_version: 2                        # Configuration schema
 job:
   id: wasabi-main                        # Unique job ID
 
@@ -33,7 +33,7 @@ destination:
   root: /mnt/backups/wasabi-main         # Backup directory
   name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
   # marker_file: ".vaultkeep-target"      # Verify file under root
-  # expected_fstype: cifs                # Required filesystem type
+  # expected_fstype: ext4                # Required filesystem type
 
 ## Archive
 archive:
@@ -66,9 +66,12 @@ schedule:
   # persistent: true                     # Run once after missed activation
 
 ## Shutdown trigger
-trigger:
-  enabled: false                         # Shutdown-triggered backups off
-  app: wasabi                            # Application matcher
+consistency:
+  mode: application_offline              # Require stopped observations during source processing
+
+application:
+  user: user                              # Account that owns the application
+  name: wasabi                            # Application matcher
   data_dir: /home/user/.walletwasabi/client # Must match Wasabi data directory
   matcher:
     entrypoints:                         # Accepted process entrypoints
@@ -78,6 +81,9 @@ trigger:
     # exe_realpath: /opt/wasabi/WalletWasabi # Executable path predicate
     # cmdline_regex: 'WalletWasabi'      # Optional regex (max 200 chars)
     # env_eq: {}                         # Only WASABI_DATADIR is supported
+
+trigger:
+  enabled: false                         # Shutdown-triggered backups off
   poll_seconds: 2                        # Process check interval
   confirm_seconds: 5                     # Shutdown confirmation delay
   # deadline_seconds: 3600               # Advisory; never stops a backup

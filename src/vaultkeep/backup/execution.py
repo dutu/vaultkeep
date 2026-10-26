@@ -76,6 +76,7 @@ class Execution:
         )
         self._result: str | None = None
         self._reason: str | None = None
+        self._cleanup_errors: tuple[str, ...] = ()
         self._notifications = BackupNotifications(
             notifications or NotificationConfig(), job_id, self.execution_id, per_file=per_file
         )
@@ -168,8 +169,15 @@ class Execution:
                 self._reporter.heartbeat()
                 self._notifications.heartbeat()
 
-    def complete(self, result: str, *, errors: Sequence[str] = ()) -> None:
+    def complete(
+        self, result: str, *, errors: Sequence[str] = (), cleanup_errors: Sequence[str] = ()
+    ) -> None:
         self._result = {"created": "SUCCESS", "unchanged": "UNCHANGED", "failed": "FAILED"}[result]
+        self._cleanup_errors = tuple(concise(error) for error in cleanup_errors[:8])
+        if len(cleanup_errors) > 8:
+            self._cleanup_errors += (
+                f"{len(cleanup_errors) - 8} additional cleanup errors; see execution log",
+            )
         if errors:
             self._reason = concise(errors[0])
 
@@ -207,6 +215,7 @@ class Execution:
                     else 0,
                     "signal": error.signum if isinstance(error, BackupInterrupted) else None,
                     "reason": failure_reason(error) if error else self._reason,
+                    "cleanup_errors": list(self._cleanup_errors),
                 }
             )
             self.history = self.history.model_copy(update={"current": None, "previous": completed})

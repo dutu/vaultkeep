@@ -31,7 +31,7 @@ unknown. See [status meanings](status.md).
 Read `Previous backup`, `Reason`, exit code/signal, and the displayed `Log` path.
 Use `status --verbose` for bounded excerpts and exact paths, then inspect the retained
 log for full context. Logs can include sensitive operational details: review before
-sharing. A failure after commit can leave a valid archive, including when retention,
+sharing. A failure after commit can leave a valid archive, including when required state persistence,
 hooks, or final durability checks failed. Inspect and verify it before taking action.
 
 For scheduled jobs, inspect the owning manager:
@@ -48,15 +48,26 @@ Parameterized jobs have distinct unit names; inspect `status --verbose` or
 
 ## Destination, mount, or permission errors
 
-The destination must already exist and be accessible as the job owner. Mount network
-shares first, inspect the real filesystem from the execution environment, and check
+The destination must already exist and be accessible as the job owner. Mount the
+intended supported local filesystem or CIFS/NFS share, inspect it from the execution environment, and check
 configured marker files and filesystem types. Full validation writes, renames, and
 removes a temporary probe; it is not read-only. If cleanup fails, correct permissions
 and remove only the reported probe. Schema-only validation skips these checks.
 
-[Destination safety checks](configuration.md#destination-safety-checks) explain CIFS,
-NFS, and LXC bind mounts. Checks establish conditions at inspection time; they cannot
-prevent later mount changes, network failures, or prove NAS reachability.
+[Destination safety checks](configuration.md#destination-safety-checks) explain supported filesystems
+and why unsafe locking options, subtree aliases, and nested destination mounts reject mutation. Checks establish conditions at inspection time; they cannot
+prevent later mount changes or storage failures.
+
+For CIFS/NFS, a destination-lock error can mean another machine holds the share's
+`.vaultkeep.lock`, server locking is disabled/unavailable, or the account cannot
+create/open the shared anchor. Keep CIFS `nobrl` and NFS
+`nolock`/`local_lock=all`/`local_lock=flock` disabled and grant all backup accounts
+read/write access to the same whole-share/export root lock file. A persistent lock
+file alone does not mean a writer is active. Never delete it to bypass contention;
+stop or wait for the actual writer. Full validation also takes this lock for its probe.
+A CIFS message saying the share lock is "busy or denied by the server" can indicate
+remote contention or a server locking policy; inspect the other writers and server
+permissions. Ordinary lock-file open/access failures remain destination errors.
 
 ## Missing or unusable local backup state
 
@@ -123,3 +134,19 @@ own recovery requirements. Vaultkeep does not repair wallet/application data or
 provide a restore command. Unknown Trigger outcomes need
 [evidence review](trigger/recovery.md#operator-review-and-repair), independently of
 whether an archive extracts successfully.
+
+## Suspect backups and cleanup warnings
+
+1. Inspect `vaultkeep --user --config JOB.yaml list` for each suspect's original
+   reason and retention decision. `PROTECTED` needs a reliable compatible replacement.
+2. Run `vaultkeep --user --config JOB.yaml verify` for full integrity checks. Wrong
+   passwords and missing tools require correcting setup; they are not corruption proof.
+3. Run a new backup with the same source scope and consistency policy to replace an
+   unresolved suspect. Required state writes and `on_success` must succeed before cleanup.
+4. If `run: created` reports a cleanup warning, keep the new archive and inspect
+   `status --json` and the execution log. Retry with `prune --dry-run`, then `prune`,
+   or on a later newly created archive. An unchanged run never retries cleanup.
+
+A malformed marker, unsupported matching manifest, or unexpected artifact blocks
+deletion in that history. Preserve the evidence and correct the specific problem;
+never relabel an old manifest or delete a marker to manufacture a healthy backup.

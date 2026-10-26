@@ -181,6 +181,12 @@ def _dispatch(
         output.issue(error)
         return failure_exit_code(error)
     print(f"{result.command}: {result.result}", flush=True)
+    for cleanup_error in result.cleanup_errors:
+        output.print(
+            f"Warning: backup created; cleanup failed: {cleanup_error}. "
+            "Retry with prune or a later new backup.",
+            file=sys.stderr,
+        )
     if result.files:
         _print_file_results(result, output)
     if namespace.command == "run" and result.result == "created" and sys.stderr.isatty():

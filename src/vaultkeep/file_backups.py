@@ -107,6 +107,5 @@ def file_destinations(config: JobConfig) -> tuple[JobConfig, ...]:
     destinations: list[JobConfig] = []
     for child in children:
         if _FILE_DIRECTORY.fullmatch(child.name) is not None:
-            require_file_directory(child)
             destinations.append(destination_config(config, child))
     return tuple(destinations)

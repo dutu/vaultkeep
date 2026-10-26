@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,10 +15,11 @@ from vaultkeep.archive.checksums import calculate_archive_sha256, write_checksum
 from vaultkeep.backup import workflow
 from vaultkeep.backup.workflow import list_backups, prune_backups, verify_backups
 from vaultkeep.config.models import JobConfig
-from vaultkeep.destination.damage import DAMAGE_MARKER_NAME, mark_backup_damaged
 from vaultkeep.destination.discovery import discover_backups
+from vaultkeep.destination.identity import replacement_identity
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
 from vaultkeep.destination.pruning import build_prune_plan, execute_prune_plan
+from vaultkeep.destination.suspect import SUSPECT_MARKER_NAME, mark_backup_suspect
 from vaultkeep.destination.templates import allocate_job_backup_paths, create_staging_directory
 from vaultkeep.errors import (
     ArchiveVerificationError,
@@ -55,6 +57,8 @@ def _create_backup(config: JobConfig, number: int, created_at: datetime) -> Path
     write_manifest(
         paths.manifest_path,
         BackupManifest(
+            manifest_version=2,
+            replacement_identity=replacement_identity(config),
             application_version="0.1.0.dev0",
             backup_id=backup_id,
             job=config.job.id,
@@ -99,7 +103,7 @@ def test_marked_damage_is_listed_but_never_hashed_reused_or_pruned(
     directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
     archive = next(directory.glob("*.tar.zst"))
     archive.write_bytes(b"damaged archive")
-    mark_backup_damaged(directory, "checksum mismatch")
+    mark_backup_suspect(directory, "checksum mismatch")
 
     def forbidden(*args: Any, **kwargs: Any) -> str:
         pytest.fail("Known damaged backups must not be hashed")
@@ -111,7 +115,7 @@ def test_marked_damage_is_listed_but_never_hashed_reused_or_pruned(
     assert discovered.malformed == ()
     assert discovered.state_records == ()
     assert len(discovered.backups) == 1
-    assert "checksum mismatch" in discovered.backups[0].damage_reason
+    assert "checksum mismatch" in discovered.backups[0].suspect_reason
     plan = build_prune_plan(discovered, config.retention)
     assert plan.backups_to_delete == ()
     assert execute_prune_plan(plan, discovered) == ()
@@ -124,7 +128,7 @@ def test_invalid_damage_markers_block_pruning(
 ) -> None:
     config = _config(tmp_path, valid_config)
     directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
-    marker = directory / DAMAGE_MARKER_NAME
+    marker = directory / SUSPECT_MARKER_NAME
     if marker_kind == "symlink":
         marker.symlink_to(tmp_path / "absent")
     elif marker_kind == "directory":
@@ -147,7 +151,7 @@ def test_damage_marker_does_not_hide_unrelated_artifacts(
 ) -> None:
     config = _config(tmp_path, valid_config)
     directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
-    mark_backup_damaged(directory, "checksum mismatch")
+    mark_backup_suspect(directory, "checksum mismatch")
     (directory / "unrelated-data").write_bytes(b"preserve")
 
     discovered = discover_backups(config)
@@ -160,17 +164,17 @@ def test_damage_marker_does_not_hide_unrelated_artifacts(
 def test_damage_marker_preserves_first_diagnostic_and_rejects_symlinks(
     tmp_path: Path,
 ) -> None:
-    mark_backup_damaged(tmp_path, "first checksum mismatch")
-    marker = tmp_path / DAMAGE_MARKER_NAME
+    mark_backup_suspect(tmp_path, "first checksum mismatch")
+    marker = tmp_path / SUSPECT_MARKER_NAME
     original = marker.read_bytes()
-    mark_backup_damaged(tmp_path, "later checksum mismatch")
+    mark_backup_suspect(tmp_path, "later checksum mismatch")
     assert marker.read_bytes() == original
     marker.unlink()
     target = tmp_path / "unrelated-file"
     target.write_bytes(b"preserve")
     marker.symlink_to(target)
-    with pytest.raises(DestinationError, match="regular file"):
-        mark_backup_damaged(tmp_path, "checksum mismatch")
+    with pytest.raises(DestinationError, match=r"suspect marker|regular file"):
+        mark_backup_suspect(tmp_path, "checksum mismatch")
     assert target.read_bytes() == b"preserve"
 
 
@@ -318,10 +322,10 @@ def test_list_never_reads_archive_contents_but_verify_and_prune_still_check_them
         "Checking destination",
         "Listing backup metadata",
     ]
-    with pytest.raises(DestinationError, match="malformed"):
+    with pytest.raises(ArchiveVerificationError, match="checksum"):
         verify_backups(config_path)
-    with pytest.raises(PruneError, match="malformed"):
-        prune_backups(config_path, dry_run=False)
+    assert (directory / SUSPECT_MARKER_NAME).is_file()
+    assert prune_backups(config_path, dry_run=False).removed == 0
     assert archive.read_bytes() == b"corrupted archive"
 
 
@@ -510,6 +514,41 @@ def test_prune_removes_only_valid_unselected_backup(
     assert not old.exists()
     assert newest.exists()
     assert unrelated.exists()
+
+
+@pytest.mark.parametrize("with_suspect", [False, True])
+def test_prune_preserves_the_only_eligible_recovery_point(
+    tmp_path: Path, valid_config: dict[str, Any], with_suspect: bool
+) -> None:
+    config = _config(tmp_path, valid_config)
+    healthy_directory = _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
+    if with_suspect:
+        suspect_directory = _create_backup(config, 2, datetime(2026, 7, 24, 12, tzinfo=UTC))
+        mark_backup_suspect(suspect_directory, "newer archive is not a recovery point")
+    discovered = discover_backups(config, metadata_only=True)
+    assert discovered.malformed == ()
+    healthy = next(backup for backup in discovered.backups if backup.directory == healthy_directory)
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    plan = build_prune_plan(discovered, config.retention)
+    assert tuple(backup.directory for backup in plan.retention.retain) == (healthy_directory,)
+    assert plan.backups_to_delete == ()
+    assert execute_prune_plan(plan, discovered) == ()
+
+    # The deletion guard must also reject a plan that tries to remove the last
+    # eligible recovery point, even when a newer suspect still exists on disk.
+    unsafe_plan = replace(plan, backups_to_delete=(healthy,))
+    with pytest.raises(PruneError, match="preserve an eligible recovery point"):
+        execute_prune_plan(unsafe_plan, discovered)
+    assert {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    } == before
 
 
 def test_discovery_progress_tracks_backups_bytes_and_manifest_failure(
@@ -711,7 +750,7 @@ def test_progress_callback_errors_preserve_verification_result(
         lambda *args, **kwargs: kwargs["consumer_stdout"].write(b"safe\n"),
     )
     if corrupt:
-        with pytest.raises(DestinationError, match="does not match archive content"):
+        with pytest.raises(ArchiveVerificationError, match="does not match archive content"):
             verify_backups(config_path, progress=broken, on_progress=broken, on_verified=broken)
     else:
         assert (

@@ -35,21 +35,12 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
         f"Retention:   {retention}",
         "",
     ]
-    decisions = {}
-    for backup in inventory.backups:
-        if backup.damage_reason is not None:
-            decisions[backup.directory] = "DAMAGED"
-            continue
-        tiers = inventory.retained_by.get(backup.directory)
-        decisions[backup.directory] = (
-            "—" if not enabled else "UNKNOWN" if tiers is None else "KEEP" if tiers else "PRUNE"
-        )
+    decisions = inventory.decisions
     if inventory.backups:
         rows = [
             (
                 backup.manifest.created_datetime_utc.strftime("%Y-%m-%d %H:%M:%S"),
                 format_size(backup.archive_size),
-                "yes" if backup.manifest.encrypted else "no",
                 decisions[backup.directory],
                 ", ".join(inventory.retained_by.get(backup.directory) or ()) or "—",
             )
@@ -59,23 +50,27 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
             f"  Backup: {_display_path(backup.directory.relative_to(destination))}"
             for backup in inventory.backups
         ]
-        lines += format_table(
-            ("Created (UTC)", "Size", "Enc", "Decision", "Retained by"),
+        table = format_table(
+            ("Created (UTC)", "Size", "Decision", "Tiers"),
             rows,
             stream=sys.stdout,
             details=details,
         )
+        reasons = {
+            safe_text(detail, sys.stdout): backup.suspect_reason
+            for detail, backup in zip(details, inventory.backups, strict=True)
+            if backup.suspect_reason
+        }
+        for line in table:
+            lines.append(line)
+            if line in reasons:
+                lines.append(f"    SUSPECT: {reasons[line]}")
     else:
         lines += ["No backups found."]
 
-    damaged = tuple(backup for backup in inventory.backups if backup.damage_reason is not None)
-    if damaged or inventory.malformed or inventory.retention_warnings:
+    suspects = tuple(backup for backup in inventory.backups if backup.suspect_reason is not None)
+    if inventory.malformed or inventory.retention_warnings:
         lines += ["", "Warnings:"]
-        for backup in damaged:
-            label = _display_path(backup.directory.relative_to(destination))
-            lines += [f"  {label}: DAMAGED — {backup.damage_reason}"]
-        if damaged:
-            lines += ["  Damaged backups are preserved and excluded from retention."]
         for entry in inventory.malformed:
             label = _display_path(entry.path.relative_to(destination))
             reason = entry.reason.replace(str(entry.path) + "/", "").replace(str(entry.path), "")
@@ -89,8 +84,8 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
             lines += ["  Matching invalid entries block pruning; affected histories are UNKNOWN."]
 
     summary = f"Backups: {len(inventory.backups)}"
-    if damaged:
-        summary += f" · Damaged: {len(damaged)}"
+    if suspects:
+        summary += f" · Suspect: {len(suspects)}"
     if enabled and inventory.backups:
         summary += f" · Keep: {sum(value == 'KEEP' for value in decisions.values())}"
         summary += f" · Prune: {sum(value == 'PRUNE' for value in decisions.values())}"
@@ -100,8 +95,5 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
     lines += ["", summary]
     if inventory.malformed:
         lines += [f"Invalid entries: {len(inventory.malformed)}"]
-    if enabled and inventory.backups:
-        lines += ["", "PRUNE indicates eligibility under the current retention policy."]
-    lines += ["No backups are deleted."]
     for line in lines:
         output.print(safe_text(line, sys.stdout))

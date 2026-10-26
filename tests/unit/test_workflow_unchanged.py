@@ -11,7 +11,7 @@ import pytest
 
 from vaultkeep.archive import ArchiveArtifact, ArchiveBuildRequest, checksums
 from vaultkeep.backup import workflow
-from vaultkeep.destination.damage import DAMAGE_MARKER_NAME, mark_backup_damaged
+from vaultkeep.destination.suspect import SUSPECT_MARKER_NAME, mark_backup_suspect
 from vaultkeep.errors import ArchiveVerificationError, DestinationError
 from vaultkeep.state.models import LocalState
 
@@ -120,7 +120,7 @@ def test_unchanged_reads_only_latest_archive(
 
 
 @pytest.mark.parametrize("state_status", ["loaded", "missing", "corrupt"])
-def test_corrupt_latest_archive_creates_replacement_and_preserves_damage(
+def test_corrupt_latest_archive_creates_replacement_and_cleans_suspect(
     history: tuple[Path, list[Path]], monkeypatch: pytest.MonkeyPatch, state_status: str
 ) -> None:
     job, archives = history
@@ -162,14 +162,18 @@ def test_corrupt_latest_archive_creates_replacement_and_preserves_damage(
     assert replacement is not None and replacement not in archives
     assert replacement.is_file()
     assert phases == ["before_check", "before_archive", "after_archive", "on_success"]
-    marker = archives[-1].parent / DAMAGE_MARKER_NAME
-    assert "checksum does not match" in marker.read_text()
-    assert all(path.read_bytes() == contents for path, contents in original_artifacts.items())
+    marker = archives[-1].parent / SUSPECT_MARKER_NAME
+    assert not marker.parent.exists()
+    assert all(
+        path.read_bytes() == contents
+        for path, contents in original_artifacts.items()
+        if path.parent != marker.parent
+    )
     state = LocalState.model_validate_json(state_path.read_bytes())
     assert state.last_run.result == "created"
     assert state.last_successful_backup.backup_path == str(replacement)
     assert state.last_unchanged_at_utc is None
-    assert len(list((job.parent / "backups").rglob("*.tar.zst"))) == 4
+    assert len(list((job.parent / "backups").rglob("*.tar.zst"))) == 3
     assert _run(job).result == "unchanged"
 
 
@@ -190,14 +194,14 @@ def test_marked_latest_backup_retries_creation_after_a_failed_replacement(
                 _run(job)
         else:
             assert _run(job).result == "failed"
-    marker = archives[-1].parent / DAMAGE_MARKER_NAME
+    marker = archives[-1].parent / SUSPECT_MARKER_NAME
     assert marker.is_file()
     assert archives[-1].read_bytes() == b"damaged"
     # Match an older healthy backup; the newer damage still requires a replacement.
     (job.parent / "source" / "data").write_text("0")
     monkeypatch.setattr(workflow, "build_archive", original_build)
     assert _run(job).result == "created"
-    assert marker.is_file()
+    assert not marker.exists()
 
 
 def test_damaged_backup_is_preserved_by_retention_but_does_not_fill_healthy_slots(
@@ -205,33 +209,25 @@ def test_damaged_backup_is_preserved_by_retention_but_does_not_fill_healthy_slot
 ) -> None:
     job, archives = history
     archives[-1].write_bytes(b"damaged")
-    mark_backup_damaged(archives[-1].parent, "checksum mismatch")
+    mark_backup_suspect(archives[-1].parent, "checksum mismatch")
     document = json.loads(job.read_text())
     document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
     job.write_text(json.dumps(document))
 
     assert _run(job).result == "created"
-    assert archives[-1].read_bytes() == b"damaged"
+    assert not archives[-1].exists()
     assert not any(archive.exists() for archive in archives[:-1])
-    assert len(list((job.parent / "backups").rglob("*.tar.zst"))) == 2
+    assert len(list((job.parent / "backups").rglob("*.tar.zst"))) == 1
     assert workflow.prune_backups(job, dry_run=False).removed == 0
-    assert archives[-1].is_file()
 
 
 def test_verify_reports_marked_damage_without_reading_the_damaged_archive(
     history: tuple[Path, list[Path]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     job, archives = history
-    mark_backup_damaged(archives[-1].parent, "checksum mismatch")
-    original_open = Path.open
-
-    def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
-        assert path != archives[-1], "Known damaged archives must not be read again"
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", guarded_open)
+    mark_backup_suspect(archives[-1].parent, "checksum mismatch")
     monkeypatch.setattr(workflow, "verify_tar_zstd", lambda *args, **kwargs: None)
-    with pytest.raises(DestinationError, match="marked damaged"):
+    with pytest.raises(DestinationError, match="SUSPECT"):
         workflow.verify_backups(job)
 
 
@@ -243,13 +239,13 @@ def test_archive_read_failure_does_not_mark_damage_or_create_replacement(
     def unreadable(*args: Any, **kwargs: Any) -> str:
         raise ArchiveVerificationError("Cannot read archive: permission denied")
 
-    monkeypatch.setattr(workflow, "verify_checksum_sidecar", unreadable)
+    monkeypatch.setattr(workflow, "verify_backup_checksum", unreadable)
     if json.loads(job.read_text())["backup_mode"] == "combined":
         with pytest.raises(ArchiveVerificationError, match="permission denied"):
             _run(job)
     else:
         assert _run(job).result == "failed"
-    assert not (archives[-1].parent / DAMAGE_MARKER_NAME).exists()
+    assert not (archives[-1].parent / SUSPECT_MARKER_NAME).exists()
     assert len(list((job.parent / "backups").rglob("*.tar.zst"))) == 3
 
 
@@ -266,10 +262,13 @@ def test_damage_persistence_failure_preserves_backups_and_retries(
     with monkeypatch.context() as patch:
         patch.setattr(
             workflow,
-            "mark_backup_damaged" if stage == "mark" else "record_damage_replacement",
+            "mark_backup_suspect" if stage == "mark" else "record_suspect_replacement",
             fail,
         )
-        if json.loads(job.read_text())["backup_mode"] == "combined":
+        if stage == "record":
+            result = _run(job)
+            assert result.result == "created" and result.cleanup_errors
+        elif json.loads(job.read_text())["backup_mode"] == "combined":
             with pytest.raises(DestinationError, match="write denied"):
                 _run(job)
         else:

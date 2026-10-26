@@ -12,10 +12,15 @@ from pathlib import Path
 
 from vaultkeep.archive.checksums import read_checksum_sidecar, verify_checksum_sidecar
 from vaultkeep.config.models import JobConfig
-from vaultkeep.destination.damage import DAMAGE_MARKER_NAME, read_damage_marker
 from vaultkeep.destination.manifest import BackupManifest, load_manifest
+from vaultkeep.destination.suspect import SUSPECT_MARKER_NAME, read_suspect_marker
 from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
-from vaultkeep.errors import DestinationDiscoveryError, DestinationError, ManifestError
+from vaultkeep.errors import (
+    DestinationDiscoveryError,
+    DestinationError,
+    ManifestError,
+    UnsupportedManifestError,
+)
 from vaultkeep.progress import VerificationProgress, report_progress
 from vaultkeep.state.models import BackupStateRecord
 
@@ -30,6 +35,7 @@ class MalformedDestinationEntry:
 
     path: Path
     reason: str
+    unsupported_format: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,8 +49,9 @@ class DiscoveredBackup:
     base_name: str
     manifest: BackupManifest
     archive_size: int
-    damage_reason: str | None = None
+    suspect_reason: str | None = None
     replacement_backup_id: str | None = None
+    suspect_detected_at: str | None = None
 
     @property
     def state_record(self) -> BackupStateRecord:
@@ -70,7 +77,9 @@ class DiscoveryResult:
 
     @property
     def state_records(self) -> tuple[BackupStateRecord, ...]:
-        return tuple(backup.state_record for backup in self.backups if backup.damage_reason is None)
+        return tuple(
+            backup.state_record for backup in self.backups if backup.suspect_reason is None
+        )
 
 
 def discover_backups(
@@ -83,11 +92,17 @@ def discover_backups(
 ) -> DiscoveryResult:
     """Discover matching backups; metadata_only skips all checksum/content reads.
 
-    Inventory includes both supported formats, using each stored manifest's facts.
-    Other callers retain strict format and checksum validation.
+    Both supported formats use the stored manifest's facts. Checksum validation
+    remains available independently of the currently configured archive format.
     """
     root = Path(config.destination.root)
-    formats = ("tar.zst", "tar.7z") if metadata_only else (config.archive.format,)
+    if config.backup_mode == "per_file":
+        # A recognized child must never traverse an unexpected link. Independent
+        # callers can report this history's barrier and continue other histories.
+        from vaultkeep.file_backups import require_file_directory
+
+        require_file_directory(root)
+    formats = ("tar.zst", "tar.7z")
     base_matcher = re.compile(
         "(?:"
         + "|".join(
@@ -163,8 +178,12 @@ def discover_backups(
                     on_progress=report if on_progress is not None else None,
                 )
             )
-        except (DestinationDiscoveryError, ManifestError) as error:
-            malformed.append(MalformedDestinationEntry(child, str(error)))
+        except (DestinationError, ManifestError) as error:
+            malformed.append(
+                MalformedDestinationEntry(
+                    child, str(error), isinstance(error, UnsupportedManifestError)
+                )
+            )
             report(
                 VerificationProgress("backup", operation, "failed", current_path, error=str(error))
             )
@@ -211,17 +230,16 @@ def _validate_backup_directory(
             f"Manifest name does not match destination template: {path}"
         )
     manifest = load_manifest(manifest_path)
-    if metadata_only:
-        stored_matcher = _base_name_matcher(
-            config.destination.name_template,
-            config.job.id,
-            manifest.archive_format,
-            runtime_params=runtime_params,
+    stored_matcher = _base_name_matcher(
+        config.destination.name_template,
+        config.job.id,
+        manifest.archive_format,
+        runtime_params=runtime_params,
+    )
+    if stored_matcher.fullmatch(base_name) is None:
+        raise DestinationDiscoveryError(
+            f"Manifest name does not match stored archive format: {path}"
         )
-        if stored_matcher.fullmatch(base_name) is None:
-            raise DestinationDiscoveryError(
-                f"Manifest name does not match stored archive format: {path}"
-            )
     suffix = path.name.removeprefix(base_name)
     if re.fullmatch(rf"-{_BACKUP_ID}", suffix):
         valid_name = suffix == f"-{manifest.backup_id}"
@@ -229,10 +247,6 @@ def _validate_backup_directory(
         valid_name = not suffix or re.fullmatch(rf"-{_COLLISION_NUMBER}", suffix) is not None
     if not path.name.startswith(base_name) or not valid_name or manifest.job != config.job.id:
         raise DestinationDiscoveryError(f"Manifest identity does not match directory name: {path}")
-    if not metadata_only and manifest.archive_format != config.archive.format:
-        raise DestinationDiscoveryError(
-            f"Manifest archive format does not match job configuration: {path}"
-        )
     expected_archive = f"{base_name}.{manifest.archive_format}"
     if manifest.archive != expected_archive:
         raise DestinationDiscoveryError(
@@ -244,12 +258,12 @@ def _validate_backup_directory(
     _require_regular_file(checksum_path)
     _require_regular_file(manifest_path)
     try:
-        damage = read_damage_marker(path)
+        damage = read_suspect_marker(path)
     except DestinationError as error:
         raise DestinationDiscoveryError(str(error)) from error
     artifacts = {archive_path.name, checksum_path.name, manifest_path.name}
     if damage is not None:
-        artifacts.add(DAMAGE_MARKER_NAME)
+        artifacts.add(SUSPECT_MARKER_NAME)
     _require_exact_artifacts(path, artifacts)
     backup = DiscoveredBackup(
         path,
@@ -261,9 +275,8 @@ def _validate_backup_directory(
         archive_status.st_size,
         damage.reason if damage else None,
         damage.replacement_backup_id if damage else None,
+        damage.detected_at if damage else None,
     )
-    if metadata_only:
-        return backup
     report_progress(
         on_progress,
         VerificationProgress(
@@ -275,6 +288,8 @@ def _validate_backup_directory(
             backup_id=manifest.backup_id,
         ),
     )
+    if metadata_only:
+        return backup
     operation = "SHA-256" if verify_archives else "Checksum metadata"
     if damage is not None:
         report_progress(

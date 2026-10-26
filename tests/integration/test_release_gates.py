@@ -1,4 +1,4 @@
-"""Opt-in release gates for Debian/systemd and mounted-network validation."""
+"""Opt-in release gates for Debian/systemd and shared destination locking validation."""
 
 from __future__ import annotations
 
@@ -42,10 +42,6 @@ def _os_release() -> dict[str, str]:
     return values
 
 
-def _mount_fstype(path: str) -> str:
-    return _run(["findmnt", "--noheadings", "--target", path, "--output", "FSTYPE"])
-
-
 def test_release_host_is_supported_debian_systemd_root() -> None:
     assert sys.version_info >= (3, 13)
     assert sys.platform == "linux"
@@ -60,14 +56,16 @@ def test_release_host_is_supported_debian_systemd_root() -> None:
         assert shutil.which(command) is not None
 
 
-def test_release_host_has_declared_cifs_and_nfs_mounts() -> None:
-    cifs_mount = os.environ.get("VAULTKEEP_RELEASE_CIFS_MOUNT")
-    nfs_mount = os.environ.get("VAULTKEEP_RELEASE_NFS_MOUNT")
-    if cifs_mount is None or nfs_mount is None:
-        pytest.fail("set VAULTKEEP_RELEASE_CIFS_MOUNT and VAULTKEEP_RELEASE_NFS_MOUNT")
+def test_release_host_supports_shared_destination_locking(tmp_path: Path) -> None:
+    from vaultkeep.errors import LockError
+    from vaultkeep.locking import destination_lock
 
-    assert _mount_fstype(cifs_mount) == "cifs"
-    assert _mount_fstype(nfs_mount) in {"nfs", "nfs4"}
+    root = tmp_path / "backups"
+    root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    with destination_lock(root), pytest.raises(LockError), destination_lock(alias):
+        pytest.fail("physical destination alias bypassed mutual exclusion")
 
 
 def test_release_installer_dry_runs_in_clean_modes() -> None:

@@ -78,7 +78,7 @@ def test_schema_only_validation_accepts_disabled_template(capsys: Any) -> None:
 
 def test_schema_only_validation_uses_config_path(tmp_path: Path, capsys: Any) -> None:
     config = tmp_path / "app.yaml"
-    lines = ["config_version: 1", "job:", "  id: app"]
+    lines = ["config_version: 2", "job:", "  id: app"]
     config.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert main(["--config", str(config), "validate", "--schema-only"]) == 3

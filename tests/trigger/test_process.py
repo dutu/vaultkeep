@@ -39,6 +39,7 @@ def test_snapshot_excludes_other_users_before_metadata_reads(monkeypatch) -> Non
     monkeypatch.setattr(
         "vaultkeep.trigger.process.psutil.process_iter", lambda _attrs: [mine, other]
     )
+    monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
     snapshot = PsutilProcessProvider().snapshot()
     assert [proc.pid for proc in snapshot] == [42]
 
@@ -46,6 +47,7 @@ def test_snapshot_excludes_other_users_before_metadata_reads(monkeypatch) -> Non
 def test_unreadable_command_line_is_retained_as_uncertainty(monkeypatch) -> None:
     mine = _Process(42, os.geteuid(), cmdline_readable=False)
     monkeypatch.setattr("vaultkeep.trigger.process.psutil.process_iter", lambda _attrs: [mine])
+    monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
     snapshot = PsutilProcessProvider().snapshot()
     assert len(snapshot) == 1 and not snapshot[0].cmdline_available
 
@@ -58,3 +60,15 @@ def test_unknown_process_ownership_blocks_snapshot(monkeypatch) -> None:
 
     with pytest.raises(psutil.AccessDenied):
         PsutilProcessProvider().snapshot()
+
+
+def test_root_provider_inspects_configured_owner_instead_of_executor(monkeypatch):
+    target = _Process(42, 4242)
+    executor = _Process(99, 0)
+    monkeypatch.setattr("vaultkeep.trigger.process.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "vaultkeep.trigger.process.psutil.process_iter", lambda _attrs: [executor, target]
+    )
+    monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
+    snapshot = PsutilProcessProvider(owner_uid=4242).snapshot()
+    assert [proc.pid for proc in snapshot] == [42]

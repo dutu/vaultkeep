@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -27,12 +29,13 @@ from vaultkeep.trigger.systemd import UnitState
 
 @pytest.fixture
 def selected_job(tmp_path, valid_config, store, monkeypatch):
-    valid_config["trigger"] = {
-        "enabled": True,
-        "app": "electrum",
+    valid_config["application"] = {
+        "name": "electrum",
         "data_dir": str(tmp_path / "wallet"),
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run"}]},
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
+    valid_config["trigger"] = {"enabled": True}
     valid_config["schedule"] = {"enabled": False}
     path = tmp_path / "job.yaml"
     path.write_text(json.dumps(valid_config))
@@ -355,110 +358,6 @@ def test_orphan_dispatch_evidence_is_visible_with_a_disabled_placeholder(selecte
     assert result["trigger"]["dispatch"] == "ACTIVE"
 
 
-def test_current_safety_warning_is_reported_once_and_not_summarized_as_history(
-    selected_job, store, capsys
-):
-    path, config, state = selected_job
-    request = make_request(config.instances[0])
-    store.write_request(request)
-    state.active_attempt_id = request.attempt_id
-    state.active_request_id = request.request_id
-    state.review_required = state.active_review_required = True
-    state.attempt_summaries = [
-        {
-            "attempt_id": request.attempt_id,
-            "request_id": request.request_id,
-            "outcome": "created",
-            "review_required": True,
-        }
-    ]
-    store.write_instance(state)
-    result = report(path)
-    assert len(result["trigger"]["safety"]) == 1
-    assert result["trigger"]["safety"][0]["attempt_id"] == request.attempt_id
-    assert result["trigger"]["safety"][0]["current"] is True
-    assert main(["--user", "--config", str(path), "status"]) == 0
-    human = capsys.readouterr().out
-    assert "Application stopped state could not be verified during backup execution" in human
-    assert "previous attempts" not in human and "previous attempt)" not in human
-
-
-def test_historical_safety_is_compact_with_read_only_verbose_and_json_details(
-    selected_job, store, capsys
-):
-    path, config, state = selected_job
-    state.review_required = True
-    state.review_reason = "monitoring gap"
-    attempts = [make_request(config.instances[0]) for _ in range(2)]
-    for request in attempts:
-        store.write_request(request)
-        store.write_receipt(
-            Receipt(
-                request.attempt_id,
-                request.request_id,
-                "app",
-                AttemptOutcome.CREATED,
-                utc_now(),
-                utc_now(),
-                1.0,
-            )
-        )
-        state.attempt_summaries.append(
-            {
-                "attempt_id": request.attempt_id,
-                "request_id": request.request_id,
-                "outcome": "created",
-                "review_required": True,
-            }
-        )
-    store.write_instance(state)
-    before = {
-        p: (p.read_bytes(), p.stat().st_mtime_ns) for p in path.parent.rglob("*") if p.is_file()
-    }
-    args = ["--user", "--config", str(path), "status"]
-    assert main(args) == 0
-    human = " ".join(capsys.readouterr().out.split())
-    assert "Activity IDLE" in human and "Result NONE" in human
-    assert "Dispatch IDLE" in human
-    assert "Safety REVIEW REQUIRED (2 previous attempts)" in human
-    assert "Action Review affected backup executions" in human
-    assert "Monitoring was interrupted" not in human and "Period" not in human
-    assert all(request.attempt_id not in human for request in attempts)
-
-    assert main([*args, "--verbose"]) == 0
-    detailed = capsys.readouterr().out
-    assert detailed.count("Monitoring was interrupted during possible backup execution") == 2
-    assert detailed.count("Period") == 2
-    assert all(request.attempt_id in detailed for request in attempts)
-    assert "obtain a new backup with the app stopped" in detailed
-    assert "Execution record" in detailed and "execution.json" in detailed
-
-    for flags in (["--json"], ["--json", "--verbose"]):
-        assert main([*args, *flags]) == 0
-        data = json.loads(capsys.readouterr().out)
-        assert data["backup"]["activity"] == "IDLE"
-        assert data["backup"]["previous"] is None
-        safety = data["trigger"]["safety"]
-        assert len(safety) == 2 and all(item["current"] is False for item in safety)
-        assert [item["attempt_id"] for item in safety] == [r.attempt_id for r in attempts]
-        assert all(" — " in item["execution_period"] for item in safety)
-        if "--verbose" in flags:
-            assert data["trigger"]["details"]["state_directory"] == str(store.root)
-            assert data["backup"]["details"]["execution_record"].endswith("execution.json")
-    assert {
-        p: (p.read_bytes(), p.stat().st_mtime_ns) for p in path.parent.rglob("*") if p.is_file()
-    } == before
-
-
-def test_unidentified_historical_safety_does_not_invent_attempt_count(selected_job, store, capsys):
-    path, _, state = selected_job
-    state.review_required = True
-    store.write_instance(state)
-    assert main(["--user", "--config", str(path), "status"]) == 0
-    human = " ".join(capsys.readouterr().out.split())
-    assert "Safety REVIEW REQUIRED (previous executions)" in human
-
-
 def test_missing_shutdown_request_does_not_hide_stopped_observation(selected_job, store):
     path, _, state = selected_job
     state.last_observation = ObservationRecord(Observation.STOPPED, utc_now())
@@ -495,10 +394,8 @@ def test_stopped_observation_with_retained_requests(
                 "attempt_id": request.attempt_id,
                 "request_id": request.request_id,
                 "outcome": AttemptOutcome.CREATED.value,
-                "review_required": True,
             }
         ]
-        state.review_required = True
     state.last_observation = ObservationRecord(Observation.STOPPED, utc_now())
     store.write_instance(state)
     before = store.instance_path(state.instance_id).read_bytes()
@@ -508,8 +405,7 @@ def test_stopped_observation_with_retained_requests(
     expected = "HAS STOPPED" if confirmation == "current" and latest == "request" else "NOT RUNNING"
     assert trigger["application"] == expected
     if location == "summary":
-        assert trigger["safety"][0]["current"] is False
-        assert trigger["safety"][0]["attempt_id"] == request.attempt_id
+        assert "safety" not in trigger
     assert store.instance_path(state.instance_id).read_bytes() == before
 
 

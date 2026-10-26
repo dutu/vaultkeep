@@ -60,8 +60,9 @@ successful archive verification do not establish application-level consistency.
 - Debian 13 `trixie`, amd64 or arm64, with systemd 247+ as the active manager.
 - Root access for installation, a trusted source checkout, and network access to
   Debian repositories and the Python package index.
-- Readable source files and an existing writable destination; mount CIFS/NFS shares
-  through the operating system before use.
+- Readable sources and an existing writable destination on a supported local Linux
+  filesystem or mounted CIFS/SMB or NFS share with server locking enabled. Subtree
+  and nested destination mounts remain unsupported.
 
 The installer provides Debian Python 3.13+, `python3-venv`, GNU TAR, Zstandard,
 Debian `7zip`, `rsync`, and mount utilities including `util-linux`. It does not use
@@ -179,11 +180,21 @@ if needed.
    backing up secrets to a destination that requires encryption.
 
 4. <a id="destination-safety-checks"></a>Create a local destination if needed, as its owner, or mount and verify the intended
-   network share first. `destination.root` must already exist. Optional
+   supported local filesystem or CIFS/NFS share first. `destination.root` must already exist. Optional
    `destination.marker_file` and `destination.expected_fstype` checks can independently
    prevent writes to an unintended local directory. For a NAS/LXC setup, follow the
    [destination safety procedure](docs/configuration.md#destination-safety-checks)
    before writing. Vaultkeep never creates a configured marker for you.
+
+   For CIFS/NFS, mount the same whole share/export on every writing machine, with
+   server locks enabled: omit CIFS `nobrl` and NFS `nolock`/`local_lock=all`/`local_lock=flock`.
+   Vaultkeep creates `.vaultkeep.lock` at the mounted share/export root and locks it
+   for each write operation. That root must allow initial lock-file creation, and
+   every backup account must have read/write access to the file through server ACLs
+   or shared-group permissions. All jobs on that share serialize. Keep the lock file
+   in place; never delete or replace it while writers may run. NFS commits use an
+   atomic rename under this lock; an unrelated writer racing to create an empty
+   target directory can have that empty directory replaced.
 
 <a id="start-backups-in-the-chosen-mode"></a>
 <a id="run-a-job-manually"></a>
@@ -219,21 +230,25 @@ if needed.
    an empty `per_file` selection is unchanged and verification can find zero archives.
 
 A created backup directory contains `<base>.tar.zst` (or `.tar.7z`), its `.sha256`,
-and `<base>.json`. Terminal runs show the new archive path. `list` shows backups
-newest first with UTC dates, archive sizes, encryption, and retention decisions.
-Each row includes the complete backup directory relative to the displayed destination.
-Invalid entries appear as warnings; affected histories have `UNKNOWN` decisions.
-`verify` checks archive contents and checksums without requiring original sources.
-Before reporting `run: unchanged`, `run` checks the newest matching backup's SHA-256
-checksum; it does not read older archive contents for that decision. A checksum
-mismatch marks that backup as damaged and creates a fresh verified backup.
-`list` labels marked backups `DAMAGED`; retention preserves them without counting
-them toward healthy backup retention. After creating a backup, retention checks
-use backup metadata and directory layout; `run` checks only the new archive's
-checksum after finalization. Use `verify` to check older archive contents.
-`verify` continues to report preserved damaged backups as failures. Inspect their
-`list` warnings before manually moving or removing the affected directories; see
-[damage recovery details](docs/cli.md#run-a-job-manually).
+and a version-2 `<base>.json` manifest. `list` shows UTC dates, sizes, retention
+choices, and complete relative backup directories. Invalid entries produce warnings
+and `UNKNOWN` decisions. `verify` checks archive contents and checksums without
+requiring sources and may record demonstrated corruption as `SUSPECT`.
+
+An unresolved suspect is protected and forces a new compatible archive. After that
+archive is verified, state is saved, and hooks succeed, cleanup may remove the
+superseded suspect and ordinary retention candidates. An ordinary cleanup failure keeps
+`run: created` successful with a warning; retry with `prune` or a later new archive.
+Corruption found in the newly committed archive fails the run, including when
+discovered during cleanup.
+Unchanged runs never prune. Wrong credentials or temporarily unavailable tools do not
+automatically classify an archive as corrupt. See [recovery details](docs/cli.md#run-a-job-manually).
+
+Jobs and destinations use schema/layout version 2 and fresh local state; version-1
+repositories have no migration support and must be preserved separately. Mutations
+require a supported local Linux filesystem or CIFS/NFS share with reliable shared locks; see
+[destination checks](docs/configuration.md#destination-safety-checks).
+
 `run` and `verify` show an in-place spinner with elapsed time on interactive
 terminals. `run` keeps completed stages listed with a tick. Redirected stderr uses
 plain stage messages and a heartbeat every 10 seconds
@@ -389,19 +404,17 @@ Job:         app
 Destination: /mnt/backups/app
 Retention:   1 hourly, 1 daily, 0 weekly, 0 monthly, 0 yearly
 
-Created (UTC)        Size       Enc  Decision  Retained by
+Created (UTC)        Size       Decision  Tiers
 ────────────────────────────────────────────────────────────
-2026-10-25 08:00:00  756.7 MiB  no   KEEP      hourly, daily
+2026-10-25 08:00:00  756.7 MiB  KEEP      daily, hourly
   Backup: backup-app-20261025T080000Z
 
-2026-10-25 07:00:00  756.7 MiB  no   PRUNE     —
+2026-10-25 07:00:00  756.7 MiB  PRUNE     —
   Backup: backup-app-20261025T070000Z
 ────────────────────────────────────────────────────────────
 
 Backups: 2 · Keep: 1 · Prune: 1
 
-PRUNE indicates eligibility under the current retention policy.
-No backups are deleted.
 ```
 
 Inspect warnings before pruning; `UNKNOWN` means the retention preview is incomplete.
@@ -417,6 +430,12 @@ Retention is calendar-bucketed; time passing and unchanged runs do not prune.
 Deleting/excluding a per-file source preserves its history. Check the retention plan
 before manual pruning. A failure can occur after archive commit, so inspect existing backups
 rather than assuming none was created.
+
+For application backups, set `consistency.mode: application_offline` and configure
+the shared `application` identity, including its owning user. This applies equally
+to manual, scheduled, and Trigger execution. `files` is the default and uses file
+consistency checks. `after_archive` may restart the application after source reads
+finish. See [consistency settings](docs/configuration.md#consistency-and-shared-application-identity).
 
 ### Update a job configuration
 

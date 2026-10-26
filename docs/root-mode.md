@@ -40,10 +40,10 @@ paths below and repeat installer overrides for updates or uninstall.
    first manual test. Use absolute paths and retain the complete example's required
    sections; see [configuration](configuration.md#job-structure).
 
-3. Mount network shares through the operating system first. Validate the intended
+3. Mount the intended supported local filesystem or CIFS/NFS share through the operating system first. Validate the intended
    destination from the same environment that executes Vaultkeep. Optional
-   `destination.expected_fstype: cifs` can reject an unintended host-local directory
-   exposed through an LXC bind mount; `destination.marker_file` independently checks
+   `destination.expected_fstype: ext4` can reject an unintended host-local directory
+   exposed when the intended filesystem/share is absent; `destination.marker_file` independently checks
    for a regular marker you create on the verified target. Follow the complete
    [destination safety procedure](configuration.md#destination-safety-checks).
 

@@ -91,11 +91,11 @@ Edit the job YAML:
    selected data directory and account for all processes that can change the
    selected files.
 2. Set `destination.root` to an **existing**, writable backup directory. Verify
-   any CIFS/NFS mount before use. The optional
+   the supported local or CIFS/NFS destination mount before use. The optional
    [`marker_file` and `expected_fstype` checks](../../configuration.md#destination-safety-checks)
    help prevent writing to an unintended local directory.
-3. Set `trigger.data_dir` to the **same canonical directory** confirmed in step 2.
-4. Set `trigger.matcher.entrypoints` to **only the launch forms actually
+3. Set `application.data_dir` to the **same canonical directory** confirmed in step 2.
+4. Set `application.matcher.entrypoints` to **only the launch forms actually
    verified** in step 2. Keep the appropriate entries for the GUI, daemon, or
    both; remove entries that do not apply to your installation.
 5. Review retention and archive protection. The example creates **unencrypted**
@@ -109,9 +109,9 @@ entrypoints. It is not a complete job and must be adapted to the installed
 processes:
 
 ```yaml
-trigger:
-  enabled: false
-  app: bisq
+application:
+  name: bisq
+  user: bisquser
   data_dir: /data/bisq/Bisq_Alice
   matcher:
     entrypoints:
@@ -124,6 +124,9 @@ trigger:
       - kind: java_main
         value: bisq.daemon.app.BisqDaemonMain
     argv_tokens: []
+
+trigger:
+  enabled: false
   poll_seconds: 2
   confirm_seconds: 10
 ```
@@ -246,7 +249,7 @@ may require editing the matcher and running `trigger update`.
 
 ### Multiple Bisq instances
 
-Each job watches only its canonical `trigger.data_dir`. For example:
+Each job watches only its canonical `application.data_dir`. For example:
 
 ```text
 bisq-sell0.yaml  -> /data/bisq/Bisq_sellXmr0

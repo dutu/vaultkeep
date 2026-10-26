@@ -79,6 +79,9 @@ def calculate_config_fingerprint(
     document: Mapping[str, object] = {
         "fingerprint_version": format_version,
         "config_version": config.config_version,
+        "consistency": config.consistency.model_dump(),
+        "application": config.application.model_dump() if config.application else None,
+        "application_owner_uid": config.application._owner_uid if config.application else None,
         "job": config.job.id,
         "sources": [
             {

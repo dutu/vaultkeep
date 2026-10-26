@@ -8,8 +8,9 @@ cannot arm a backup.
 ## Matcher form
 
 ```yaml
-trigger:
-  app: electrum
+application:
+  name: electrum
+  user: alice
   data_dir: /home/user/.electrum
   matcher:
     exe_realpath: /usr/bin/python3                # optional additional check
@@ -20,6 +21,9 @@ trigger:
     cmdline_regex: "--dir|/opt/.*"                # full-anchored per argv token
     env_eq:
       ELECTRUMDIR: /home/user/.electrum           # allow-listed keys only
+
+trigger:
+  enabled: false
 ```
 
 - A non-empty application `entrypoints` list is required. Entries are alternatives:
@@ -53,7 +57,7 @@ trigger:
 
 ## Data-directory predicate
 
-The effective directory is resolved and compared with `trigger.data_dir` (both canonicalized):
+The effective directory is resolved and compared with `application.data_dir` (both canonicalized):
 
 | App | Sources consulted |
 | --- | --- |
@@ -67,6 +71,12 @@ wins. Trigger does not infer a wallet's default directory or read its applicatio
 configuration files. For Electrum/Wasabi, the allowed directory environment key is
 read before argv fallback; unreadable environment evidence blocks detection even when
 a directory option is present.
+
+Process-reported `~/` paths use the configured application owner's account home;
+relative paths use that process's working directory. Neither uses the backup
+executor's home or working directory. PID, creation time and owner are revalidated
+around metadata reads. Unavailable home or working-directory metadata blocks the
+backup with `inspection_unavailable`; it never proves the application stopped.
 
 Bisq has a single supported automatic directory source: the explicit
 `--appDataDir` process argument. Every GUI or API-daemon launch for a monitored
@@ -113,3 +123,9 @@ No automatic process-model validation command is provided. Keep the shipped
 [application job examples](../../README.md#configure-and-validate-trigger) disabled until these checks pass.
 
 [User guide](../../README.md)
+
+The same detector also enforces `application_offline` in the backup engine. It
+inspects the UID resolved from `application.user`, including a different owner under
+root execution. Unreadable process ownership or identity is unavailable evidence,
+never proof of absence. Metadata and environment reads revalidate PID/create-time
+identity to reject reuse races. `files` mode does no engine process inspection.

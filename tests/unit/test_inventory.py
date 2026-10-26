@@ -18,10 +18,11 @@ from vaultkeep.cli import commands
 from vaultkeep.cli import output as output_module
 from vaultkeep.cli.inventory import print_inventory
 from vaultkeep.cli.output import Console
-from vaultkeep.destination.damage import mark_backup_damaged
 from vaultkeep.destination.discovery import discover_backups
+from vaultkeep.destination.identity import replacement_identity
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
 from vaultkeep.destination.pruning import build_prune_plan
+from vaultkeep.destination.suspect import mark_backup_suspect, record_suspect_replacement
 from vaultkeep.destination.templates import allocate_job_backup_paths
 from vaultkeep.errors import ConfigurationError
 from vaultkeep.file_backups import destination_config, file_key
@@ -45,6 +46,36 @@ def job(tmp_path, valid_config):
                     "destination": config.destination.model_copy(update={"root": str(destination)})
                 }
             )
+        if config.backup_mode == "per_file" and destination is not None:
+            from vaultkeep.file_backups import file_config
+
+            # Tests use a.dat/b.dat histories even when sources are absent.
+            for filename in (
+                "a.dat",
+                "b.dat",
+                "wallet",
+                "other",
+                "a",
+                "b",
+                "first",
+                "second",
+                "one",
+                "two",
+                "old-source",
+                "deleted-source",
+            ):
+                from vaultkeep.file_backups import file_key
+
+                if destination.name == file_key(filename):
+                    config = file_config(config, Path(config.sources[0].path) / filename)
+                    config = config.model_copy(
+                        update={
+                            "destination": config.destination.model_copy(
+                                update={"root": str(destination)}
+                            )
+                        }
+                    )
+                    break
         created = created or datetime(2026, 10, 23, number, tzinfo=UTC)
         paths = allocate_job_backup_paths(
             config.destination,
@@ -61,6 +92,10 @@ def job(tmp_path, valid_config):
         archive.write_bytes(b"x" * (number * 1024))
         (directory / paths.checksum_path.name).write_text("checksum contents are not inspected")
         manifest = BackupManifest(
+            manifest_version=2,
+            replacement_identity=replacement_identity(
+                config.model_copy(update={"job": config.job.model_copy(update={"id": job_id})})
+            ),
             application_version="0.3.0.dev1",
             backup_id=f"{number:032x}",
             job=job_id,
@@ -125,9 +160,9 @@ def test_inventory_uses_stored_utc_encryption_sizes_and_relative_paths(job, caps
     assert cli(job) == 0
     out, err = capsys.readouterr()
     assert out.startswith(f"Vaultkeep — Backups\n\nJob:         app\nDestination: {job.root}\n")
-    assert "Created (UTC)" in out and "Enc" in out
-    assert "2026-10-24 05:05:18  1.5 KiB  no" in out
-    assert "2026-10-23 02:00:00  2.0 KiB  yes" in out
+    assert "Created (UTC)" in out and "Tiers" in out
+    assert "2026-10-24 05:05:18  1.5 KiB" in out
+    assert "2026-10-23 02:00:00  2.0 KiB" in out
     paths = [
         f"  Backup: {item.directory.relative_to(job.root)}" for item in (newest, encrypted, first)
     ]
@@ -144,19 +179,41 @@ def test_inventory_uses_stored_utc_encryption_sizes_and_relative_paths(job, caps
 def test_inventory_marks_damaged_backups_and_preserves_healthy_retention_preview(job, capsys):
     healthy = job.create(1)
     damaged = job.create(2)
-    mark_backup_damaged(damaged.directory, "checksum mismatch")
+    mark_backup_suspect(damaged.directory, "checksum mismatch")
     before = snapshot(job.path.parent)
 
     assert cli(job) == 0
 
     out, err = capsys.readouterr()
     rows = records(out)
-    assert rows[str(damaged.directory.relative_to(job.root))][3] == "DAMAGED"
-    assert rows[str(healthy.directory.relative_to(job.root))][3] == "KEEP"
+    assert rows[str(damaged.directory.relative_to(job.root))][2] == "PROTECTED"
+    assert rows[str(healthy.directory.relative_to(job.root))][2] == "KEEP"
     assert "checksum mismatch" in out
-    assert "Damaged backups are preserved and excluded from retention." in out
-    assert "Damaged: 1" in out
+    assert "SUSPECT: checksum mismatch" in out
+    assert "Suspect: 1" in out
     assert "UNKNOWN" not in out
+    assert err == ""
+    assert snapshot(job.path.parent) == before
+
+
+def test_superseded_suspect_renders_prune_with_original_inline_reason(job, capsys):
+    suspect = job.create(1)
+    replacement = job.create(2)
+    reason = "original checksum mismatch"
+    mark_backup_suspect(suspect.directory, reason)
+    record_suspect_replacement(
+        suspect.directory, json.loads(replacement.manifest.read_text())["backup_id"]
+    )
+    before = snapshot(job.path.parent)
+
+    assert cli(job) == 0
+
+    out, err = capsys.readouterr()
+    relative = str(suspect.directory.relative_to(job.root))
+    assert records(out)[relative][2:] == ["PRUNE", "—"]
+    assert f"  Backup: {relative}\n    SUSPECT: {reason}\n" in out
+    assert records(out)[str(replacement.directory.relative_to(job.root))][2] == "KEEP"
+    assert "Suspect: 1 · Keep: 1 · Prune: 1" in out
     assert err == ""
     assert snapshot(job.path.parent) == before
 
@@ -203,7 +260,7 @@ def test_inventory_never_reads_contents_or_changes_backups_config_or_state(
         ("archive-missing", "Required backup artifact is missing"),
         ("checksum-missing", "Required backup artifact is missing"),
         ("archive-link", "not a regular file"),
-        ("wrong-job", "Manifest identity"),
+        ("wrong-job", "source scope does not match"),
     ],
 )
 @pytest.mark.parametrize("with_valid", [False, True])
@@ -250,7 +307,7 @@ def test_empty_destination_has_one_concise_report(job, capsys):
     (job.root / "unrelated").mkdir()
     assert cli(job) == 0
     out, err = capsys.readouterr()
-    assert "No backups found.\n\nBackups: 0\nNo backups are deleted.\n" in out
+    assert "No backups found.\n\nBackups: 0\n" in out
     assert "Retention:   24 hourly, 7 daily, 8 weekly, 12 monthly, 3 yearly" in out
     assert err == ""
 
@@ -385,9 +442,9 @@ def test_retention_tiers_and_prune_decisions_agree_with_existing_planner(job, ca
     assert cli(job) == 0
     out, err = capsys.readouterr()
     displayed = records(out)
-    assert displayed[str(newest.directory.relative_to(job.root))][3:] == ["KEEP", "hourly, daily"]
-    assert displayed[str(oldest.directory.relative_to(job.root))][3:] == ["KEEP", "daily"]
-    assert displayed[str(redundant.directory.relative_to(job.root))][3:] == ["PRUNE", "—"]
+    assert displayed[str(newest.directory.relative_to(job.root))][2:] == ["KEEP", "daily, hourly"]
+    assert displayed[str(oldest.directory.relative_to(job.root))][2:] == ["KEEP", "daily"]
+    assert displayed[str(redundant.directory.relative_to(job.root))][2:] == ["PRUNE", "—"]
     for backup in discovery.backups:
         record = displayed[str(backup.directory.relative_to(job.root))]
         tiers = {
@@ -395,11 +452,11 @@ def test_retention_tiers_and_prune_decisions_agree_with_existing_planner(job, ca
             for tier, selected in plan.selections.items()
             if backup.manifest.backup_id in {item.backup_id for item in selected}
         }
-        assert record[3] == ("KEEP" if tiers else "PRUNE")
-        assert set(record[4].split(", ")) == (tiers or {"—"})
+        assert record[2] == ("KEEP" if tiers else "PRUNE")
+        assert set(record[3].split(", ")) == (tiers or {"—"})
     assert "Backups: 3 · Keep: 2 · Prune: 1" in out
-    assert "PRUNE indicates eligibility under the current retention policy." in out
-    assert "No backups are deleted." in out and err == ""
+    assert "PRUNE indicates eligibility" not in out
+    assert "No backups are deleted." not in out and err == ""
     assert workflow.prune_backups(job.path, dry_run=True).result == "planned"
     assert snapshot(job.path.parent) == before
 
@@ -421,7 +478,7 @@ def test_per_file_retention_uses_independent_histories(job, capsys, invalid_hist
     assert cli(job) == 0
     out, _ = capsys.readouterr()
     displayed = records(out)
-    assert [displayed[str(backup.directory.relative_to(job.root))][3] for backup in backups] == (
+    assert [displayed[str(backup.directory.relative_to(job.root))][2] for backup in backups] == (
         ["UNKNOWN", "UNKNOWN", "PRUNE", "KEEP"]
         if invalid_history
         else ["PRUNE", "KEEP", "PRUNE", "KEEP"]
@@ -442,10 +499,13 @@ def test_per_file_retention_uses_independent_histories(job, capsys, invalid_hist
 
 
 @pytest.mark.parametrize("invalid", [False, True])
+@pytest.mark.parametrize("suspect", [False, True])
 def test_disabled_retention_is_display_only_and_does_not_relax_other_validation(
-    job, capsys, monkeypatch, invalid
+    job, capsys, monkeypatch, invalid, suspect
 ):
     good = job.create(1)
+    if suspect:
+        mark_backup_suspect(good.directory, "no compatible replacement")
     if invalid:
         job.create(2).manifest.unlink()
     job.data["retention"] = dict.fromkeys(job.data["retention"], 0)
@@ -459,7 +519,12 @@ def test_disabled_retention_is_display_only_and_does_not_relax_other_validation(
     assert cli(job) == 0
     out, _ = capsys.readouterr()
     assert "Retention:   disabled" in out
-    assert records(out)[str(good.directory.relative_to(job.root))][3:] == ["—", "—"]
+    assert records(out)[str(good.directory.relative_to(job.root))][2:] == [
+        "PROTECTED" if suspect else "—",
+        "—",
+    ]
+    if suspect:
+        assert "SUSPECT: no compatible replacement" in out
     assert "Keep:" not in out and "Prune:" not in out and "Unknown:" not in out
     assert snapshot(job.path.parent) == before
     with pytest.raises(ConfigurationError, match="At least one retention tier"):
@@ -479,8 +544,8 @@ def test_duplicate_backup_ids_make_preview_unknown_without_hiding_inventory(job,
     second.manifest.write_text(json.dumps(metadata))
     assert cli(job) == 0
     out, _ = capsys.readouterr()
-    assert {row[3] for row in records(out).values()} == {"UNKNOWN"}
-    assert "Duplicate backup ID" in out and "Unknown: 2" in out
+    assert {row[2] for row in records(out).values()} == {"UNKNOWN"}
+    assert "Duplicate backup identities" in out and "Unknown: 2" in out
 
 
 def test_retention_uses_stored_local_calendar_days_while_displaying_utc(job, capsys):
@@ -495,8 +560,8 @@ def test_retention_uses_stored_local_calendar_days_while_displaying_utc(job, cap
     # Two different UTC dates share one stored local calendar day. Only its
     # newest recovery point is selected even with two daily buckets configured.
     assert displayed[str(first.directory.relative_to(job.root))][0] == "2026-10-22 21:30:00"
-    assert displayed[str(first.directory.relative_to(job.root))][3] == "PRUNE"
-    assert displayed[str(second.directory.relative_to(job.root))][3:] == ["KEEP", "daily"]
+    assert displayed[str(first.directory.relative_to(job.root))][2] == "PRUNE"
+    assert displayed[str(second.directory.relative_to(job.root))][2:] == ["KEEP", "daily"]
 
 
 def test_list_has_no_verbose_option(job, capsys):
