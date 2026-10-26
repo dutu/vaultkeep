@@ -16,6 +16,7 @@ from tests.trigger.conftest import (
     make_request,
 )
 from vaultkeep.notifications.notifier import NotificationConfig
+from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.errors import BlockedError
 from vaultkeep.trigger.matcher import ProcessInfo
 from vaultkeep.trigger.models import (
@@ -63,7 +64,8 @@ def _make(store, provider, controller=None, notifier=None, instance=None):
     return _monitor(store, provider, controller, notifier, instance), controller, notifier
 
 
-def test_full_lifecycle_dispatch_and_receipt(store: StateStore) -> None:
+@pytest.mark.parametrize("outcome", [AttemptOutcome.CREATED, AttemptOutcome.UNCHANGED])
+def test_full_lifecycle_dispatch_receipt_and_restart(store: StateStore, outcome) -> None:
     provider = FakeProvider([_running_proc()])
     monitor, controller, notifier = _make(store, provider)
 
@@ -89,7 +91,7 @@ def test_full_lifecycle_dispatch_and_receipt(store: StateStore) -> None:
             attempt_id=attempt_id,
             request_id=request_id,
             instance_id="electrum-main",
-            outcome=AttemptOutcome.CREATED,
+            outcome=outcome,
             started_at=utc_now(),
             ended_at=utc_now(),
             duration_seconds=1.0,
@@ -101,7 +103,17 @@ def test_full_lifecycle_dispatch_and_receipt(store: StateStore) -> None:
     reconciled = store.read_instance("electrum-main")
     assert reconciled is not None
     assert reconciled.active_attempt_id is None
-    assert reconciled.attempt_summaries[-1]["outcome"] == "created"
+    assert reconciled.attempt_summaries[-1]["outcome"] == outcome.value
+    assert (
+        application_status(
+            reconciled,
+            store,
+            reliable=True,
+            poll_seconds=monitor.config.poll_seconds,
+            monitor_started_at=monitor._started_at,
+        )[0]
+        == "HAS STOPPED"
+    )
     requested = [(title, body) for title, body in notifier.calls if "requested" in title]
     assert len(requested) == 1
     assert "dispatch requested" in requested[0][1]
@@ -109,6 +121,34 @@ def test_full_lifecycle_dispatch_and_receipt(store: StateStore) -> None:
     assert not any(
         "Backup completed" in title or "backup finished" in title for title, _ in notifier.calls
     )
+
+    restarted, _, restarted_notifier = _make(store, provider, controller=controller)
+    restarted._startup_reconcile()
+    assert (
+        application_status(
+            store.read_instance(reconciled.instance_id),
+            store,
+            reliable=True,
+            poll_seconds=restarted.config.poll_seconds,
+            monitor_started_at=restarted._started_at,
+        )[0]
+        == "UNKNOWN"
+    )
+    restarted.run_once()
+    refreshed = store.read_instance(reconciled.instance_id)
+    assert application_status(
+        refreshed,
+        store,
+        reliable=True,
+        poll_seconds=restarted.config.poll_seconds,
+        monitor_started_at=restarted._started_at,
+    ) == ("NOT RUNNING", "")
+    assert not refreshed.armed and refreshed.pending_request is None
+    assert refreshed.latest_request_id == request_id
+    assert refreshed.attempt_summaries == reconciled.attempt_summaries
+    assert store.read_request(attempt_id) is not None
+    assert controller.started == [unit_name_for(attempt_id)]
+    assert not restarted_notifier.calls
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -337,7 +377,7 @@ def test_application_notifications_follow_status_states_without_repeating_polls(
     provider = FakeProvider([])
     monitor, _controller, notifier = _make(store, provider)
     monitor.config = replace(monitor.config, notifications=NotificationConfig(enabled=True))
-    monitor.run_once()  # First observation establishes NOT YET DETECTED.
+    monitor.run_once()  # First observation establishes NOT RUNNING.
     monitor.run_once()
     assert not notifier.calls
     provider.processes = [_running_proc()]
@@ -357,7 +397,7 @@ def test_application_notifications_follow_status_states_without_repeating_polls(
     assert changes == [
         (f"instance electrum-main: Application {before} → {after}", (None, False))
         for before, after in [
-            ("NOT YET DETECTED", "RUNNING"),
+            ("NOT RUNNING", "RUNNING"),
             ("RUNNING", "CONFIRMING STOP"),
             ("CONFIRMING STOP", "HAS STOPPED"),
             ("HAS STOPPED", "RUNNING"),

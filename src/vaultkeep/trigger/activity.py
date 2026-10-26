@@ -46,7 +46,8 @@ def application_status(
         return "UNKNOWN", " (shutdown not yet confirmed)"
 
     # A request is created only after a running -> confirmed-stopped transition.
-    # latest_request_id is invalidated when the application is seen running again.
+    # It can survive monitor restarts; only a current-session confirmation proves
+    # that the application HAS STOPPED during this session.
     if state.latest_request_id:
         request = state.pending_request
         if request is None or request.request_id != state.latest_request_id:
@@ -77,12 +78,6 @@ def application_status(
             stopped_age = elapsed_seconds(request.confirmed_at)
             if confirmed and started <= confirmed <= observed and stopped_age is not None:
                 return "HAS STOPPED", f" ({duration(stopped_age)} ago)"
-        return "UNKNOWN", " (current session observation unavailable)"
-    if (
-        state.latest_request_id is None
-        and not state.attempt_summaries
-        and not state.active_attempt_id
-        and not state.pending_request
-    ):
-        return "NOT YET DETECTED", ""
-    return "UNKNOWN", ""
+    # Request history can prove a shutdown in this session, but cannot negate a
+    # fresh STOPPED observation when no shutdown confirmation is in progress.
+    return "NOT RUNNING", ""

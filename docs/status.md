@@ -113,8 +113,15 @@ Inspect this section as the non-root application owner with `--user`.
 - `Monitor` reports service/lock health and the age of the last update. A held lock
   with stale updates is `UNKNOWN`; it does not prove a responsive monitor.
 - `Application` uses `RUNNING`, `HAS STOPPED`, `CONFIRMING STOP`,
-  `NOT YET DETECTED`, or `UNKNOWN`. Fresh observations must belong to the current
+  `NOT RUNNING`, or `UNKNOWN`. Fresh observations must belong to the current
   monitor session and configuration. `RUNNING` includes observation recency.
+  `NOT RUNNING` means the application is reliably observed stopped with no shutdown
+  confirmation in progress. Retained requests, attempts, and recovery records do not
+  override that observation. `HAS STOPPED` requires a confirmed shutdown transition
+  in the current session; after a monitor restart, fresh stopped observations report
+  `NOT RUNNING` until a new shutdown transition is confirmed. `CONFIRMING STOP`
+  covers shutdown confirmation; `UNKNOWN` covers unreliable, stale, ambiguous, or
+  unavailable observations.
 - `Dispatch` describes requests and worker orchestration: idle, pending, active,
   awaiting reconciliation, blocked, or unknown. Pending requests and worker health
   remain separate from actual backup activity.

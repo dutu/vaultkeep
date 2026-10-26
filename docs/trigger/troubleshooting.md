@@ -103,6 +103,13 @@ absence for `trigger.confirm_seconds` (default: 5 seconds), then confirms at a s
 poll. Backup dispatch waits for confirmation. A restart or inconclusive observation
 interrupts confirmation.
 
+`NOT RUNNING` means the monitor reliably observes the application stopped without
+a shutdown confirmation in progress. This includes starting or restarting the monitor
+after a completed backup while the application remains stopped. Historical requests,
+backup attempts, and retained recovery warnings do not make that observation unknown.
+`HAS STOPPED` requires a shutdown transition confirmed in the current monitor session.
+`NOT RUNNING` alone does not request another backup or clear recovery warnings.
+
 If `Monitor` becomes `UNKNOWN` with `updates stale or unavailable`, no fresh update
 has been recorded within twice `trigger.poll_seconds` (default: 4 seconds), or its
 timestamp is missing or invalid. `Application` also becomes `UNKNOWN` because its

@@ -68,7 +68,7 @@ def report(path):
         ("running", "RUNNING"),
         ("confirming", "CONFIRMING STOP"),
         ("stopped", "HAS STOPPED"),
-        ("unseen", "NOT YET DETECTED"),
+        ("unseen", "NOT RUNNING"),
     ],
 )
 def test_application_detection_and_confirmed_shutdown(selected_job, store, stage, expected):
@@ -93,20 +93,48 @@ def test_application_detection_and_confirmed_shutdown(selected_job, store, stage
     assert data["backup"]["previous"] is None
 
 
+@pytest.mark.parametrize("observation", [Observation.RUNNING, Observation.STOPPED])
 @pytest.mark.parametrize(
     "problem",
-    ["stale", "old_session", "future", "stopped", "ambiguous", "unavailable", "changed_config"],
+    [
+        "stale",
+        "old_session",
+        "future",
+        "stopped",
+        "ambiguous",
+        "unavailable",
+        "changed_config",
+        "missing_session",
+        "missing_observation",
+        "stale_observation",
+        "future_observation",
+    ],
 )
-def test_unreliable_monitoring_cannot_claim_application_running(
-    selected_job, store, monkeypatch, problem
+def test_unreliable_monitoring_cannot_claim_application_state(
+    selected_job, store, monkeypatch, problem, observation
 ):
     path, _config, state = selected_job
+    state.last_observation = ObservationRecord(observation, utc_now())
+    state.armed = observation is Observation.RUNNING
     if problem == "stale":
         state.last_monitor_update = "2000-01-01T00:00:00Z"
     elif problem == "future":
         state.last_monitor_update = "2999-01-01T00:00:00Z"
     elif problem == "old_session":
-        state.last_observation = ObservationRecord(Observation.RUNNING, "2000-01-01T00:00:00Z")
+        state.last_observation = ObservationRecord(
+            observation, (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        )
+        session = utc_now()
+        monkeypatch.setattr("vaultkeep.trigger.status._monitor_started_at", lambda _: session)
+        state.last_monitor_update = utc_now()
+    elif problem == "missing_session":
+        monkeypatch.setattr("vaultkeep.trigger.status._monitor_started_at", lambda _: None)
+    elif problem == "missing_observation":
+        state.last_observation = None
+    elif problem == "stale_observation":
+        state.last_observation = ObservationRecord(observation, "2000-01-01T00:00:00Z")
+    elif problem == "future_observation":
+        state.last_observation = ObservationRecord(observation, "2999-01-01T00:00:00Z")
     elif problem == "stopped":
         monkeypatch.setattr("vaultkeep.trigger.status._monitor_status", lambda _: "stopped")
     elif problem == "changed_config":
@@ -117,7 +145,10 @@ def test_unreliable_monitoring_cannot_claim_application_running(
             utc_now(),
         )
     store.write_instance(state)
-    assert report(path)["trigger"]["application"] == "UNKNOWN"
+    trigger = report(path)["trigger"]
+    assert trigger["application"] == "UNKNOWN"
+    if problem in ("old_session", "missing_observation", "stale_observation", "future_observation"):
+        assert trigger["monitor"] == "RUNNING"
 
 
 @pytest.mark.parametrize(
@@ -428,12 +459,70 @@ def test_unidentified_historical_safety_does_not_invent_attempt_count(selected_j
     assert "Safety REVIEW REQUIRED (previous executions)" in human
 
 
-def test_missing_current_session_confirmation_uses_observation_wording(selected_job, store):
+def test_missing_shutdown_request_does_not_hide_stopped_observation(selected_job, store):
     path, _, state = selected_job
     state.last_observation = ObservationRecord(Observation.STOPPED, utc_now())
     state.armed = False
     state.latest_request_id = "unavailable-request"
     store.write_instance(state)
     trigger = report(path)["trigger"]
-    assert trigger["application"] == "UNKNOWN"
-    assert trigger["application_detail"] == " (current session observation unavailable)"
+    assert trigger["application"] == "NOT RUNNING"
+    assert trigger["application_detail"] == ""
+
+
+@pytest.mark.parametrize("location", ["pending", "active", "summary"])
+@pytest.mark.parametrize("confirmation", ["historical", "current"])
+@pytest.mark.parametrize("latest", [None, "", "request"])
+def test_stopped_observation_with_retained_requests(
+    selected_job, store, location, confirmation, latest
+):
+    path, config, state = selected_job
+    request = make_request(config.instances[0])
+    if confirmation == "historical":
+        previous_session = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        request = replace(request, created_at=previous_session, confirmed_at=previous_session)
+    store.write_request(request)
+    state.armed = False
+    state.latest_request_id = request.request_id if latest == "request" else latest
+    if location == "pending":
+        state.pending_request = replace(request, attempt_id="")
+    elif location == "active":
+        state.active_attempt_id = request.attempt_id
+        state.active_request_id = request.request_id
+    else:
+        state.attempt_summaries = [
+            {
+                "attempt_id": request.attempt_id,
+                "request_id": request.request_id,
+                "outcome": AttemptOutcome.CREATED.value,
+                "review_required": True,
+            }
+        ]
+        state.review_required = True
+    state.last_observation = ObservationRecord(Observation.STOPPED, utc_now())
+    store.write_instance(state)
+    before = store.instance_path(state.instance_id).read_bytes()
+
+    trigger = report(path)["trigger"]
+
+    expected = "HAS STOPPED" if confirmation == "current" and latest == "request" else "NOT RUNNING"
+    assert trigger["application"] == expected
+    if location == "summary":
+        assert trigger["safety"][0]["current"] is False
+        assert trigger["safety"][0]["attempt_id"] == request.attempt_id
+    assert store.instance_path(state.instance_id).read_bytes() == before
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_shutdown_confirmation_takes_precedence_over_historical_request(selected_job, store, armed):
+    path, config, state = selected_job
+    previous_session = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    request = replace(make_request(config.instances[0]), confirmed_at=previous_session)
+    state.pending_request = replace(request, attempt_id="")
+    state.latest_request_id = request.request_id
+    state.armed = armed
+    state.candidate_since = utc_now()
+    state.last_observation = ObservationRecord(Observation.STOPPED, utc_now())
+    store.write_instance(state)
+
+    assert report(path)["trigger"]["application"] == "CONFIRMING STOP"

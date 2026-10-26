@@ -99,7 +99,7 @@ shutdown, can prevent a final alert.
 Trigger alerts cover its own observations and orchestration:
 
 - Changes to the `Application` state shown by `vaultkeep status`: `RUNNING`,
-  `CONFIRMING STOP`, `HAS STOPPED`, `NOT YET DETECTED`, or `UNKNOWN`. The first fresh
+  `CONFIRMING STOP`, `HAS STOPPED`, `NOT RUNNING`, or `UNKNOWN`. The first fresh
   observation after startup establishes the baseline without an alert; unchanged
   observations do not resend it.
 - One `Dispatch requested` message per logical request after confirmed application
