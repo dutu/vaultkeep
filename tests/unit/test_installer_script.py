@@ -793,7 +793,9 @@ def test_reload_failure_rolls_back_refresh_or_fresh_install(
     control(host, reload_fail_once=True)
     result = run_installer(host, "install", check=False)
     assert result.returncode != 0
-    assert "ERROR: install.sh: installer transaction failed (exit 1);" in result.stderr
+    assert "Installation failed. Rollback succeeded." in result.stderr
+    assert ("Previous installation preserved." in result.stderr) == (not fresh)
+    assert "restoring deployment and job units" in diagnostic_log(result).read_text()
     after = snapshot(host)
     # Inactive examples and stable deployment/installer locks may remain on first failure.
     ignored = ("install.lock", "maintenance.lock", ".example")
@@ -1053,7 +1055,7 @@ def assert_configuration_refusal(host, result, before):
     assert "Release activation" not in result.stdout
     assert "Refresh managed jobs" not in result.stdout
     assert "Installation aborted." in result.stderr
-    assert "installation and schedules remain unchanged" in result.stderr
+    assert "Previous installation preserved." in result.stderr
     assert snapshot(host) == before
     calls = [json.loads(line) for line in Path(host["HOST_LOG"]).read_text().splitlines()]
     assert all(
@@ -1079,8 +1081,8 @@ def test_first_install_validates_existing_yaml_without_creating_deployment(host)
     assert "Configuration validation" in result.stdout
     assert "Pause schedules" not in result.stdout
     assert "Release activation" not in result.stdout
-    assert f"File: {config}" in result.stderr
-    assert "Unable to parse YAML configuration" in result.stderr
+    assert f"Issue: {config}" in result.stderr
+    assert "Invalid YAML syntax" in result.stderr
     assert (config.read_bytes(), config.stat().st_mode, config.stat().st_mtime_ns) == before
     prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
     assert not (prefix / "current").exists()
@@ -1135,9 +1137,8 @@ def test_candidate_schema_refuses_obsolete_system_job_before_any_schedule_change
         (path.stat().st_mode, path.stat().st_mtime_ns) == value for path, value in metadata.items()
     )
     for output in (result.stderr, diagnostic_log(result).read_text()):
-        assert "Found 1 invalid job configuration:" in output
-        assert "Job: app" in output and f"File: {config}" in output
-        assert "trigger.notifications" in output and "Unknown property." in output
+        assert f"Issue: {config}" in output
+        assert "trigger.notifications" in output and "Unknown property" in output
         assert "destination.root" in output and "Field required" in output
     # Correcting the same file lets the same candidate complete successfully.
     valid_config["trigger"] = {}
@@ -1165,7 +1166,19 @@ def test_configuration_refusal_collects_user_jobs_without_pausing(
         jobs.mkdir(parents=True)
         config = jobs / f"job{index}.yaml"
         valid_config["job"]["id"] = config.stem
-        valid_config["trigger"] = {"notifications": {}}
+        if user_count == 2 and index == 0:
+            valid_config["application"] = {
+                "name": "bisq",
+                "user": "vaultkeep-test-missing-user",
+                "data_dir": "/data/bisq/instance",
+                "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq/bin/Bisq"}]},
+            }
+            valid_config["consistency"] = {"mode": "application_offline"}
+            valid_config["trigger"] = {"enabled": False}
+        else:
+            valid_config.pop("application", None)
+            valid_config.pop("consistency", None)
+            valid_config["trigger"] = {"notifications": {}}
         config.write_text(json.dumps(valid_config))
         configs.append(config)
         accounts.append((name, "x", 1000 + index, 1000 + index, "", str(home), "/bin/sh"))
@@ -1210,15 +1223,16 @@ os.execvp(args[0], args)
 
     assert_configuration_refusal(installed, result, before)
     expected_count = user_count + (user_count == 2)
-    assert f"Found {expected_count} invalid job configuration" in result.stderr
+    assert result.stderr.count("Issue: ") == expected_count
     if user_count == 2:
-        assert "Job: System-backups" in result.stderr
-        assert f"File: {system_config}" in result.stderr
+        assert f"Issue: {system_config}" in result.stderr
     for config, original in originals.items():
         for output in (result.stderr, diagnostic_log(result).read_text()):
-            assert f"User: {config.parents[3].name}" in output
-            assert f"Job: {config.stem}" in output and f"File: {config}" in output
-            assert "trigger.notifications" in output
+            assert f"Issue: {config}" in output
+            if user_count == 2 and config.stem == "job0":
+                assert "application.user" in output and "vaultkeep-test-missing-user" in output
+            else:
+                assert "trigger.notifications" in output
         assert (config.read_bytes(), config.stat().st_mtime_ns) == original
 
 
@@ -1244,8 +1258,11 @@ def test_schema_change_after_preflight_is_still_rejected_by_refresh(
 
     assert result.returncode != 0
     assert "Release activation" in result.stdout and "Refresh managed jobs" in result.stdout
-    assert "obsolete" in result.stderr and "Unknown property." in result.stderr
-    assert "restoring deployment and job units" in result.stderr
+    assert f"Issue: {config}" in result.stderr
+    assert "obsolete" in result.stderr and "Unknown property" in result.stderr
+    assert result.stderr.count("Issue:") == 1
+    assert "ERROR:" not in result.stderr and "Traceback" not in result.stderr
+    assert "Rollback succeeded." in result.stderr
     # YAML belongs to the administrator: rollback leaves even concurrent edits intact.
     after = snapshot(installed)
     updated = json.loads(before.pop(str(config))[1])
@@ -1343,9 +1360,9 @@ def test_disabled_monitor_failure_reports_only_relevant_errors_and_restores_sche
 
     assert result.returncode == 1
     assert "Issue: Refresh managed jobs failed (exit 1)." in result.stderr
-    assert result.stderr.count("bisquser: job validate failed") == 1
-    assert result.stderr.count(detail) == 1
-    assert "restoring deployment and job units" in result.stderr
+    assert result.stderr.count("bisquser: could not validate managed jobs") == 1
+    assert detail not in result.stderr
+    assert "Rollback succeeded." in result.stderr
     transcript = diagnostic_log(result).read_text()
     for raw in ("Looking in links", "Successfully installed", "validation stdout detail"):
         assert raw in transcript
@@ -1752,3 +1769,95 @@ stage_finish
     assert (
         "archive check failed" in transcript.read_text() and "tool detail" in transcript.read_text()
     )
+
+
+@pytest.mark.parametrize("problem", ["user", "group", "type", "yaml_secret"])
+def test_configuration_errors_are_compact_and_leave_previous_installation_operational(
+    installed, tmp_path, valid_config, monkeypatch, problem
+):
+    config, _ = managed_timer(installed, valid_config, monkeypatch)
+    source = candidate_source(tmp_path, "update")
+    if problem == "user":
+        valid_config["application"] = {
+            "name": "bisq",
+            "user": "vaultkeep-test-missing-user",
+            "data_dir": "/data/bisq/instance",
+            "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq/bin/Bisq"}]},
+        }
+        valid_config["consistency"] = {"mode": "application_offline"}
+        valid_config["trigger"] = {"enabled": False}
+        explanation = "User 'vaultkeep-test-missing-user' does not exist (field: application.user)."
+        diagnostic = "getpwnam"
+    elif problem == "group":
+        module = source / "src/vaultkeep/maintenance.py"
+        module.write_text(
+            module.read_text().replace(
+                '            grp.getgrnam("root")',
+                '            raise KeyError("getgrnam(): root does not exist")',
+            )
+        )
+        explanation = "Group 'root' does not exist (required by the backup service)."
+        diagnostic = "getgrnam"
+    elif problem == "type":
+        valid_config.setdefault("trigger", {})["poll_seconds"] = "private-token-never-print"
+        explanation = "Input should be a valid number (field: trigger.poll_seconds)."
+        diagnostic = "ValidationError"
+    else:
+        explanation = "Invalid YAML syntax; correct the file and retry."
+        diagnostic = "ParserError"
+    config.write_text(json.dumps(valid_config))
+    if problem == "yaml_secret":
+        config.write_text("encryption: {password: private-token-never-print, broken: [}\n")
+    before = snapshot(installed)
+    Path(installed["HOST_LOG"]).write_text("")
+
+    result = run_installer(installed, "update", check=False, source=source)
+
+    assert_configuration_refusal(installed, result, before)
+    assert result.stderr.startswith(f"Issue: {config}\n       {explanation}\n")
+    assert result.stderr.count("Issue:") == 1
+    for hidden in ("ERROR:", "getpwnam", "getgrnam", "Traceback", "exit 1", "private-token"):
+        assert hidden not in result.stdout + result.stderr
+    transcript = diagnostic_log(result).read_text()
+    assert "Traceback" in transcript and diagnostic in transcript
+    assert (
+        subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
+        == CANDIDATE_VERSION
+    )
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    assert settings["launcher_states"]["vaultkeep@app.timer"] == "active"
+
+
+@pytest.mark.parametrize("failure", ["restore", "resume"])
+def test_incomplete_rollback_is_reported_without_claiming_preservation(
+    installed, tmp_path, valid_config, monkeypatch, failure
+):
+    config, _ = managed_timer(installed, valid_config, monkeypatch)
+    # A missing source is runtime readiness, so it still fails after refresh.
+    valid_config["sources"][0]["path"] += "/missing"
+    config.write_text(json.dumps(valid_config))
+    source = candidate_source(tmp_path, "update")
+    if failure == "restore":
+        helper = source / "scripts/install_maintenance.py"
+        helper.write_text(
+            helper.read_text().replace(
+                '    elif action == "restore":\n        restore(path)',
+                '    elif action == "restore":\n        fail("simulated unit restoration failure")',
+            )
+        )
+    else:
+        settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+        settings["resume_fail"] = "vaultkeep@app.timer"
+        control(installed, **settings)
+
+    result = run_installer(installed, "update", check=False, source=source)
+
+    assert result.returncode != 0
+    assert "Rollback incomplete; recovery snapshots:" in result.stderr
+    assert "Previous installation preserved" not in result.stderr
+    assert "Rollback succeeded" not in result.stderr
+    prefix = Path(installed["VAULTKEEP_INSTALL_PREFIX"])
+    assert list(prefix.glob(".maintenance.*/journal.json"))
+    assert list(prefix.glob(".transaction.*"))
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    assert settings["launcher_states"]["vaultkeep@app.timer"] == "inactive"

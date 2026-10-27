@@ -223,15 +223,12 @@ def test_configuration_check_collects_all_accounts_even_after_an_account_failure
 
     assert calls == [None, "alice", "bob", "carol"]
     message = str(caught.value)
-    assert "Found 3 invalid job configurations:" in message
+    assert message.count("Issue: ") == 3
     for name in ("system", "alice", "carol"):
-        assert f"Job: {name}" in message
-        assert f"File: {tmp_path / f'{name}.yaml'}" in message
-    assert "User: system" not in message
-    assert "User: alice" in message and "User: carol" in message
+        assert f"Issue: {tmp_path / f'{name}.yaml'}" in message
     assert "bob: permission denied" in message
-    assert message.count("trigger.notifications") == 3
-    assert message.count("destination.root") == 3
+    assert message.count("field: trigger.notifications") == 3
+    assert message.count("field: destination.root") == 3
 
 
 def test_account_rendering_uses_own_home_and_manager_xdg_environment(helper, monkeypatch, tmp_path):
@@ -317,7 +314,9 @@ def test_account_operation_keeps_both_captured_streams_in_diagnostics(
         ),
     )
     if status:
-        with pytest.raises(ValueError, match="root: job validate failed\naccount stderr"):
+        with pytest.raises(
+            ValueError, match="root: could not validate managed jobs; see diagnostics log"
+        ):
             helper.account_operation({"account": None}, "python", "validate", {})
     else:
         assert helper.account_operation({"account": None}, "python", "validate", {}) is None
@@ -325,3 +324,30 @@ def test_account_operation_keeps_both_captured_streams_in_diagnostics(
     log = transcript.read_text()
     assert f"Exit code: {status}" in log
     assert "account stdout" in log and "account stderr" in log
+
+
+def test_account_configuration_failure_propagates_without_prefixes(helper, monkeypatch, tmp_path):
+    error = {
+        "errors": [
+            {
+                "file": str(tmp_path / "app.yaml"),
+                "issues": [
+                    {"path": "application.user", "message": "User 'missing' does not exist."}
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        helper.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, json.dumps(error), "Traceback: getpwnam lookup failure"
+        ),
+    )
+    with pytest.raises(ValueError) as caught:
+        helper.account_operation({"account": None}, "python", "plan", {})
+    assert str(caught.value) == (
+        f"Issue: {tmp_path / 'app.yaml'}\n"
+        "       User 'missing' does not exist (field: application.user)."
+    )
+    assert "getpwnam" not in str(caught.value)

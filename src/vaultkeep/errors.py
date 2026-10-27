@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 type IssuePathPart = str | int
 
@@ -30,6 +31,8 @@ class ValidationIssue:
 class VaultkeepError(Exception):
     """Base class for structured Vaultkeep application errors."""
 
+    config_path: Path | None = None
+
 
 class ConfigurationError(VaultkeepError):
     """One or more parse, schema, or semantic configuration errors."""
@@ -56,6 +59,14 @@ class ConfigurationError(VaultkeepError):
 
 class SourceDiscoveryError(VaultkeepError):
     """Source traversal cannot produce a valid immutable snapshot."""
+
+
+class ApplicationIdentityError(SourceDiscoveryError):
+    """An application identity cannot be resolved from a configuration field."""
+
+    def __init__(self, issue: ValidationIssue) -> None:
+        self.issue = issue
+        super().__init__(issue.message)
 
 
 class SourceHashError(VaultkeepError):

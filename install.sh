@@ -68,6 +68,8 @@ STAGE_STARTED=0
 HEARTBEAT_PID=""
 REPORT_FAILED=0
 FAILED_STAGE=""
+CONFIGURATION_REFUSED=0
+FAILURE_OUTCOME=""
 
 capture_diagnostics() {
     # Keep structured errors separate from raw tool output. Unlink the private
@@ -217,9 +219,17 @@ report_failure() {
     REPORT_FAILED=1
     local failed_stage=${FAILED_STAGE:-${CURRENT_STAGE:-installation}}
     stage_finish FAILED
-    printf 'Issue: %s failed (exit %s).\n' "$failed_stage" "$status" >&4
+    local details=""
     if [[ "$ERROR_REPORTING" == 1 ]]; then
-        cat <&6 >&4
+        details=$(cat <&6)
+    fi
+    if [[ "$details" != Issue:\ * ]]; then
+        printf 'Issue: %s failed (exit %s).\n' "$failed_stage" "$status" >&4
+    fi
+    [[ -z "$details" ]] || printf '%s\n' "$details" >&4
+    if [[ -n "$FAILURE_OUTCOME" ]]; then
+        printf '%s\n' "$FAILURE_OUTCOME" >&4
+        printf '%s\n' "$FAILURE_OUTCOME" >&2
     fi
     printf '\nResult: %s\n' "$(color_status FAILED)" >&3
     if [[ -n "$INSTALL_LOG" ]]; then
@@ -609,25 +619,17 @@ maintenance() {
 }
 
 check_existing_configurations() {
-    local python=$1 details
+    local python=$1
     stage_start "Configuration validation"
     if [[ "$DRY_RUN" == 1 ]]; then
         log "PLAN validate all existing root/user job YAML with the candidate schema before pausing schedules or activation"
         return
     fi
-    # This operation already presents its complete structured validation report.
-    if details=$(VAULTKEEP_INSTALL_ERROR_FD= python3 "$SOURCE_DIR/scripts/install_maintenance.py" \
-        check-configurations "$python" 2>&1); then
-        [[ -z "$details" ]] || printf '%s\n' "$details"
+    if python3 "$SOURCE_DIR/scripts/install_maintenance.py" check-configurations "$python"; then
         return
     fi
     FAILED_STAGE=$CURRENT_STAGE
-    stage_finish FAILED
-    printf '%s\n' "$details"
-    printf '%s\n' "$details" >&4
-    details=$'Installation aborted.\nThe existing Vaultkeep installation and schedules remain unchanged.'
-    printf '\n%s\n' "$details"
-    printf '\n%s\n' "$details" >&4
+    CONFIGURATION_REFUSED=1
     return 1
 }
 
@@ -738,13 +740,15 @@ restore_or_remove_file() {
 
 rollback_commit() {
     local status=${1:-1}
+    local maintenance_started=0
     trap - EXIT INT TERM HUP
     set +e
     [[ "$status" != 0 ]] || status=1
     FAILED_STAGE=${FAILED_STAGE:-$CURRENT_STAGE}
     stage_finish FAILED
     if [[ -n "$MAINTENANCE_DIR" || "$ROLLBACK_ACTIVE" == 1 ]]; then
-        error "installer transaction failed (exit $status); restoring deployment and job units"
+        maintenance_started=1
+        message ERROR "installer transaction failed (exit $status); restoring deployment and job units" >&2
     fi
     if [[ -f "$MAINTENANCE_DIR/journal.json" ]]; then
         # Restore account-owned units independently of candidate package health,
@@ -770,7 +774,7 @@ rollback_commit() {
     if [[ -n "$UNIT_VALIDATION_DIR" ]]; then
         rm -rf "$UNIT_VALIDATION_DIR" || rollback_failure "$UNIT_VALIDATION_DIR"
     fi
-    rm -f "$VK_PREFIX/.current.$$" "${VK_MANIFEST%.json}.tmp"
+    rm -f "$VK_PREFIX/.current.$$" "${VK_MANIFEST%.json}.tmp" || rollback_failure "temporary deployment links/manifest"
     if [[ "$ROLLBACK_ACTIVE" == 1 || "$JOBS_REFRESH_STARTED" == 1 ]]; then
         systemctl daemon-reload || rollback_failure "system manager daemon-reload"
         if [[ "$CHECK_USERS" == 1 && "$COMPONENTS" == core,trigger ]]; then
@@ -778,11 +782,25 @@ rollback_commit() {
         fi
     fi
     if [[ "$RESTORE_FAILED" == 0 ]]; then
-        [[ -z "$ROLLBACK_TMP" ]] || rm -rf "$ROLLBACK_TMP"
         resume_schedules || rollback_failure "previously active schedules"
-    else
+    fi
+    if [[ "$RESTORE_FAILED" == 1 ]]; then
         release_maintenance_lock
-        error "rollback incomplete; schedules remain paused; recovery snapshots: $ROLLBACK_TMP $MAINTENANCE_DIR"
+        FAILURE_OUTCOME="Installation failed. Rollback incomplete; recovery snapshots: $ROLLBACK_TMP $MAINTENANCE_DIR"
+    else
+        [[ -z "$ROLLBACK_TMP" ]] || rm -rf "$ROLLBACK_TMP"
+        if [[ "$maintenance_started" == 1 ]]; then
+            FAILURE_OUTCOME="Installation failed. Rollback succeeded."
+        elif [[ "$CONFIGURATION_REFUSED" == 1 ]]; then
+            FAILURE_OUTCOME="Installation aborted."
+        fi
+        if [[ -n "$FAILURE_OUTCOME" ]]; then
+            if [[ -f "$VK_MANIFEST" ]]; then
+                FAILURE_OUTCOME+=" Previous installation preserved."
+            else
+                FAILURE_OUTCOME+=" No deployment activated."
+            fi
+        fi
     fi
     report_failure "$status"
     exit "$status"

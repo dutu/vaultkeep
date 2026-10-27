@@ -140,8 +140,8 @@ def test_configuration_check_reports_managed_job_failures(
         assert error["issues"][0]["path"] == "<root>"
         expected = {
             "missing": "Configuration file does not exist",
-            "unreadable": "Unable to read YAML configuration",
-            "malformed": "Unable to parse YAML configuration",
+            "unreadable": "Cannot read configuration file",
+            "malformed": "Invalid YAML syntax",
         }
         assert expected[problem] in error["issues"][0]["message"]
 
@@ -405,3 +405,204 @@ def test_missing_lock_allows_development_but_symlink_lock_is_refused(tmp_path, m
     (tmp_path / "maintenance.lock").symlink_to(tmp_path / "missing")
     with pytest.raises(LockError, match="Cannot open"), deployment_lock():
         pass
+
+
+def application_identity(user):
+    return {
+        "name": "bisq",
+        "user": user,
+        "data_dir": "/data/bisq/instance",
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq/bin/Bisq"}]},
+    }
+
+
+@pytest.mark.parametrize("user", [False, True])
+def test_configuration_check_resolves_disabled_job_identities_without_mutation(
+    tmp_path, valid_config, monkeypatch, user
+):
+    spec, paths, config = scheduled_job(tmp_path, valid_config, monkeypatch, user=user)
+    valid_config["application"] = application_identity("vaultkeep-missing-application-user")
+    valid_config["consistency"] = {"mode": "application_offline"}
+    valid_config["trigger"] = {"enabled": False}
+    config.write_text(json.dumps(valid_config))
+    # An unrelated valid job must not mask the invalid installed selection.
+    other = paths.jobs_root / "other.yaml"
+    other_config = copy.deepcopy(valid_config)
+    other_config["job"]["id"] = "other"
+    other_config.pop("application")
+    other_config["consistency"]["mode"] = "files"
+    other.write_text(json.dumps(other_config))
+    originals = {
+        path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    result = maintenance.check_configurations(spec)
+
+    assert result["errors"] == [
+        {
+            "job": "app",
+            "file": str(config.absolute()),
+            "issues": [
+                {
+                    "path": "application.user",
+                    "message": "User 'vaultkeep-missing-application-user' does not exist.",
+                }
+            ],
+        }
+    ]
+    assert all(
+        (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns) == before
+        for path, before in originals.items()
+    )
+
+
+@pytest.mark.parametrize("user", [False, True])
+def test_configuration_check_validates_service_groups(tmp_path, valid_config, monkeypatch, user):
+    spec, _, config = scheduled_job(tmp_path, valid_config, monkeypatch, user=user)
+
+    def missing(value):
+        raise KeyError(f"getgr lookup failed: {value}")
+
+    monkeypatch.setattr(maintenance.grp, "getgrnam", missing)
+    monkeypatch.setattr(maintenance.grp, "getgrgid", missing)
+    result = maintenance.check_configurations(spec)
+    error = result["errors"][0]
+    assert error["file"] == str(config)
+    issue = error["issues"][0]
+    assert issue["path"] == "<root>"  # Execution groups are not YAML properties.
+    value = f"GID {pwd.getpwuid(os.geteuid()).pw_gid}" if user else "'root'"
+    assert issue["message"] == f"Group {value} does not exist (required by the backup service)."
+    assert "getgr" not in issue["message"]
+
+
+@pytest.mark.parametrize("user", [False, True])
+def test_configuration_check_validates_service_users(tmp_path, valid_config, monkeypatch, user):
+    spec, _, config = scheduled_job(tmp_path, valid_config, monkeypatch, user=user)
+
+    def missing(value):
+        raise KeyError(value)
+
+    monkeypatch.setattr(maintenance.pwd, "getpwnam", missing)
+    monkeypatch.setattr(maintenance.pwd, "getpwuid", missing)
+    issue = maintenance.check_configurations(spec)["errors"][0]
+    assert issue["file"] == str(config)
+    assert "User " in issue["issues"][0]["message"]
+    assert "does not exist" in issue["issues"][0]["message"]
+
+
+@pytest.mark.parametrize("property", ["data_dir", "exe_realpath", "entrypoint"])
+def test_application_path_failure_retains_actual_field(
+    tmp_path, valid_config, monkeypatch, property
+):
+    spec = document(tmp_path, user=False)
+    jobs = Path(spec["paths"]["jobs_root"])
+    jobs.mkdir()
+    config = jobs / "app.yaml"
+    identity = application_identity(pwd.getpwuid(os.geteuid()).pw_name)
+    broken = str(tmp_path / "loop")
+    original_resolve = Path.resolve
+
+    def denied(path, *args, **kwargs):
+        if str(path) == broken:
+            raise PermissionError("path traversal denied")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", denied)
+    if property == "data_dir":
+        identity["data_dir"] = broken
+        field = "application.data_dir"
+    elif property == "exe_realpath":
+        identity["matcher"]["exe_realpath"] = broken
+        field = "application.matcher.exe_realpath"
+    else:
+        identity["matcher"]["entrypoints"][0]["value"] = broken
+        field = "application.matcher.entrypoints[0].value"
+    valid_config["application"] = identity
+    config.write_text(json.dumps(valid_config))
+
+    result = maintenance.check_configurations(spec)
+    assert result["errors"][0]["issues"][0]["path"] == field
+    assert "symlinks" in result["errors"][0]["issues"][0]["message"]
+
+
+def test_configuration_check_does_not_disguise_programming_errors(
+    tmp_path, valid_config, monkeypatch
+):
+    spec, _, config = scheduled_job(tmp_path, valid_config, monkeypatch, user=False)
+    valid_config["application"] = application_identity(pwd.getpwuid(os.geteuid()).pw_name)
+    config.write_text(json.dumps(valid_config))
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("identity implementation bug")
+
+    monkeypatch.setattr("vaultkeep.application.resolve_application", broken)
+    with pytest.raises(RuntimeError, match="identity implementation bug"):
+        maintenance.check_configurations(spec)
+
+
+def test_preflight_renders_saved_parameters_and_reports_configuration_path(
+    tmp_path, valid_config, monkeypatch
+):
+    spec, _, config = scheduled_job(
+        tmp_path, valid_config, monkeypatch, user=True, params={"repo": "nas"}
+    )
+    valid_config["destination"]["name_template"] = "backup-{unknown}"
+    config.write_text(json.dumps(valid_config))
+    result = maintenance.check_configurations(spec)
+    assert result["errors"][0]["file"] == str(config)
+    assert result["errors"][0]["issues"][0]["path"] == "destination.name_template"
+
+
+def test_runtime_validation_retains_job_path_and_actionable_failure(tmp_path, monkeypatch):
+    from vaultkeep.errors import DestinationError
+
+    config = tmp_path / "app.yaml"
+    monkeypatch.setattr("vaultkeep.backup.workflow.load_validated_config", lambda *a, **kw: None)
+
+    def unavailable(*args, **kwargs):
+        raise DestinationError("Configured source does not exist: /data/app")
+
+    monkeypatch.setattr("vaultkeep.backup.workflow.validate_job", unavailable)
+    with pytest.raises(DestinationError) as caught:
+        maintenance.validate(
+            {
+                "jobs": [
+                    {"config": str(config), "params": {}, "unit": "app.timer", "monitor": False}
+                ],
+                "active": ["app.timer"],
+            }
+        )
+    assert maintenance.configuration_details(caught.value) == {
+        "job": "app",
+        "file": str(config),
+        "issues": [{"path": "<root>", "message": "Configured source does not exist: /data/app"}],
+    }
+
+
+@pytest.mark.parametrize("user", [False, True])
+def test_preflight_reports_disabled_installed_schedule_field(
+    tmp_path, valid_config, monkeypatch, user
+):
+    spec, _, config = scheduled_job(tmp_path, valid_config, monkeypatch, user=user)
+    valid_config["schedule"]["enabled"] = False
+    config.write_text(json.dumps(valid_config))
+    issue = maintenance.check_configurations(spec)["errors"][0]
+    assert issue["file"] == str(config)
+    assert issue["issues"][0]["path"] == "schedule.enabled"
+    assert "false" in issue["issues"][0]["message"]
+
+
+def test_preflight_reports_disabled_active_monitor_field(tmp_path, valid_config):
+    spec, unit, _ = monitor_job(tmp_path, valid_config)
+    config = tmp_path / "directory with spaces/app.yaml"
+    valid_config["trigger"]["enabled"] = False
+    config.write_text(json.dumps(valid_config))
+    # Inactive monitors may remain installed with trigger.enabled false.
+    assert maintenance.check_configurations(spec) == {"errors": []}
+    spec["active"] = [unit.name]
+    issue = maintenance.check_configurations(spec)["errors"][0]
+    assert issue["file"] == str(config)
+    assert issue["issues"][0]["path"] == "trigger.enabled"
+    assert "false" in issue["issues"][0]["message"]

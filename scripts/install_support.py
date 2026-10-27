@@ -35,14 +35,16 @@ def report_error(message: str) -> None:
         and not os.environ.get("NO_COLOR")
     ):
         prefix = "\033[1;31mERROR:\033[0m"
-    for line in message.splitlines() or [""]:
-        print(f"{prefix} installer: {line}", file=sys.stderr)
+    compact = message.startswith("Issue: ")
+    lines = message.splitlines() or [""]
+    for line in lines:
+        print(line if compact else f"{prefix} installer: {line}", file=sys.stderr)
     descriptor = os.environ.get("VAULTKEEP_INSTALL_ERROR_FD")
     if descriptor:
         try:
             with os.fdopen(os.dup(int(descriptor)), "w") as output:
-                for line in message.splitlines() or [""]:
-                    print(f"ERROR: installer: {line}", file=output)
+                for line in lines:
+                    print(line if compact else f"ERROR: installer: {line}", file=output)
         except (OSError, ValueError):
             # Reporting must not replace the operation's original failure.
             pass

@@ -72,9 +72,12 @@ The installer copies every `examples/*.yaml` file from the release into the root
 `install.sh install` and `install.sh update` handle maintenance automatically:
 
 1. Prepare the candidate release in staging and validate existing job configurations
-   with its schema. Check `.yaml` files in managed job directories and the original
-   paths referenced by installed timers and monitors, including offline accounts.
-   An exact version/source match uses the verified installed release's schema.
+   with its schema, resolve application users and service accounts/groups, and
+   render existing managed jobs without applying changes. Check `.yaml` files in
+   managed job directories and the original paths and saved parameters referenced
+   by installed timers and monitors, including offline accounts. An exact
+   version/source match uses the verified installed release. These checks do not
+   run hooks, modify job state, or contact application processes.
 2. Inventory existing root and user Vaultkeep timers and Trigger monitors, recording
    their active states and enablement, including runtime enablement.
 3. Stop active timers and monitors. Running backup services and workers are never
@@ -179,7 +182,7 @@ The update mode:
 - requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;
 - stages the source and virtual environment as a complete versioned release;
 - validates the executable, example configurations, and systemd units;
-- validates existing job YAML with the candidate schema before pausing schedules;
+- validates existing job YAML, system identities, and managed-job generation before pausing schedules;
 - atomically switches `/opt/vaultkeep/current` to the new release;
 - refreshes existing managed schedule and monitor units and reloads systemd;
 - validates jobs and resumes only previously active timers/monitors;
@@ -212,9 +215,25 @@ reports a failure; never erase Trigger evidence to force an update.
 
 Both `install` and `update` abort before activation or schedule changes if an existing
 job YAML is missing, unreadable, malformed, or incompatible with the selected
-release's schema. The report lists all invalid configurations with job names,
-usernames where applicable, absolute paths, and full property paths and messages.
-The complete report is also retained in the private `Diagnostics:` transcript.
+release's schema, or references a nonexistent application user or required service
+account/group. Installed job generation is also checked before schedules pause, including
+conflicts between disabled configuration and installed schedules or active monitors.
+Disabled jobs are included; `application.user` must exist even with Trigger disabled.
+The report shows the absolute configuration path and a concise explanation with
+its YAML property when available:
+
+```text
+Issue: /home/bisquser/.config/vaultkeep/jobs/bisq-main.yaml
+       User 'missing-user' does not exist (field: application.user).
+Installation aborted. Previous installation preserved.
+```
+
+Execution groups come from the system backup service (`Group=root`) or the owning
+user account's primary group; there is no YAML group property. Errors for these
+requirements identify the group without inventing a configuration property.
+Full exception details and tracebacks remain in the private `Diagnostics:` log.
+Parser source excerpts and arbitrary configuration values are omitted from the
+console to avoid exposing secrets.
 
 Correct each reported file as its owner, then rerun the same installation command.
 For example, an obsolete `trigger.notifications` property must be removed or replaced
@@ -224,10 +243,17 @@ job files, and schedules remain unchanged on this refusal; prepared staging file
 are cleaned up. Package-manager changes made while preparing dependencies are
 outside deployment rollback.
 
-Schema checks do not require backup sources or destinations to be available.
+These checks do not require backup sources or destinations to be available.
 Configuration validation during managed-job refresh and runtime readiness checks
-for schedules being resumed remain in place. Failures after maintenance begins use
-the existing rollback and resume procedure described above.
+for schedules being resumed remain in place, including application directory
+ownership. This catches changes made after preflight. Failures after maintenance
+begins use the rollback and resume procedure described above.
+
+The final report distinguishes an abort before activation, successful rollback,
+and incomplete rollback. `Previous installation preserved` is reported only after
+cleanup or restoration and schedule resumption succeed. Incomplete rollback retains
+recovery snapshots and reports their paths; some schedules may remain paused.
+A fresh-install abort reports that no deployment was activated.
 
 ### Installer candidate fails `--version`
 

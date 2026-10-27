@@ -7,7 +7,7 @@ import pwd
 from pathlib import Path
 
 from vaultkeep.config.models import ApplicationConfig, JobConfig
-from vaultkeep.errors import SourceDiscoveryError
+from vaultkeep.errors import ApplicationIdentityError, SourceDiscoveryError, ValidationIssue
 
 
 def resolve_application(
@@ -16,40 +16,83 @@ def resolve_application(
     """Resolve paths against the configured account, never the backup executor."""
     try:
         account = pwd.getpwnam(application.user)
-
-        def resolve(value: str) -> str:
-            expanded = (
-                account.pw_dir + value[1:] if value == "~" or value.startswith("~/") else value
+    except KeyError as error:
+        raise ApplicationIdentityError(
+            ValidationIssue(
+                ("application", "user"),
+                f"User {application.user!r} does not exist.",
+                "user_missing",
             )
-            return str(Path(expanded).resolve(strict=False))
-
-        directory = Path(resolve(application.data_dir))
-        if validate_directory and (
-            not directory.is_dir() or directory.stat().st_uid != account.pw_uid
-        ):
-            raise ValueError("data directory must be owned by the configured application user")
-        matcher = application.matcher.model_copy(
-            update={
-                "exe_realpath": resolve(application.matcher.exe_realpath)
-                if application.matcher.exe_realpath
-                else None,
-                "entrypoints": [
-                    entry.model_copy(update={"value": resolve(entry.value)})
-                    if entry.kind != "java_main"
-                    else entry
-                    for entry in application.matcher.entrypoints
-                ],
-            }
-        )
-        resolved = application.model_copy(
-            update={"user": account.pw_name, "data_dir": str(directory), "matcher": matcher}
-        )
-        resolved._owner_uid = account.pw_uid
-        return resolved, account.pw_uid
-    except (KeyError, OSError, ValueError) as error:
-        raise SourceDiscoveryError(
-            f"Cannot establish application identity for {application.user}: {error}"
         ) from error
+    except ValueError as error:
+        raise ApplicationIdentityError(
+            ValidationIssue(
+                ("application", "user"),
+                f"Invalid user name {application.user!r}.",
+                "user_invalid",
+            )
+        ) from error
+    except OSError as error:
+        raise ApplicationIdentityError(
+            ValidationIssue(
+                ("application", "user"),
+                f"Cannot look up user {application.user!r}; check the system account service.",
+                "user_lookup",
+            )
+        ) from error
+
+    def resolve(value: str, field: tuple[str | int, ...]) -> str:
+        expanded = account.pw_dir + value[1:] if value == "~" or value.startswith("~/") else value
+        try:
+            return str(Path(expanded).resolve(strict=False))
+        except (OSError, ValueError) as error:
+            raise ApplicationIdentityError(
+                ValidationIssue(
+                    field,
+                    "Cannot resolve path; check permissions and symlinks.",
+                    "application_path",
+                )
+            ) from error
+
+    directory = Path(resolve(application.data_dir, ("application", "data_dir")))
+    if validate_directory:
+        try:
+            if not directory.is_dir() or directory.stat().st_uid != account.pw_uid:
+                raise ValueError("data directory must be owned by the configured application user")
+        except (OSError, ValueError) as error:
+            raise ApplicationIdentityError(
+                ValidationIssue(
+                    ("application", "data_dir"),
+                    f"Data directory must exist and be owned by user {application.user!r}.",
+                    "application_directory",
+                )
+            ) from error
+    matcher = application.matcher.model_copy(
+        update={
+            "exe_realpath": resolve(
+                application.matcher.exe_realpath, ("application", "matcher", "exe_realpath")
+            )
+            if application.matcher.exe_realpath
+            else None,
+            "entrypoints": [
+                entry.model_copy(
+                    update={
+                        "value": resolve(
+                            entry.value, ("application", "matcher", "entrypoints", index, "value")
+                        )
+                    }
+                )
+                if entry.kind != "java_main"
+                else entry
+                for index, entry in enumerate(application.matcher.entrypoints)
+            ],
+        }
+    )
+    resolved = application.model_copy(
+        update={"user": account.pw_name, "data_dir": str(directory), "matcher": matcher}
+    )
+    resolved._owner_uid = account.pw_uid
+    return resolved, account.pw_uid
 
 
 def require_application_offline(config: JobConfig, *, owner_uid: int | None) -> None:

@@ -7,13 +7,18 @@ refreshing a unit never enables, starts, or reloads a service manager.
 from __future__ import annotations
 
 import base64
+import grp
 import json
 import os
+import pwd
 import re
 import shlex
 import stat
 import sys
 import tempfile
+import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -122,10 +127,102 @@ def managed_units(
     return timers, monitors, registry
 
 
+@contextmanager
+def configuration_context(path: Path) -> Iterator[None]:
+    """Retain the selected file and structured fields through installer layers."""
+    from vaultkeep.errors import ApplicationIdentityError, ConfigurationError, VaultkeepError
+
+    try:
+        yield
+    except ApplicationIdentityError as error:
+        failure = ConfigurationError((error.issue,))
+        failure.config_path = path.absolute()
+        raise failure from error
+    except VaultkeepError as error:
+        error.config_path = path.absolute()
+        raise
+
+
+def configuration_details(error: Any) -> dict[str, Any]:
+    """Return safe issue summaries; parser diagnostics can contain source text."""
+    from vaultkeep.errors import ConfigurationError, ValidationIssue
+
+    messages = {
+        "yaml_parse": "Invalid YAML syntax; correct the file and retry.",
+        "yaml_read": "Cannot read configuration file; check permissions and encoding.",
+        "yaml_missing": "Configuration file does not exist.",
+    }
+    return {
+        "job": error.config_path.stem,
+        "file": str(error.config_path),
+        "issues": [
+            {"path": issue.dotted_path, "message": messages.get(issue.code, issue.message)}
+            for issue in (
+                error.issues
+                if isinstance(error, ConfigurationError)
+                else (ValidationIssue((), str(error), "job_validation"),)
+            )
+        ],
+    }
+
+
+def validate_execution_identity(*, user: bool) -> None:
+    """Check accounts/groups used by generated services, without inventing YAML fields."""
+    from vaultkeep.errors import ConfigurationError, ValidationIssue
+
+    try:
+        account = pwd.getpwuid(os.geteuid()) if user else pwd.getpwnam("root")
+    except KeyError as error:
+        name = f"UID {os.geteuid()}" if user else "'root'"
+        raise ConfigurationError(
+            (
+                ValidationIssue(
+                    (),
+                    f"User {name} does not exist (required by the backup service).",
+                    "user_missing",
+                ),
+            )
+        ) from error
+    try:
+        if user:
+            grp.getgrgid(account.pw_gid)
+        else:
+            grp.getgrnam("root")
+    except KeyError as error:
+        name = f"GID {account.pw_gid}" if user else "'root'"
+        raise ConfigurationError(
+            (
+                ValidationIssue(
+                    (),
+                    f"Group {name} does not exist (required by the backup service).",
+                    "group_missing",
+                ),
+            )
+        ) from error
+
+
+def require_automation_enabled(enabled: bool, section: str) -> None:
+    from vaultkeep.errors import ConfigurationError, ValidationIssue
+
+    if not enabled:
+        launcher = "installed schedule" if section == "schedule" else "active monitor"
+        action = "remove the schedule" if section == "schedule" else "disable the monitor"
+        raise ConfigurationError(
+            (
+                ValidationIssue(
+                    (section, "enabled"),
+                    f"Value false conflicts with the {launcher}; set true or {action} "
+                    "before maintenance.",
+                    "automation_disabled",
+                ),
+            )
+        )
+
+
 def check_configurations(document: dict[str, Any]) -> dict[str, Any]:
     """Check every managed YAML and installed selection with this release's schema."""
     from vaultkeep.config import load_config
-    from vaultkeep.errors import ConfigurationError
+    from vaultkeep.errors import VaultkeepError
     from vaultkeep.schedule import TimerManager, TimerPaths
 
     user = document["user"]
@@ -157,18 +254,26 @@ def check_configurations(document: dict[str, Any]) -> dict[str, Any]:
     errors = []
     for path in sorted(configurations):
         try:
-            load_config(path)
-        except ConfigurationError as error:
-            errors.append(
-                {
-                    "job": path.stem,
-                    "file": str(path.absolute()),
-                    "issues": [
-                        {"path": issue.dotted_path, "message": issue.message}
-                        for issue in error.issues
-                    ],
-                }
-            )
+            with configuration_context(path):
+                job_config = load_config(path)
+                validate_execution_identity(user=user)
+                if job_config.application is not None:
+                    from vaultkeep.application import resolve_application
+
+                    resolve_application(job_config.application, validate_directory=False)
+        except VaultkeepError as error:
+            traceback.print_exc(file=sys.stderr)
+            errors.append(configuration_details(error))
+    if not errors:
+        # Rendering is read-only. Reuse the real refresh planner, including saved
+        # parameter selections and checks on installed units, before any pause.
+        try:
+            plan(document)
+        except VaultkeepError as error:
+            if error.config_path is None:
+                raise
+            traceback.print_exc(file=sys.stderr)
+            errors.append(configuration_details(error))
     return {"errors": errors}
 
 
@@ -212,7 +317,11 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
             service_content = base64.b64decode(service_snapshot["content"]).decode()
         else:
             config_path, params = paths.jobs_root / f"{instance}.yaml", {}
-        config = manager._load_managed(config_path, require_enabled=True, runtime_params=params)
+        with configuration_context(config_path):
+            config = load_validated_config(config_path, runtime_params=params)
+            manager._load_managed(config_path, require_enabled=False, runtime_params=params)
+            require_automation_enabled(config.schedule.enabled, "schedule")
+            validate_execution_identity(user=user)
         if manager._instance_id(config_path, config.job.id, params) != instance:
             raise ValueError(f"job identity changed: {timer}")
         # Additional local unit overrides must never be silently overwritten.
@@ -252,8 +361,12 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
         if path.with_name(path.name + ".d").exists():
             raise ValueError(f"local monitor overrides require review: {path}")
         config_path, params = command_selection(content, monitor=True, user=True)
-        load_validated_config(config_path, runtime_params=params)
-        trigger = load_trigger(config_path, runtime_params=params)
+        with configuration_context(config_path):
+            validate_execution_identity(user=user)
+            load_validated_config(config_path, runtime_params=params)
+            trigger = load_trigger(config_path, runtime_params=params)
+            if path.name in document.get("active", []):
+                require_automation_enabled(bool(trigger.enabled_instances()), "trigger")
         if service_name(trigger) != path.name:
             raise ValueError(f"job identity changed: {path}")
         rendered = render_service(trigger)
@@ -314,41 +427,53 @@ def validate(document: dict[str, Any]) -> None:
     for job in document["jobs"]:
         config_path = Path(job["config"])
         params = job["params"]
-        load_validated_config(config_path, runtime_params=params)
-        if job["unit"] not in document["active"]:
-            continue
-        validate_job(config_path, runtime_params=params)
-        if job["monitor"]:
-            from vaultkeep.trigger.paths import state_root
-            from vaultkeep.trigger.preflight import runtime_preflight
-            from vaultkeep.trigger.systemd import RealSystemdController
+        with configuration_context(config_path):
+            load_validated_config(config_path, runtime_params=params)
+            if job["unit"] not in document["active"]:
+                continue
+            validate_job(config_path, runtime_params=params)
+            if job["monitor"]:
+                from vaultkeep.trigger.paths import state_root
+                from vaultkeep.trigger.preflight import runtime_preflight
+                from vaultkeep.trigger.systemd import RealSystemdController
 
-            config = load_trigger(config_path, runtime_params=params)
-            if not config.enabled_instances():
-                raise ValueError(f"active monitor configuration is disabled: {job['unit']}")
-            runtime_preflight(
-                config, RealSystemdController(), state_root(config.scope), validate_backup=False
-            )
+                config = load_trigger(config_path, runtime_params=params)
+                require_automation_enabled(bool(config.enabled_instances()), "trigger")
+                runtime_preflight(
+                    config, RealSystemdController(), state_root(config.scope), validate_backup=False
+                )
 
 
 def main() -> None:
     action = sys.argv[1]
     document = json.load(sys.stdin)
-    if action == "plan":
-        print(json.dumps(plan(document)))
-    elif action == "check-configurations":
-        print(json.dumps(check_configurations(document)))
-    elif action in ("apply", "restore"):
-        apply(document, restore=action == "restore")
-    elif action == "validate":
-        validate(document)
-    else:
-        raise ValueError(f"unknown maintenance action: {action}")
+    if action == "restore":
+        apply(document, restore=True)
+        return
+    from vaultkeep.errors import VaultkeepError
+
+    try:
+        if action == "plan":
+            print(json.dumps(plan(document)))
+        elif action == "check-configurations":
+            print(json.dumps(check_configurations(document)))
+        elif action == "apply":
+            apply(document)
+        elif action == "validate":
+            validate(document)
+        else:
+            raise ValueError(f"unknown maintenance action: {action}")
+    except VaultkeepError as error:
+        if error.config_path is None:
+            raise
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({"errors": [configuration_details(error)]}))
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as error:
-        print(f"ERROR: installer jobs: {error}", file=sys.stderr)
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
         raise SystemExit(1) from None

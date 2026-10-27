@@ -13,6 +13,7 @@ import pwd
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 from install_support import (
@@ -240,8 +241,29 @@ def account_operation(spec: dict, python: str, action: str, payload: dict) -> di
         ]
     result = capture_command(argv, input=json.dumps(payload), timeout=120)
     if result.returncode:
-        fail(f"{spec['account'] or 'root'}: job {action} failed\n{result.stderr.strip()}")
+        try:
+            response = json.loads(result.stdout)
+        except ValueError:
+            response = {}
+        if isinstance(response, dict) and response.get("errors"):
+            fail(configuration_report(response["errors"]))
+        fail(f"{spec['account'] or 'root'}: could not {action} managed jobs; see diagnostics log.")
     return json.loads(result.stdout) if action in ("plan", "check-configurations") else None
+
+
+def configuration_report(errors: list[dict]) -> str:
+    def single_line(value: str) -> str:
+        return "".join(char if char.isprintable() else " " for char in value).strip()
+
+    lines = []
+    for error in errors:
+        lines.append(f"Issue: {single_line(error['file'])}")
+        for issue in error["issues"]:
+            message = single_line(issue["message"]).rstrip(".")
+            field = single_line(issue["path"])
+            suffix = f" (field: {field})" if field != "<root>" else ""
+            lines.append(f"       {message}{suffix}.")
+    return "\n".join(lines)
 
 
 def check_configurations(layout: Layout, python: str) -> None:
@@ -252,21 +274,13 @@ def check_configurations(layout: Layout, python: str) -> None:
             result = account_operation(
                 spec, python, "check-configurations", {**spec, "user": spec["account"] is not None}
             )
-            for error in result["errors"]:
-                lines = [f"Job: {error['job']}"]
-                if spec["account"] is not None:
-                    lines.append(f"User: {spec['account']}")
-                lines.append(f"File: {error['file']}")
-                for issue in error["issues"]:
-                    lines.append(f"\n  {issue['path']}\n    {issue['message']}")
-                errors.append("\n".join(lines))
+            errors.extend(result["errors"])
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             failures.append(str(error))
     if errors or failures:
         details = []
         if errors:
-            noun = "configuration" if len(errors) == 1 else "configurations"
-            details.append(f"Found {len(errors)} invalid job {noun}:\n\n" + "\n\n".join(errors))
+            details.append(configuration_report(errors))
         details.extend(failures)
         fail("\n\n".join(details))
 
@@ -363,5 +377,6 @@ if __name__ == "__main__":
     try:
         main()
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+        traceback.print_exc(file=sys.stderr)
         report_error(str(error))
         raise SystemExit(1) from None
