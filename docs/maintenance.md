@@ -231,9 +231,12 @@ Installation aborted. Previous installation preserved.
 Execution groups come from the system backup service (`Group=root`) or the owning
 user account's primary group; there is no YAML group property. Errors for these
 requirements identify the group without inventing a configuration property.
-Full exception details and tracebacks remain in the private `Diagnostics:` log.
-Parser source excerpts and arbitrary configuration values are omitted from the
-console to avoid exposing secrets.
+Schema errors include short invalid values when safe to display. Values from
+password settings, commands, environment matches, and parameter selections are
+omitted, as are values that appear to contain credentials. YAML syntax errors
+identify the line and column and the enclosing property when identifiable;
+source excerpts stay in the private `Diagnostics:` log. That log also retains
+full commands, tool output, exceptions, and tracebacks.
 
 Correct each reported file as its owner, then rerun the same installation command.
 For example, an obsolete `trigger.notifications` property must be removed or replaced
@@ -258,8 +261,8 @@ A fresh-install abort reports that no deployment was activated.
 ### Installer candidate fails `--version`
 
 The installer checks the candidate in staging before activating it. If a command
-fails, the installer marks its stage `FAILED` and shows recent diagnostic context.
-The complete ordered subprocess output is retained in the private transcript named
+fails, the installer marks its stage `FAILED` and shows the actionable cause.
+The complete subprocess output is retained in the private transcript named
 by `Diagnostics:`; inspect that file if the displayed context is insufficient. A successful `vaultkeep --version` after a staging failure
 checks the existing installation and does not mean the candidate passed.
 
@@ -277,11 +280,25 @@ checkout, repeat `sudo ./install.sh install`. The installer pauses existing
 launchers, refuses active backup work, refreshes managed units, validates jobs, and
 resumes only previously active launchers after success or completed rollback.
 
-### Installer reports `inconclusive unit properties`
+<a id="installer-reports-inconclusive-unit-properties"></a>
+### Installer reports unexpected systemd state or a failed property query
 
-The normal installer report names the failed stage and shows `Result: FAILED`.
-Detailed subprocess errors go to stderr and remain in the diagnostic transcript;
-those diagnostic messages may use severity prefixes. Colors highlight status values.
+The installer identifies the affected account and unit, then gives the failed
+condition and actual systemd state values. For example:
+
+```text
+  Configuration validation FAILED (1s)
+Issue: User 'bisquser', unit 'vaultkeep-trigger@Bisq_sd0-srv_backups-633490673caaf382.service'
+       Unexpected systemd state: activating/auto-restart.
+Installation aborted. Previous installation preserved.
+```
+
+The stage includes checks of installed launchers as well as YAML. A systemd-state
+refusal does not mean the YAML is invalid. Inspect the named unit as its owning
+account, resolve the reported state, then retry. Query failures identify missing
+properties or the manager's error. Missing files, access failures, and internal
+failures are reported separately from invalid configuration. Technical details
+remain in the diagnostic transcript. Colors highlight status values.
 Redirected output stays plain text. Set `NO_COLOR=1` or add `--no-color` after the
 install/update/uninstall mode to disable color; `TERM=dumb` also uses plain text.
 See [terminal output](cli.md#terminal-output).

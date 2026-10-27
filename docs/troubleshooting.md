@@ -103,10 +103,13 @@ disable/remove clear persistent timestamps. See [schedule commands](cli.md#confi
 See [candidate validation diagnosis](maintenance.md#installer-candidate-fails---version)
 for incomplete checkouts and the installer diagnostic transcript.
 
-## Installer reports `inconclusive unit properties`
+<a id="installer-reports-inconclusive-unit-properties"></a>
+## Installer reports unexpected systemd state or a failed property query
 
 See [installer unit-property diagnosis](maintenance.md#installer-reports-inconclusive-unit-properties)
-for absent worker templates, older installers, and failed manager queries.
+for unexpected launcher states, absent worker templates, older installers, and
+failed manager queries. The report names the account and unit and gives the actual
+state values or missing properties; this does not necessarily indicate invalid YAML.
 
 ## Notifications do not appear
 

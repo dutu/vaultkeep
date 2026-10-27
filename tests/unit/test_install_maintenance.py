@@ -314,9 +314,7 @@ def test_account_operation_keeps_both_captured_streams_in_diagnostics(
         ),
     )
     if status:
-        with pytest.raises(
-            ValueError, match="root: could not validate managed jobs; see diagnostics log"
-        ):
+        with pytest.raises(ValueError, match="account stderr"):
             helper.account_operation({"account": None}, "python", "validate", {})
     else:
         assert helper.account_operation({"account": None}, "python", "validate", {}) is None
@@ -351,3 +349,59 @@ def test_account_configuration_failure_propagates_without_prefixes(helper, monke
         "       User 'missing' does not exist (field: application.user)."
     )
     assert "getpwnam" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "changed,reason",
+    [
+        (
+            {"ActiveState": "activating", "SubState": "auto-restart"},
+            "Unexpected systemd state: activating/auto-restart.",
+        ),
+        ({"SubState": "stop-sigterm"}, "Unexpected systemd state: active/stop-sigterm."),
+        ({"LoadState": "masked"}, "Unexpected systemd LoadState: masked."),
+        ({"UnitFileState": "masked"}, "Unexpected systemd UnitFileState: 'masked'"),
+    ],
+)
+def test_launcher_refusal_reports_account_unit_and_actual_states(
+    helper, monkeypatch, tmp_path, changed, reason
+):
+    unit = "vaultkeep-trigger@Bisq_sd0-srv_backups-633490673caaf382.service"
+    specs = [{"account": "bisquser", "command": ["user"]}]
+    monkeypatch.setattr(helper, "account_spec", lambda *args: specs[0])
+    monkeypatch.setattr(helper, "user_managers", lambda: [])
+    monkeypatch.setattr(helper.pwd, "getpwall", lambda: [])
+    monkeypatch.setattr(helper, "execute", lambda *a, **kw: f"{unit} loaded\n")
+    state = {
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running",
+        "UnitFileState": "enabled",
+        **changed,
+    }
+    monkeypatch.setattr(helper, "properties", lambda *args: state)
+
+    with pytest.raises(ValueError) as caught:
+        helper.pause(tmp_path / "journal.json", None)
+
+    message = str(caught.value)
+    assert message.startswith(f"Issue: User 'bisquser', unit '{unit}'\n       ")
+    assert reason in message
+    assert len(message.splitlines()) == 2
+    assert "ERROR:" not in message and "inconclusive" not in message
+    assert not (tmp_path / "journal.json").exists()
+
+
+def test_account_refusal_propagates_actionable_nonconfiguration_error(helper, monkeypatch):
+    reason = "managed timer is missing: /etc/systemd/system/vaultkeep@app.timer.d/schedule.conf"
+    monkeypatch.setattr(
+        helper.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, json.dumps({"failure": reason}), "Traceback: ValueError: " + reason
+        ),
+    )
+    with pytest.raises(ValueError) as caught:
+        helper.account_operation({"account": None}, "python", "plan", {})
+    assert str(caught.value) == f"Issue: User 'root', managed jobs\n       {reason}"
+    assert "configuration" not in str(caught.value)

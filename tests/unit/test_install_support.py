@@ -6,6 +6,7 @@ import fcntl
 import importlib.util
 import io
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -67,7 +68,9 @@ def test_structured_error_is_also_written_to_installer_summary(monkeypatch, tmp_
         "ERROR: installer: active monitor configuration is disabled\n"
     )
     assert capsys.readouterr().err == expected
-    assert summary.read_text() == expected
+    assert summary.read_text() == (
+        "Issue: Installer\n       job validate failed active monitor configuration is disabled\n"
+    )
 
 
 @pytest.mark.parametrize("status", [0, 7])
@@ -82,7 +85,7 @@ def test_captured_command_streams_and_exit_code_are_logged(monkeypatch, tmp_path
         ),
     )
     if status:
-        with pytest.raises(ValueError, match=r"command failed \(7\)"):
+        with pytest.raises(ValueError, match="stderr details"):
             support.execute(["tool", "--check"])
     else:
         assert support.execute(["tool", "--check"]) == "stdout details\n"
@@ -114,17 +117,73 @@ def test_command_timeout_preserves_partial_output_and_original_exception(monkeyp
     assert "partial stdout" in log and "partial stderr" in log
 
 
+@pytest.mark.parametrize("status", [0, 7])
+def test_shell_command_reporting_preserves_exit_status_and_full_diagnostics(tmp_path, status):
+    import os
+
+    transcript = tmp_path / "diagnostics.log"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SPEC.origin),
+            "run",
+            sys.executable,
+            "-c",
+            "import sys; print('stdout detail'); "
+            "print('ERROR: actionable tool failure', file=sys.stderr); "
+            f"sys.exit({status})",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env={**os.environ, "VAULTKEEP_INSTALL_LOG": str(transcript)},
+    )
+    assert result.returncode == status
+    assert result.stdout == ""
+    if status:
+        assert result.stderr.count("Issue:") == 1
+        assert "       actionable tool failure\n" in result.stderr
+        assert "ERROR:" not in result.stderr and "exit 7" not in result.stderr
+    else:
+        assert result.stderr == ""
+    log = transcript.read_text()
+    assert "Command:" in log and f"Exit code: {status}" in log
+    assert "stdout detail" in log and "ERROR: actionable tool failure" in log
+
+
+@pytest.mark.parametrize(
+    "error,reason",
+    [
+        (
+            FileNotFoundError(2, "No such file", "/missing/unit.service"),
+            "Required resource does not exist",
+        ),
+        (PermissionError(13, "Permission denied", "/private/unit.service"), "Permission denied"),
+        (OSError("filesystem write rejected"), "filesystem write rejected"),
+        (subprocess.TimeoutExpired(["systemctl"], 20), "Timed out after 20s"),
+        (KeyError("private implementation detail"), "Internal failure"),
+    ],
+)
+def test_exception_summaries_distinguish_operational_and_internal_failures(error, reason):
+    message = support.exception_summary(error)
+    assert reason in message
+    assert "configuration" not in message.lower()
+    assert "private implementation detail" not in message
+    assert len(message.splitlines()) == 2
+
+
 @pytest.mark.parametrize(
     "stdout,stderr,expected",
     [
         (
             "",
             "Traceback:\nModuleNotFoundError: missing\n",
-            "Traceback:\nModuleNotFoundError: missing",
+            "Command could not complete; see diagnostics log for tool output.",
         ),
         ("stdout diagnostic\n", "", "stdout diagnostic"),
         ("stdout noise", "stderr diagnostic", "stderr diagnostic"),
-        ("", "", ""),
+        ("", "", "Command could not complete; see diagnostics log for tool output."),
     ],
 )
 def test_failed_command_preserves_diagnostic(monkeypatch, stdout, stderr, expected):
@@ -137,8 +196,7 @@ def test_failed_command_preserves_diagnostic(monkeypatch, stdout, stderr, expect
     with pytest.raises(ValueError) as error:
         support.execute(["vaultkeep", "--version"])
 
-    message = "command failed (1): vaultkeep --version"
-    assert str(error.value) == message + (f"\n{expected}" if expected else "")
+    assert str(error.value) == f"Issue: Command 'vaultkeep'\n       {expected}"
 
 
 def test_failed_user_manager_command_reports_operation_and_patterns(monkeypatch):
@@ -160,8 +218,8 @@ def test_failed_user_manager_command_reports_operation_and_patterns(monkeypatch)
         )
 
     message = str(error.value)
-    assert "runuser -u alice -- env XDG_RUNTIME_DIR=/run/user/1000" in message
-    assert "systemctl --user list-unit-files --no-legend --no-pager 'vaultkeep@*.timer'" in message
+    assert "Systemd operation 'list-unit-files' for user 'alice'" in message
+    assert "see diagnostics log" in message
 
 
 @pytest.mark.parametrize(
@@ -189,7 +247,7 @@ def test_empty_command_status_requires_silent_empty_output(
     if accepted:
         assert support.execute(argv, empty_status=1) == stdout
     else:
-        with pytest.raises(ValueError, match="command failed"):
+        with pytest.raises(ValueError, match="Issue: Systemd operation"):
             support.execute(argv, empty_status=1)
 
 
@@ -243,7 +301,7 @@ def test_inconclusive_absence_or_failed_query_is_refused(monkeypatch, output, re
         "run",
         lambda *a, **k: subprocess.CompletedProcess(a, returncode, output, "bus unavailable"),
     )
-    with pytest.raises(ValueError, match="inconclusive"):
+    with pytest.raises(ValueError, match=r"Systemd (response|property query)"):
         support.properties(["systemctl"], "vaultkeep-trigger-exec@installer-check.service")
 
 
@@ -262,7 +320,7 @@ def test_loaded_unit_requires_only_applicable_properties(monkeypatch, unit: str)
     if unit.endswith(".timer"):
         assert support.properties(["systemctl"], unit)["LoadState"] == "loaded"
     else:
-        with pytest.raises(ValueError, match="inconclusive"):
+        with pytest.raises(ValueError, match=r"Systemd (response|property query)"):
             support.properties(["systemctl"], unit)
 
 
@@ -379,7 +437,7 @@ def test_transitioning_manager_is_not_ignored(monkeypatch) -> None:
     monkeypatch.setattr(
         support, "execute", lambda argv: "user@1001.service loaded deactivating stop user\n"
     )
-    with pytest.raises(ValueError, match="transitioning user manager"):
+    with pytest.raises(ValueError, match="deactivating/stop"):
         support.user_managers()
 
 
@@ -393,8 +451,10 @@ def test_user_reload_attempts_every_manager_and_reports_each_failure(monkeypatch
 
     monkeypatch.setattr(support, "execute", execute)
     monkeypatch.setattr(support.sys, "argv", ["helper", "reload-users"])
-    with pytest.raises(ValueError, match=r"alice:.*bob:"):
+    with pytest.raises(ValueError) as caught:
         support.main()
+    assert "User 'alice', user manager" in str(caught.value)
+    assert "User 'bob', user manager" in str(caught.value)
     assert len(commands) == 2
 
 

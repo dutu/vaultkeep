@@ -594,18 +594,55 @@ def test_missing_cli_module_reports_traceback_and_preserves_existing_install(
     result = run_installer(installed, "install", source=source, check=False)
 
     assert result.returncode != 0
-    assert "ERROR: installer: command failed (1):" in result.stderr
-    assert "ERROR: installer: Traceback (most recent call last):" in result.stderr
-    assert (
-        "ERROR: installer: ModuleNotFoundError: No module named 'vaultkeep.cli.output'"
-        in result.stderr
-    )
+    assert "Required Python module 'vaultkeep.cli.output' is missing" in result.stderr
+    assert "Traceback" not in result.stderr and "ERROR:" not in result.stderr
+    assert "ModuleNotFoundError" in diagnostic_log(result).read_text()
     assert snapshot(installed) == before
     assert not list((Path(installed["VAULTKEEP_INSTALL_PREFIX"]) / ".staging").iterdir())
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
         == CANDIDATE_VERSION
     )
+
+
+def test_unexpected_launcher_state_reaches_installer_before_any_schedule_changes(
+    installed, tmp_path
+):
+    source = candidate_source(tmp_path, "update")
+    helper = source / "scripts/install_maintenance.py"
+    helper.write_text(
+        helper.read_text().replace(
+            "specs = [account_spec(None, None, layout)]",
+            "specs = [{**account_spec(None, None, layout), 'account': 'bisquser'}]",
+        )
+    )
+    unit = "vaultkeep-trigger@Bisq_sd0-srv_backups-633490673caaf382.service"
+    control(
+        installed,
+        units=f"{unit} loaded activating auto-restart\n",
+        properties=(
+            "LoadState=loaded\nActiveState=activating\nSubState=auto-restart\n"
+            "UnitFileState=enabled\nDropInPaths=\nExecStart=/usr/local/bin/vaultkeep\n"
+            f"FragmentPath=/home/bisquser/.config/systemd/user/{unit}\n"
+        ),
+    )
+    before = snapshot(installed)
+    Path(installed["HOST_LOG"]).write_text("")
+
+    result = run_installer(installed, "update", check=False, source=source)
+
+    assert_configuration_refusal(installed, result, before)
+    assert result.stderr.startswith(
+        f"Issue: User 'bisquser', unit '{unit}'\n"
+        "       Unexpected systemd state: activating/auto-restart.\n"
+        "Installation aborted. Previous installation preserved.\n"
+    )
+    assert result.stderr.count("Issue:") == 1
+    assert all(hidden not in result.stderr for hidden in ("ERROR:", "exit 1", "Traceback"))
+    transcript = diagnostic_log(result).read_text()
+    assert "Command: systemctl show" in transcript
+    assert "ActiveState=activating" in transcript and "SubState=auto-restart" in transcript
+    assert "Traceback" in transcript
 
 
 def test_refresh_with_running_user_manager_and_absent_units(
@@ -883,7 +920,11 @@ os.execv({sys.executable!r}, ['python3', *sys.argv[1:]])
     assert "FAILED" in result.stdout
     assert "Result: FAILED" in result.stdout
     assert "Result: INSTALLED" not in result.stdout
-    assert "Python environment failed" in result.stderr
+    assert (
+        "Python environment failed" in result.stderr
+        if signum
+        else "Could not create the Python virtual environment" in result.stderr
+    )
     assert diagnostic_log(result).is_file()
     prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
     assert not list((prefix / ".staging").iterdir())
@@ -1359,8 +1400,9 @@ def test_disabled_monitor_failure_reports_only_relevant_errors_and_restores_sche
     result = run_installer(installed, "install", check=False, source=source)
 
     assert result.returncode == 1
-    assert "Issue: Refresh managed jobs failed (exit 1)." in result.stderr
-    assert result.stderr.count("bisquser: could not validate managed jobs") == 1
+    assert "Issue: User 'bisquser', managed jobs" in result.stderr
+    assert result.stderr.count("active monitor configuration is disabled") == 1
+    assert "failed (exit" not in result.stderr and "ERROR:" not in result.stderr
     assert detail not in result.stderr
     assert "Rollback succeeded." in result.stderr
     transcript = diagnostic_log(result).read_text()
@@ -1385,7 +1427,11 @@ def test_failed_pip_install_keeps_complete_diagnostics_and_exit_code(host, tmp_p
     result = run_installer(host, "install", check=False, source=source)
 
     assert result.returncode == 1
-    assert "Issue: Python environment failed (exit 1)." in result.stderr
+    assert "Issue: Command 'python'" in result.stderr
+    assert (
+        "No matching distribution found for vaultkeep-nonexistent-test-package==0" in result.stderr
+    )
+    assert "ERROR:" not in result.stderr and "failed (exit" not in result.stderr
     transcript = diagnostic_log(result).read_text()
     for raw in (
         "Looking in links",
@@ -1393,7 +1439,7 @@ def test_failed_pip_install_keeps_complete_diagnostics_and_exit_code(host, tmp_p
         "No matching distribution found for vaultkeep-nonexistent-test-package==0",
     ):
         assert raw in transcript
-        assert raw not in result.stdout + result.stderr
+        assert raw not in result.stdout
     assert "Stage: Python environment FAILED" in transcript
     prefix = Path(host["VAULTKEEP_INSTALL_PREFIX"])
     assert not list((prefix / ".staging").iterdir())
@@ -1693,6 +1739,29 @@ def test_later_failure_does_not_repeat_errors_handled_by_successful_stage(tmp_pa
     assert "old environment needs repair" in transcript.read_text()
 
 
+def test_mixed_operation_and_cleanup_errors_remain_compact(tmp_path):
+    transcript = tmp_path / "progress.log"
+    script = progress_script(transcript, 0).replace(
+        "sleep 0",
+        "printf 'Issue: example.service\\n"
+        "       Unexpected systemd state: activating/auto-restart.\\n' >&5\n"
+        'error "cleanup failed; recovery files retained"\nexit 1',
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "install.sh", "install"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stderr.count("Issue:") == 2
+    assert "Unexpected systemd state: activating/auto-restart." in result.stderr
+    assert "cleanup failed; recovery files retained" in result.stderr
+    assert "ERROR:" not in result.stderr and "failed (exit" not in result.stderr
+    assert "ERROR: install.sh: cleanup failed" in transcript.read_text()
+
+
 def test_progress_helper_does_not_keep_installer_lock_or_outlive_parent(tmp_path):
     import select
     import shlex
@@ -1744,6 +1813,7 @@ def test_7zip_failure_keeps_stdout_and_stderr_diagnostics(host, tmp_path):
         definitions
         + check
         + f"""
+support() {{ python3 {shlex.quote(str(ROOT / "scripts/install_support.py"))} "$@"; }}
 INSTALL_LOG={shlex.quote(str(transcript))}
 VK_TESTING=0
 capture_diagnostics
@@ -1763,9 +1833,9 @@ stage_finish
     )
     assert result.returncode == 1
     assert "7zip compatibility" in result.stdout and "Result: FAILED" in result.stdout
-    assert "Issue: 7zip compatibility failed (exit 1)." in result.stderr
+    assert "Issue: Command '7z'\n       tool detail\n" in result.stderr
     assert f"Diagnostics: {transcript}" in result.stderr
-    assert "archive check failed" not in result.stderr and "tool detail" not in result.stderr
+    assert "archive check failed" not in result.stderr and "ERROR:" not in result.stderr
     assert (
         "archive check failed" in transcript.read_text() and "tool detail" in transcript.read_text()
     )
@@ -1803,7 +1873,10 @@ def test_configuration_errors_are_compact_and_leave_previous_installation_operat
         explanation = "Input should be a valid number (field: trigger.poll_seconds)."
         diagnostic = "ValidationError"
     else:
-        explanation = "Invalid YAML syntax; correct the file and retry."
+        explanation = (
+            "Invalid YAML syntax at line 1, column 60; correct the file and retry "
+            "(field: encryption)."
+        )
         diagnostic = "ParserError"
     config.write_text(json.dumps(valid_config))
     if problem == "yaml_secret":

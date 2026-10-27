@@ -18,6 +18,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 VERSION = re.compile(r"\d+(?:\.\d+)*(?:\.dev\d+)?")
@@ -25,6 +26,79 @@ VERSION = re.compile(r"\d+(?:\.\d+)*(?:\.dev\d+)?")
 
 def fail(message: str) -> None:
     raise ValueError(message)
+
+
+def issue(resource: str, reason: str) -> str:
+    """Keep resource and cause on separate, printable console lines."""
+
+    def line(value: str) -> str:
+        return "".join(char if char.isprintable() else " " for char in value).strip()
+
+    return f"Issue: {line(resource)}\n       {line(reason)}"
+
+
+def unit_resource(command: list[str], unit: str) -> str:
+    account = command[command.index("-u") + 1] if "runuser" in command else "root"
+    return f"User '{account}', unit '{unit}'"
+
+
+def exception_summary(error: Exception) -> str:
+    """Summarize operational failures without exposing Python implementation details."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return issue("Installer command", f"Timed out after {error.timeout}s; see diagnostics log.")
+    if isinstance(error, OSError):
+        resource = str(error.filename) if error.filename else "Installer filesystem operation"
+        reason = (
+            "Required resource does not exist."
+            if isinstance(error, FileNotFoundError)
+            else "Permission denied; check access for the affected account."
+            if isinstance(error, PermissionError)
+            else "Filesystem operation failed: "
+            f"{error.strerror or str(error) or 'see diagnostics log'}."
+        )
+        return issue(resource, reason)
+    if isinstance(error, json.JSONDecodeError):
+        return issue("Installer metadata", "Invalid JSON data; see diagnostics log.")
+    if isinstance(error, ValueError):
+        return str(error)
+    return issue("Installer", "Internal failure; see diagnostics log for technical details.")
+
+
+def command_failure(argv: list[str], result: subprocess.CompletedProcess[str]) -> str:
+    """Use known tool diagnostics; never copy a Python traceback to the console."""
+    resource = f"Command '{Path(argv[0]).name}'"
+    if "systemctl" in argv:
+        offset = argv.index("systemctl") + 1
+        operation = next((part for part in argv[offset:] if not part.startswith("-")), "query")
+        resource = f"Systemd operation '{operation}'"
+        if "runuser" in argv:
+            resource += f" for user '{argv[argv.index('-u') + 1]}'"
+        if operation in ("show", "start", "stop", "restart", "enable", "disable"):
+            units = [part for part in argv[offset:] if part.endswith((".service", ".timer"))]
+            if units:
+                resource += f", unit '{units[0]}'"
+    diagnostic = result.stderr.strip() or result.stdout.strip()
+    explicit = [line for line in diagnostic.splitlines() if line.startswith(("ERROR:", "E:"))]
+    missing = re.search(r"ModuleNotFoundError: No module named '([^'\n]+)'", diagnostic)
+    if missing:
+        reason = f"Required Python module '{missing[1]}' is missing; check the installation source."
+    elif (
+        diagnostic
+        and not re.search(r"Traceback|\b\w*(?:Error|Exception):", diagnostic)
+        and (explicit or len(diagnostic.splitlines()) == 1)
+    ):
+        reason = re.sub(
+            r"^(?:(?:ERROR:|E:)\s*(?:installer(?: jobs)?:\s*)?)+",
+            "",
+            explicit[-1] if explicit else diagnostic,
+        )
+    else:
+        reason = (
+            "Could not create the Python virtual environment; see diagnostics log for tool output."
+            if argv[1:3] == ["-m", "venv"]
+            else "Command could not complete; see diagnostics log for tool output."
+        )
+    return issue(resource, reason)
 
 
 def report_error(message: str) -> None:
@@ -43,15 +117,14 @@ def report_error(message: str) -> None:
     if descriptor:
         try:
             with os.fdopen(os.dup(int(descriptor)), "w") as output:
-                for line in lines:
-                    print(line if compact else f"ERROR: installer: {line}", file=output)
+                print(message if compact else issue("Installer", message), file=output)
         except (OSError, ValueError):
             # Reporting must not replace the operation's original failure.
             pass
 
 
 def log_command_result(
-    argv: list[str], result: subprocess.CompletedProcess[str] | subprocess.TimeoutExpired
+    argv: list[str], result: subprocess.CompletedProcess[str] | subprocess.TimeoutExpired | OSError
 ) -> None:
     """Retain captured tool output without adding it to the error summary."""
     transcript = os.environ.get("VAULTKEEP_INSTALL_LOG")
@@ -63,9 +136,12 @@ def log_command_result(
                 result.returncode
                 if isinstance(result, subprocess.CompletedProcess)
                 else f"timeout ({result.timeout}s)"
+                if isinstance(result, subprocess.TimeoutExpired)
+                else str(result)
             )
             output.write(f"Command: {shlex.join(argv)}\nExit code: {status}\n")
-            for label, content in (("stdout", result.stdout), ("stderr", result.stderr)):
+            for label in ("stdout", "stderr"):
+                content = getattr(result, label, None)
                 if isinstance(content, bytes):
                     content = content.decode(errors="replace")
                 output.write(f"{label}:\n{content or ''}\n")
@@ -74,13 +150,13 @@ def log_command_result(
 
 
 def capture_command(
-    argv: list[str], *, timeout: int, input: str | None = None
+    argv: list[str], *, timeout: int | None, input: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
             argv, input=input, capture_output=True, text=True, timeout=timeout, check=False
         )
-    except subprocess.TimeoutExpired as error:
+    except (subprocess.TimeoutExpired, OSError) as error:
         log_command_result(argv, error)
         raise
     log_command_result(argv, result)
@@ -416,11 +492,7 @@ def execute(argv: list[str], *, empty_status: int | None = None) -> str:
         and not result.stdout.strip()
         and not result.stderr.strip()
     ):
-        message = f"command failed ({result.returncode}): {shlex.join(argv)}"
-        detail = result.stderr.strip() or result.stdout.strip()
-        if detail:
-            message += f"\n{detail}"
-        fail(message)
+        fail(command_failure(argv, result))
     return result.stdout
 
 
@@ -489,11 +561,15 @@ def user_managers() -> list[tuple[str, int]]:
     for line in output.splitlines():
         fields = line.split()
         if len(fields) < 4 or not re.fullmatch(r"user@\d+\.service", fields[0]):
-            fail("inconclusive user-manager inventory")
+            fail(
+                issue(
+                    "Systemd user managers", f"Cannot identify unit and state in response: {line}"
+                )
+            )
         if fields[2] in ("inactive", "failed"):
             continue
         if fields[2] != "active":
-            fail(f"transitioning user manager: {fields[0]}")
+            fail(issue(fields[0], f"Unexpected systemd state: {fields[2]}/{fields[3]}."))
         uid = int(fields[0][5:-8])
         account = pwd.getpwuid(uid)
         runtime = Path(f"/run/user/{uid}")
@@ -550,8 +626,20 @@ def properties(command: list[str], unit: str) -> dict[str, str]:
     if not required <= data.keys() or (
         result.returncode and not (result.returncode == 1 and absent)
     ):
-        missing = ", ".join(sorted(required - data.keys())) or "none"
-        fail(f"inconclusive unit properties: {unit} (exit {result.returncode}; missing: {missing})")
+        missing = ", ".join(sorted(required - data.keys()))
+        reason = ""
+        if result.returncode:
+            reason = (
+                "Systemd property query failed: "
+                + command_failure(command, result).split("\n", 1)[1].strip()
+            )
+        if missing:
+            reason += f" Systemd response is missing required properties: {missing}."
+        values = ", ".join(
+            f"{key}={data.get(key, '<missing>')}"
+            for key in sorted(required & {"LoadState", "ActiveState", "SubState"})
+        )
+        fail(issue(unit_resource(command, unit), f"{reason} {values}."))
     return data
 
 
@@ -616,7 +704,7 @@ def check_manager(
     for line in output.splitlines():
         fields = line.split()
         if len(fields) < 4 or not relevant_unit(fields[0]):
-            fail(f"inconclusive unit inventory for {label}")
+            fail(issue(label, f"Cannot identify unit and state in systemd response: {line}"))
         units.add(fields[0])
     # Disabled/unloaded monitors still need override and uninstall enablement checks.
     if "--user" in command:
@@ -628,11 +716,27 @@ def check_manager(
     for unit in sorted(units):
         state = properties(command, unit)
         if state["ActiveState"] not in ("inactive", "failed"):
-            fail(f"{label}: pause/drain {unit} ({state['ActiveState']}) before maintenance")
+            fail(
+                issue(
+                    unit_resource(command, unit),
+                    f"Systemd state: {state['ActiveState']}/{state['SubState']}; "
+                    "pause/drain work before maintenance.",
+                )
+            )
         if state["LoadState"] not in ("loaded", "not-found"):
-            fail(f"{label}: masked or inconclusive unit: {unit}")
+            fail(
+                issue(
+                    unit_resource(command, unit),
+                    f"Unexpected systemd LoadState: {state['LoadState']}.",
+                )
+            )
         if state["SubState"] not in ("dead", "failed", "exited"):
-            fail(f"{label}: transitioning or inconclusive unit: {unit}")
+            fail(
+                issue(
+                    unit_resource(command, unit),
+                    f"Unexpected systemd state: {state['ActiveState']}/{state['SubState']}.",
+                )
+            )
         if (
             uninstall
             and not (state["LoadState"] == "not-found" and state["UnitFileState"] == "")
@@ -680,13 +784,41 @@ def check_manager(
                 or state.get("Restart") != expected_restart
                 or state.get("UMask") != "0077"
             ):
-                fail(f"{label}: unexpected Trigger service properties: {unit}")
+                values = ", ".join(
+                    f"{key}={state.get(key, '<missing>')} (expected {expected})"
+                    for key, expected in (
+                        ("Type", expected_type),
+                        ("Restart", expected_restart),
+                        ("UMask", "0077"),
+                    )
+                    if state.get(key) != expected
+                )
+                fail(
+                    issue(
+                        unit_resource(command, unit),
+                        f"Unexpected Trigger service properties: {values}.",
+                    )
+                )
             if expected_type == "oneshot" and (
                 state.get("TimeoutStartUSec") != "infinity"
                 or state.get("PartOf") != ""
                 or state.get("BindsTo") != ""
             ):
-                fail(f"{label}: worker timeout/lifecycle override requires review: {unit}")
+                values = ", ".join(
+                    f"{key}={state.get(key, '<missing>')!r} (expected {expected!r})"
+                    for key, expected in (
+                        ("TimeoutStartUSec", "infinity"),
+                        ("PartOf", ""),
+                        ("BindsTo", ""),
+                    )
+                    if state.get(key) != expected
+                )
+                fail(
+                    issue(
+                        unit_resource(command, unit),
+                        f"Worker timeout/lifecycle override requires review: {values}.",
+                    )
+                )
         elif (
             unit.startswith("vaultkeep@")
             and unit.endswith(".service")
@@ -698,7 +830,7 @@ def check_manager(
     for line in jobs.splitlines():
         fields = line.split()
         if len(fields) < 2:
-            fail(f"inconclusive queued jobs for {label}")
+            fail(issue(label, f"Cannot identify queued job in systemd response: {line}"))
         if relevant_unit(fields[1]):
             fail(f"{label}: queued job for {fields[1]}; drain work before maintenance")
     if uninstall:
@@ -780,7 +912,12 @@ def activity(layout: Layout, include_users: bool, uninstall: bool, components: l
             except FileNotFoundError:
                 continue
             except PermissionError:
-                fail(f"inconclusive foreground process scan: PID {directory.name}")
+                fail(
+                    issue(
+                        f"Process {directory.name}",
+                        "Permission denied inspecting foreground backup activity.",
+                    )
+                )
             words = [os.fsdecode(word) for word in argv if word]
             names = [Path(word).name for word in words[:3]]
             if (
@@ -796,6 +933,15 @@ def activity(layout: Layout, include_users: bool, uninstall: bool, components: l
 
 def main() -> None:
     command, *args = sys.argv[1:]
+    if command == "run":
+        # Shell operations had no deadline; preserve that and their exit status.
+        result = capture_command(args, timeout=None)
+        if result.returncode:
+            report_error(command_failure(args, result))
+            raise SystemExit(
+                result.returncode if result.returncode > 0 else 128 - result.returncode
+            )
+        return
     if command == "environment":
         release, version, components, source = args
         verify_environment(Path(release), version, selection(components.split(",")), Path(source))
@@ -823,9 +969,15 @@ def main() -> None:
             try:
                 execute([*manager_command(account, uid), "daemon-reload"])
             except (ValueError, OSError, subprocess.SubprocessError) as error:
-                errors.append(f"{account}: user daemon-reload failed: {error}")
+                traceback.print_exc(file=sys.stderr)
+                summary = exception_summary(error)
+                errors.append(
+                    summary
+                    if summary.startswith("Issue: ")
+                    else issue(f"User '{account}', user manager", summary)
+                )
         if errors:
-            fail("; ".join(errors))
+            fail("\n".join(errors))
     else:
         fail(f"unknown installer check: {command}")
 
@@ -833,6 +985,8 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
-        report_error(str(error))
+    except Exception as error:
+        if os.environ.get("VAULTKEEP_INSTALL_LOG"):
+            traceback.print_exc(file=sys.stderr)
+        report_error(exception_summary(error))
         raise SystemExit(1) from None

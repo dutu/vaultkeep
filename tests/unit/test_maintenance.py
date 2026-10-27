@@ -137,13 +137,103 @@ def test_configuration_check_reports_managed_job_failures(
     elif problem == "required":
         assert error["issues"][0]["path"] == "destination.root"
     else:
-        assert error["issues"][0]["path"] == "<root>"
+        assert error["issues"][0]["path"] == ("job" if problem == "malformed" else "<root>")
         expected = {
             "missing": "Configuration file does not exist",
             "unreadable": "Cannot read configuration file",
             "malformed": "Invalid YAML syntax",
         }
         assert expected[problem] in error["issues"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    "section,field,value,visible",
+    [
+        ("trigger", "poll_seconds", -1, True),
+        ("trigger", "poll_seconds", "not-a-number", True),
+        ("trigger", "poll_seconds", [1, 2], True),
+        ("trigger", "poll_seconds", "private-token-never-print", False),
+        ("encryption", "password_file", 12345, False),
+        ("encryption", "mode", "unsupported-mode", True),
+    ],
+)
+def test_configuration_report_includes_safe_invalid_values(
+    tmp_path, valid_config, section, field, value, visible
+):
+    from vaultkeep.config import load_config
+    from vaultkeep.errors import ConfigurationError
+
+    path = tmp_path / "app.yaml"
+    valid_config.setdefault(section, {})[field] = value
+    path.write_text(json.dumps(valid_config))
+    with pytest.raises(ConfigurationError) as caught, maintenance.configuration_context(path):
+        load_config(path)
+    details = maintenance.configuration_details(caught.value)
+    assert details["file"] == str(path.absolute())
+    problem = next(issue for issue in details["issues"] if issue["path"] == f"{section}.{field}")
+    assert ("invalid value:" in problem["message"]) == visible
+    if visible:
+        assert json.dumps(value) in problem["message"]
+    else:
+        assert str(value) not in problem["message"]
+
+
+def test_malformed_yaml_reports_location_and_enclosing_property_without_source(tmp_path):
+    from vaultkeep.config import load_config
+    from vaultkeep.errors import ConfigurationError
+
+    path = tmp_path / "malformed.yaml"
+    path.write_text("encryption:\n  password_file: [private-token, }\n")
+    with pytest.raises(ConfigurationError) as caught, maintenance.configuration_context(path):
+        load_config(path)
+    details = maintenance.configuration_details(caught.value)
+    problem = details["issues"][0]
+    assert problem["path"] == "encryption.password_file"
+    assert "line 2, column" in problem["message"]
+    assert "private-token" not in json.dumps(details)
+
+
+def test_recursive_invalid_value_does_not_replace_configuration_error(tmp_path, valid_config):
+    from vaultkeep.config import load_config
+    from vaultkeep.errors import ConfigurationError
+
+    path = tmp_path / "recursive.yaml"
+    path.write_text(json.dumps(valid_config) + "\n")
+    # Keep the rest of the valid document while adding a recursive field value.
+    content = path.read_text().rstrip()
+    path.write_text(content[:-1] + ', "trigger": {"poll_seconds": &cycle [*cycle]}}\n')
+    with pytest.raises(ConfigurationError) as caught, maintenance.configuration_context(path):
+        load_config(path)
+    details = maintenance.configuration_details(caught.value)
+    assert details["issues"][0]["path"] == "trigger.poll_seconds"
+    assert "Input should be a valid number" in details["issues"][0]["message"]
+
+
+@pytest.mark.parametrize("failure", ["missing_unit", "internal"])
+def test_account_process_reports_failures_as_json_and_retains_traceback(
+    tmp_path, valid_config, monkeypatch, failure
+):
+    with monkeypatch.context() as setup:
+        spec, paths, _ = scheduled_job(tmp_path, valid_config, setup, user=False)
+    if failure == "missing_unit":
+        paths.registry_path.unlink()
+        expected = "timer ownership registry requires review:"
+    else:
+        spec = {}
+        expected = "Internal managed-job failure; see diagnostics log for technical details."
+    result = subprocess.run(
+        [sys.executable, "-I", "-m", "vaultkeep.maintenance", "plan"],
+        input=json.dumps(spec),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    message = json.loads(result.stdout)["failure"]
+    assert expected in message
+    assert "Traceback" in result.stderr
+    assert "KeyError" not in message and "ValueError" not in message
 
 
 def test_configuration_check_includes_custom_monitor_paths_and_all_directory_jobs(
@@ -265,8 +355,9 @@ def test_refresh_refuses_schedule_overrides(tmp_path, valid_config, monkeypatch,
 def test_refresh_refuses_edits_inside_generated_monitor(tmp_path, valid_config):
     spec, path, _ = monitor_job(tmp_path, valid_config)
     path.write_text(path.read_text().replace("UMask=0077", "UMask=0022"))
-    with pytest.raises(ValueError, match="locally modified"):
+    with pytest.raises(ValueError, match="locally modified") as caught:
         maintenance.plan(spec)
+    assert str(path) in str(caught.value)
 
 
 def test_refresh_refuses_monitor_identity_change(tmp_path, valid_config):

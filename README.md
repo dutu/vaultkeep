@@ -103,8 +103,9 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
    service accounts/groups, and check managed-job generation. Invalid configurations
    abort installation before activation or changes to schedules. Each issue shows
    the absolute YAML path and the affected property when available. Correct the
-   reported files as their owner and rerun the same installer command. Technical
-   details remain in the private diagnostics log.
+   reported files as their owner and rerun the same installer command. Launcher
+   failures identify the account, unit, and actual systemd state; resolve that
+   condition before retrying. Technical details remain in the private diagnostics log.
 
 The checkout can be removed after installation; updates require another trusted
 checkout. Custom paths, installed files, and recovery are described in the

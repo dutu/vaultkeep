@@ -139,7 +139,7 @@ error() {
     if [[ -n "$INSTALL_LOG" ]]; then
         message ERROR "$SCRIPT_NAME: $*" >&2
         if [[ "$ERROR_REPORTING" == 1 ]]; then
-            message ERROR "$SCRIPT_NAME: $*" >&5
+            printf 'Issue: %s\n       %s\n' "${CURRENT_STAGE:-Installer}" "$*" >&5
         fi
     else
         printf '%s: %s: %s\n' "$(color_status FAILED 4)" "$SCRIPT_NAME" "$*" >&4
@@ -223,7 +223,7 @@ report_failure() {
     if [[ "$ERROR_REPORTING" == 1 ]]; then
         details=$(cat <&6)
     fi
-    if [[ "$details" != Issue:\ * ]]; then
+    if [[ -z "$details" ]]; then
         printf 'Issue: %s failed (exit %s).\n' "$failed_stage" "$status" >&4
     fi
     [[ -z "$details" ]] || printf '%s\n' "$details" >&4
@@ -394,9 +394,9 @@ check_7z_compatibility() {
     trap 'rm -rf "$tmp"; trap - RETURN' RETURN
     printf 'vaultkeep installer check\n' >"$tmp/payload.txt"
     tar -C "$tmp" -cf "$tmp/payload.tar" payload.txt
-    7z a -t7z -mhe=on -sccUTF-8 -bd -pvaultkeep-installer-test \
+    support run 7z a -t7z -mhe=on -sccUTF-8 -bd -pvaultkeep-installer-test \
         -- "$tmp/payload.tar.7z" "$tmp/payload.tar"
-    7z t -bd -sccUTF-8 -pvaultkeep-installer-test \
+    support run 7z t -bd -sccUTF-8 -pvaultkeep-installer-test \
         -- "$tmp/payload.tar.7z"
 }
 
@@ -540,8 +540,8 @@ stage_release() {
         --exclude='.env' --exclude='.env.*' \
         "$SOURCE_DIR/" "$stage/src/"
     stage_start "Python environment"
-    python3 -m venv "$stage/venv"
-    "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/requirements.lock"
+    support run python3 -m venv "$stage/venv"
+    support run "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/requirements.lock"
     stage_start Application
     log "Preparing Vaultkeep $version in staging for validation..."
     install_packages "$stage"
@@ -554,7 +554,7 @@ stage_release() {
 finalize_release_venv() {
     local release=$1 version=$2
     log "Finalizing Vaultkeep $version at $release (updating command paths)..."
-    "$release/venv/bin/python" -m pip install --quiet \
+    support run "$release/venv/bin/python" -m pip install --quiet \
         --force-reinstall --no-build-isolation --no-deps "$release/src"
     verify_release "$release" "$version"
 }
@@ -592,14 +592,14 @@ verify_systemd_templates() {
         $0 == "Unit=vaultkeep@%i.service" { print "OnCalendar=*-*-* 00:00:00" }
     ' "$tmp/vaultkeep@.timer" >"$tmp/timer"
     mv "$tmp/timer" "$tmp/vaultkeep@.timer"
-    systemd-analyze verify "$tmp/vaultkeep@.service" "$tmp/vaultkeep@.timer"
+    support run systemd-analyze verify "$tmp/vaultkeep@.service" "$tmp/vaultkeep@.timer"
     if [[ "$COMPONENTS" == core,trigger ]]; then
         local name
         for name in vaultkeep-trigger-exec@.service; do
             sed -i -E 's#^ExecStart=.*#ExecStart=/bin/true#' "$tmp/$name"
         done
         install -d -m 0700 "$tmp/runtime"
-        XDG_RUNTIME_DIR="$tmp/runtime" systemd-analyze --user verify \
+        XDG_RUNTIME_DIR="$tmp/runtime" support run systemd-analyze --user verify \
             "$tmp/vaultkeep-trigger-exec@.service"
     fi
     rm -rf "$tmp"
@@ -820,7 +820,7 @@ daemon_reload() {
         log "PLAN systemctl daemon-reload; reload running user managers without starting or enabling monitors"
         return
     fi
-    systemctl daemon-reload
+    support run systemctl daemon-reload
     if [[ "$COMPONENTS" == core,trigger ]]; then
         support reload-users
     fi
@@ -1085,7 +1085,7 @@ verify_python() {
 
 install_packages() {
     local release=$1
-    "$release/venv/bin/python" -m pip install --quiet --no-build-isolation --no-deps "$release/src"
+    support run "$release/venv/bin/python" -m pip install --quiet --no-build-isolation --no-deps "$release/src"
 }
 
 verify_release() {

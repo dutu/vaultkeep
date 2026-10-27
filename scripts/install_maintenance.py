@@ -19,8 +19,11 @@ from pathlib import Path
 from install_support import (
     Layout,
     capture_command,
+    command_failure,
+    exception_summary,
     execute,
     fail,
+    issue,
     manager_command,
     properties,
     report_error,
@@ -28,6 +31,10 @@ from install_support import (
 )
 
 PATTERNS = ("vaultkeep@*.timer", "vaultkeep-trigger.service", "vaultkeep-trigger@*.service")
+
+
+def launcher_resource(spec: dict, unit: str) -> str:
+    return f"User '{spec['account'] or 'root'}', unit '{unit}'"
 
 
 def environment_value(value: str) -> str:
@@ -156,7 +163,12 @@ def inventory(layout: Layout) -> dict:
                 # Some managers return a superset; activity() checks workers.
                 continue
             else:
-                fail(f"inconclusive maintenance inventory: {line}")
+                fail(
+                    issue(
+                        f"User '{spec['account'] or 'root'}'",
+                        f"Unexpected unit in systemd inventory: {line}",
+                    )
+                )
         for unit in sorted(names):
             state = properties(command, unit)
             if state["LoadState"] != "loaded" or state["ActiveState"] not in (
@@ -164,7 +176,18 @@ def inventory(layout: Layout) -> dict:
                 "inactive",
                 "failed",
             ):
-                fail(f"{spec['account'] or 'root'}: inconclusive launcher: {unit}")
+                reason = (
+                    f"Unexpected systemd LoadState: {state['LoadState']}. "
+                    if state["LoadState"] != "loaded"
+                    else ""
+                )
+                fail(
+                    issue(
+                        launcher_resource(spec, unit),
+                        reason
+                        + f"Unexpected systemd state: {state['ActiveState']}/{state['SubState']}.",
+                    )
+                )
             if state["SubState"] not in (
                 "running",
                 "waiting",
@@ -173,7 +196,12 @@ def inventory(layout: Layout) -> dict:
                 "failed",
                 "exited",
             ):
-                fail(f"transitioning launcher requires review: {unit}")
+                fail(
+                    issue(
+                        launcher_resource(spec, unit),
+                        f"Unexpected systemd state: {state['ActiveState']}/{state['SubState']}.",
+                    )
+                )
             if state["UnitFileState"] not in (
                 "enabled",
                 "enabled-runtime",
@@ -183,7 +211,13 @@ def inventory(layout: Layout) -> dict:
                 "linked",
                 "linked-runtime",
             ):
-                fail(f"inconclusive launcher enablement: {unit}")
+                fail(
+                    issue(
+                        launcher_resource(spec, unit),
+                        f"Unexpected systemd UnitFileState: {state['UnitFileState']!r}; "
+                        "review launcher enablement.",
+                    )
+                )
             fragment = Path(state["FragmentPath"])
             if unit.startswith("vaultkeep-trigger"):
                 if unit == "vaultkeep-trigger.service":
@@ -245,9 +279,17 @@ def account_operation(spec: dict, python: str, action: str, payload: dict) -> di
             response = json.loads(result.stdout)
         except ValueError:
             response = {}
-        if isinstance(response, dict) and response.get("errors"):
-            fail(configuration_report(response["errors"]))
-        fail(f"{spec['account'] or 'root'}: could not {action} managed jobs; see diagnostics log.")
+        if isinstance(response, dict):
+            if response.get("errors"):
+                fail(configuration_report(response["errors"]))
+            if isinstance(response.get("failure"), str):
+                fail(
+                    issue(f"User '{spec['account'] or 'root'}', managed jobs", response["failure"])
+                )
+        # Failures before the module starts (for example runuser or Python)
+        # cannot use the JSON response; use the safe command diagnostic.
+        reason = command_failure(argv, result).split("\n", 1)[1].strip()
+        fail(issue(f"User '{spec['account'] or 'root'}', managed jobs", reason))
     return json.loads(result.stdout) if action in ("plan", "check-configurations") else None
 
 
@@ -258,9 +300,9 @@ def configuration_report(errors: list[dict]) -> str:
     lines = []
     for error in errors:
         lines.append(f"Issue: {single_line(error['file'])}")
-        for issue in error["issues"]:
-            message = single_line(issue["message"]).rstrip(".")
-            field = single_line(issue["path"])
+        for problem in error["issues"]:
+            message = single_line(problem["message"]).rstrip(".")
+            field = single_line(problem["path"])
             suffix = f" (field: {field})" if field != "<root>" else ""
             lines.append(f"       {message}{suffix}.")
     return "\n".join(lines)
@@ -276,7 +318,8 @@ def check_configurations(layout: Layout, python: str) -> None:
             )
             errors.extend(result["errors"])
         except (ValueError, OSError, subprocess.SubprocessError) as error:
-            failures.append(str(error))
+            traceback.print_exc(file=sys.stderr)
+            failures.append(exception_summary(error))
     if errors or failures:
         details = []
         if errors:
@@ -294,8 +337,13 @@ def refresh(path: Path, python: str) -> None:
         )
         planned = {job["unit"] for job in spec["plan"]["jobs"]}
         if set(spec["states"]) - planned:
+            missing = ", ".join(sorted(set(spec["states"]) - planned))
             fail(
-                f"{spec['account'] or 'root'}: an installed launcher has no refreshable managed job"
+                issue(
+                    f"User '{spec['account'] or 'root'}', units '{missing}'",
+                    "Installed launcher has no refreshable managed job; "
+                    "review its unit and configuration.",
+                )
             )
     # Snapshot every account before changing the first account's files.
     save(path, document)
@@ -316,7 +364,15 @@ def validate(path: Path) -> None:
                     "inactive",
                     "failed",
                 ):
-                    fail(f"launcher state changed during maintenance: {unit}")
+                    fail(
+                        issue(
+                            launcher_resource(spec, unit),
+                            "Launcher state changed during maintenance: "
+                            f"{state['ActiveState']}/{state.get('SubState', '<missing>')}, "
+                            f"UnitFileState={state['UnitFileState']} "
+                            f"(expected {enabled}, inactive or failed).",
+                        )
+                    )
 
 
 def restore(path: Path) -> None:
@@ -328,9 +384,10 @@ def restore(path: Path) -> None:
         try:
             account_operation(spec, document["python"], "restore", spec["plan"])
         except (ValueError, OSError, subprocess.SubprocessError) as error:
-            errors.append(str(error))
+            traceback.print_exc(file=sys.stderr)
+            errors.append(exception_summary(error))
     if errors:
-        fail("; ".join(errors))
+        fail("\n".join(errors))
 
 
 def resume(path: Path) -> None:
@@ -341,15 +398,34 @@ def resume(path: Path) -> None:
             try:
                 state = properties(spec["command"], unit)
                 if state["UnitFileState"] != spec["states"][unit]:
-                    fail(f"enablement changed during maintenance: {unit}")
+                    fail(
+                        issue(
+                            launcher_resource(spec, unit),
+                            "Enablement changed during maintenance: "
+                            f"UnitFileState={state['UnitFileState']} "
+                            f"(expected {spec['states'][unit]}).",
+                        )
+                    )
                 execute([*spec["command"], "start", unit])
                 state = properties(spec["command"], unit)
                 if state["ActiveState"] != "active":
-                    fail(f"launcher did not resume: {unit}")
+                    fail(
+                        issue(
+                            launcher_resource(spec, unit),
+                            "Launcher did not resume: systemd state "
+                            f"{state['ActiveState']}/{state.get('SubState', '<missing>')}.",
+                        )
+                    )
             except (ValueError, OSError, subprocess.SubprocessError) as error:
-                errors.append(f"{spec['account'] or 'root'}: {unit}: {error}")
+                traceback.print_exc(file=sys.stderr)
+                summary = exception_summary(error)
+                errors.append(
+                    summary
+                    if summary.startswith("Issue: ")
+                    else issue(launcher_resource(spec, unit), summary)
+                )
     if errors:
-        fail("; ".join(errors))
+        fail("\n".join(errors))
 
 
 def main() -> None:
@@ -376,7 +452,7 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+    except Exception as error:
         traceback.print_exc(file=sys.stderr)
-        report_error(str(error))
+        report_error(exception_summary(error))
         raise SystemExit(1) from None

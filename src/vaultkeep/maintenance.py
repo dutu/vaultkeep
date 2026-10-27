@@ -95,7 +95,9 @@ def command_selection(content: str, *, monitor: bool, user: bool) -> tuple[Path,
     return config, params
 
 
-def require_generated(original: str, rendered: str, *, variable: tuple[str, ...]) -> None:
+def require_generated(
+    original: str, rendered: str, *, variable: tuple[str, ...], path: Path | None = None
+) -> None:
     """Permit regenerated values, but refuse extra or edited service directives."""
 
     def normalize(content: str) -> list[str]:
@@ -107,7 +109,8 @@ def require_generated(original: str, rendered: str, *, variable: tuple[str, ...]
         ]
 
     if normalize(original) != normalize(rendered):
-        raise ValueError("locally modified managed unit requires review")
+        resource = f": {path}" if path is not None else ""
+        raise ValueError(f"locally modified managed unit requires review{resource}")
 
 
 def managed_units(
@@ -147,22 +150,104 @@ def configuration_details(error: Any) -> dict[str, Any]:
     """Return safe issue summaries; parser diagnostics can contain source text."""
     from vaultkeep.errors import ConfigurationError, ValidationIssue
 
+    config_path = error.config_path
+    assert config_path is not None
     messages = {
         "yaml_parse": "Invalid YAML syntax; correct the file and retry.",
         "yaml_read": "Cannot read configuration file; check permissions and encoding.",
         "yaml_missing": "Configuration file does not exist.",
     }
+    issues = [
+        {"path": issue.dotted_path, "message": messages.get(issue.code, issue.message)}
+        for issue in (
+            error.issues
+            if isinstance(error, ConfigurationError)
+            else (ValidationIssue((), str(error), "job_validation"),)
+        )
+    ]
+    cause = error.__cause__
+    if isinstance(error, ConfigurationError):
+        from pydantic import ValidationError
+
+        if isinstance(cause, ValidationError):
+            details = {
+                ValidationIssue(tuple(detail["loc"]), "", "").dotted_path: detail
+                for detail in cause.errors(include_url=False, include_context=False)
+            }
+            for item in issues:
+                detail = details.get(item["path"])
+                if detail is None:
+                    continue
+                value = detail.get("input")
+                # Commands, environment matches, password settings and parameter
+                # selections may carry credentials. Never summarize their values.
+                field = item["path"]
+                sensitive = (
+                    field
+                    in (
+                        "encryption",
+                        "hooks",
+                        "notifications",
+                        "application.matcher",
+                    )
+                    or field.startswith(
+                        (
+                            "encryption.password_file",
+                            "notifications.command",
+                            "application.matcher.env_eq",
+                            "application.matcher.argv_tokens",
+                            "application.matcher.cmdline_regex",
+                            "trigger.params",
+                        )
+                    )
+                    or (field.startswith("hooks.") and not field.endswith(".timeout_seconds"))
+                )
+                try:
+                    rendered = json.dumps(value, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    # Recursive YAML values must not hide the validation error.
+                    continue
+                sensitive_text = re.search(
+                    r"secret|password|passphrase|token|credential|://|\\[rn]", rendered, re.I
+                )
+                if (
+                    "input" in detail
+                    and detail.get("type") != "missing"
+                    and len(rendered) <= 80
+                    and not sensitive
+                    and not sensitive_text
+                ):
+                    item["message"] = item["message"].rstrip(".") + f"; invalid value: {rendered}"
+        elif any(issue.code == "yaml_parse" for issue in error.issues):
+            mark = getattr(cause, "problem_mark", None)
+            if mark is not None:
+                issues[0]["message"] = (
+                    f"Invalid YAML syntax at line {mark.line + 1}, column {mark.column + 1}; "
+                    "correct the file and retry."
+                )
+            # The parser's context points to the container being parsed. Name
+            # its block property when identifiable, without copying YAML values.
+            context = getattr(cause, "context_mark", None)
+            if context is not None:
+                try:
+                    lines = config_path.read_text().splitlines()
+                    parents: list[tuple[int, str]] = []
+                    for number, line in enumerate(lines[: context.line + 1]):
+                        match = re.match(r"^( *)([A-Za-z_][\w-]*):(?:\s|$)", line)
+                        if match:
+                            if number == context.line and context.column < match.end():
+                                continue
+                            indent = len(match[1])
+                            parents = [(level, key) for level, key in parents if level < indent]
+                            parents.append((indent, match[2]))
+                    if parents:
+                        issues[0]["path"] = ".".join(key for _, key in parents)
+                except (OSError, UnicodeError):
+                    pass
     return {
-        "job": error.config_path.stem,
-        "file": str(error.config_path),
-        "issues": [
-            {"path": issue.dotted_path, "message": messages.get(issue.code, issue.message)}
-            for issue in (
-                error.issues
-                if isinstance(error, ConfigurationError)
-                else (ValidationIssue((), str(error), "job_validation"),)
-            )
-        ],
+        "job": config_path.stem,
+        "file": str(config_path),
+        "issues": issues,
     }
 
 
@@ -337,11 +422,14 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
             base64.b64decode(timer_snapshot["content"]).decode(),
             rendered_timer,
             variable=("OnCalendar", "RandomizedDelaySec", "FixedRandomDelay", "Persistent"),
+            path=timer,
         )
         if service_content is not None:
             if rendered_service is None:
                 raise ValueError(f"unexpected service override requires review: {service}")
-            require_generated(service_content, rendered_service, variable=("ExecStart",))
+            require_generated(
+                service_content, rendered_service, variable=("ExecStart",), path=service
+            )
         change(timer, rendered_timer, timer_snapshot)
         change(service, rendered_service, service_snapshot)
         jobs.append(
@@ -370,7 +458,7 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
         if service_name(trigger) != path.name:
             raise ValueError(f"job identity changed: {path}")
         rendered = render_service(trigger)
-        require_generated(content, rendered, variable=("ExecStart",))
+        require_generated(content, rendered, variable=("ExecStart",), path=path)
         change(path, rendered, snapshot)
         jobs.append(
             {"config": str(config_path), "params": params, "unit": path.name, "monitor": True}
@@ -474,6 +562,20 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception as error:
         traceback.print_exc(file=sys.stderr)
+        if isinstance(error, OSError):
+            reason = (
+                "Required resource does not exist"
+                if isinstance(error, FileNotFoundError)
+                else "Permission denied"
+                if isinstance(error, PermissionError)
+                else f"Filesystem operation failed ({error.strerror or str(error)})"
+            )
+            message = f"{reason}: {error.filename or 'managed job files'}."
+        elif isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError):
+            message = str(error)
+        else:
+            message = "Internal managed-job failure; see diagnostics log for technical details."
+        print(json.dumps({"failure": message}))
         raise SystemExit(1) from None
