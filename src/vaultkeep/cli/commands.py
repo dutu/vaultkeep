@@ -139,7 +139,7 @@ def _dispatch(
                 except (VaultkeepError, OSError) as error:
                     with suppress(Exception):
                         display.summary(success=False)
-                    output.issue(error)
+                    Console(no_color=namespace.no_color or not sys.stdout.isatty()).issue(error)
                     return failure_exit_code(error)
                 except BaseException as error:
                     with suppress(Exception):
