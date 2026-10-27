@@ -68,7 +68,7 @@ STAGE_STARTED=0
 HEARTBEAT_PID=""
 REPORT_FAILED=0
 FAILED_STAGE=""
-CONFIGURATION_REFUSED=0
+PREFLIGHT_REFUSED=0
 FAILURE_OUTCOME=""
 
 capture_diagnostics() {
@@ -620,6 +620,11 @@ maintenance() {
 
 check_existing_configurations() {
     local python=$1
+    PREFLIGHT_REFUSED=1
+    stage_start "Launcher identification"
+    if [[ "$DRY_RUN" == 0 ]]; then
+        python3 "$SOURCE_DIR/scripts/install_maintenance.py" check-launchers "$python"
+    fi
     stage_start "Configuration validation"
     if [[ "$DRY_RUN" == 1 ]]; then
         log "PLAN validate all existing root/user job YAML with the candidate schema before pausing schedules or activation"
@@ -629,7 +634,6 @@ check_existing_configurations() {
         return
     fi
     FAILED_STAGE=$CURRENT_STAGE
-    CONFIGURATION_REFUSED=1
     return 1
 }
 
@@ -791,7 +795,7 @@ rollback_commit() {
         [[ -z "$ROLLBACK_TMP" ]] || rm -rf "$ROLLBACK_TMP"
         if [[ "$maintenance_started" == 1 ]]; then
             FAILURE_OUTCOME="Installation failed. Rollback succeeded."
-        elif [[ "$CONFIGURATION_REFUSED" == 1 ]]; then
+        elif [[ "$PREFLIGHT_REFUSED" == 1 ]]; then
             FAILURE_OUTCOME="Installation aborted."
         fi
         if [[ -n "$FAILURE_OUTCOME" ]]; then
@@ -954,6 +958,10 @@ install_or_update() {
         check_existing_configurations "$STAGED_RELEASE/venv/bin/python"
     else
         check_existing_configurations "$active_release/venv/bin/python"
+    fi
+    stage_start "Runtime safety checks"
+    if [[ "$DRY_RUN" == 0 ]]; then
+        python3 "$SOURCE_DIR/scripts/install_maintenance.py" check-activity
     fi
     stage_start "Pause schedules"
     pause_schedules

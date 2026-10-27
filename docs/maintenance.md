@@ -71,25 +71,41 @@ The installer copies every `examples/*.yaml` file from the release into the root
 
 `install.sh install` and `install.sh update` handle maintenance automatically:
 
-1. Prepare the candidate release in staging and validate existing job configurations
-   with its schema, resolve application users and service accounts/groups, and
-   render existing managed jobs without applying changes. Check `.yaml` files in
+1. Prepare the candidate release in staging and identify managed launchers. Validate
+   existing job configurations with its schema, resolve application users and
+   service accounts/groups, and render existing managed jobs without applying
+   changes. Check `.yaml` files in
    managed job directories and the original paths and saved parameters referenced
    by installed timers and monitors, including offline accounts. An exact
    version/source match uses the verified installed release. These checks do not
    run hooks, modify job state, or contact application processes.
-2. Inventory existing root and user Vaultkeep timers and Trigger monitors, recording
-   their active states and enablement, including runtime enablement.
-3. Stop active timers and monitors. Running backup services and workers are never
-   stopped. If backups, workers, queued work, held job locks, or inconclusive activity
-   remain, refuse the operation and resume the recorded launchers.
-4. Hold the deployment maintenance lock, install or repair the release, and refresh
+2. Record existing root and user timers and Trigger monitors that need pausing and
+   their enablement, including runtime enablement. Identification uses unit
+   definitions and managed-job ownership independently of runtime state. Previous
+   per-job monitor command formats remain supported.
+3. Check backup services, workers, queued backup work, job locks, and foreground
+   commands before stopping any launcher. An identified running monitor or an
+   `activating/auto-restart` loop alone does not block maintenance. An unknown
+   monitor process, an unfinished transition, or unavailable activity evidence
+   causes a safety refusal before schedules change.
+4. Stop running and restarting timers and monitors, acquire the deployment
+   maintenance lock, and repeat the activity checks. Running backup services
+   and workers are never stopped. If work starts during preflight, refuse the
+   operation and resume the recorded launchers.
+5. Hold the deployment maintenance lock, install or repair the release, and refresh
    existing managed job units using their original YAML paths and parameters.
    Refreshing units does not enable or start them.
-5. Reload systemd, validate all discovered jobs and runtime readiness for jobs being
-   resumed, then resume only previously active timers and monitors. Previously
-   inactive schedules remain inactive. Enablement and persistent timer timestamps
-   are preserved; a persistent calendar timer may catch up a missed event.
+6. Reload systemd, validate all discovered jobs and runtime readiness for jobs being
+   resumed, then resume previously running or restarting timers and monitors.
+   Previously inactive or failed launchers remain stopped. Enablement and persistent timer
+   timestamps are preserved; a persistent calendar timer may catch up a missed event.
+
+Configuration errors name the absolute YAML path and affected property, for example
+`User 'dutu' does not exist (field: application.user)`. Correct the reported file
+as its owner and retry. Failed or restarting monitors do not hide these errors.
+A failed configuration check leaves units, enablement, job data, and the active
+release unchanged. Unit ownership failures appear under **Launcher identification**;
+protected or uncertain activity appears under **Runtime safety checks**.
 
 This includes running and lingering user managers and jobs in the standard unit
 locations of accounts without a running manager. Stopped user managers remain

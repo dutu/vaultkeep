@@ -18,7 +18,9 @@ from pathlib import Path
 
 from install_support import (
     Layout,
+    activity,
     capture_command,
+    check_trigger_command,
     command_failure,
     exception_summary,
     execute,
@@ -171,35 +173,14 @@ def inventory(layout: Layout) -> dict:
                 )
         for unit in sorted(names):
             state = properties(command, unit)
-            if state["LoadState"] != "loaded" or state["ActiveState"] not in (
-                "active",
-                "inactive",
-                "failed",
-            ):
-                reason = (
-                    f"Unexpected systemd LoadState: {state['LoadState']}. "
-                    if state["LoadState"] != "loaded"
-                    else ""
-                )
+            # Load/ownership evidence identifies launchers; runtime activity is
+            # assessed separately before any stop or deployment mutation.
+            if state["LoadState"] != "loaded":
                 fail(
                     issue(
                         launcher_resource(spec, unit),
-                        reason
-                        + f"Unexpected systemd state: {state['ActiveState']}/{state['SubState']}.",
-                    )
-                )
-            if state["SubState"] not in (
-                "running",
-                "waiting",
-                "elapsed",
-                "dead",
-                "failed",
-                "exited",
-            ):
-                fail(
-                    issue(
-                        launcher_resource(spec, unit),
-                        f"Unexpected systemd state: {state['ActiveState']}/{state['SubState']}.",
+                        f"Cannot resolve launcher definition: LoadState={state['LoadState']}; "
+                        "review systemctl cat and the installed unit file.",
                     )
                 )
             if state["UnitFileState"] not in (
@@ -219,39 +200,62 @@ def inventory(layout: Layout) -> dict:
                     )
                 )
             fragment = Path(state["FragmentPath"])
-            if unit.startswith("vaultkeep-trigger"):
-                if unit == "vaultkeep-trigger.service":
-                    fail(
-                        "legacy standalone Trigger monitor requires migration "
-                        "before automatic maintenance"
-                    )
-                if state.get("DropInPaths") or not fragment.read_text().startswith(
-                    f"# Managed by Vaultkeep: {unit}\n"
+            try:
+                if not fragment.is_absolute() or fragment.is_symlink() or not fragment.is_file():
+                    fail("Launcher fragment must be an absolute, regular unit file.")
+                if unit.startswith("vaultkeep-trigger"):
+                    if unit == "vaultkeep-trigger.service":
+                        fail(
+                            "Legacy standalone monitor requires migration to a per-job monitor; "
+                            "review the unit with systemctl cat before maintenance."
+                        )
+                    if spec["account"] is None:
+                        fail(
+                            "Per-job Trigger monitors require a user manager; review systemctl cat "
+                            "and reinstall the monitor as its owning user."
+                        )
+                    if fragment.name != unit or not fragment.read_text().startswith(
+                        f"# Managed by Vaultkeep: {unit}\n"
+                    ):
+                        fail("Monitor unit identity or Vaultkeep ownership marker does not match.")
+                    if state.get("DropInPaths") or fragment.with_name(unit + ".d").exists():
+                        fail(
+                            "Monitor has local overrides; review systemctl cat before maintenance."
+                        )
+                    check_trigger_command(state, unit, layout.bin, spec["account"] or "root")
+                elif spec["account"] is None:
+                    if fragment != layout.timer:
+                        fail("Core timer fragment differs from the installed Vaultkeep template.")
+                elif fragment.name != unit or not fragment.read_text().startswith(
+                    "[Unit]\nDescription=Vaultkeep user backup timer "
                 ):
-                    fail(f"unmanaged monitor/override requires review: {unit}")
-            elif spec["account"] is None:
-                if fragment != layout.timer:
-                    fail(f"unexpected core timer fragment: {unit}")
-            elif fragment.name != unit or not fragment.read_text().startswith(
-                "[Unit]\nDescription=Vaultkeep user backup timer "
-            ):
-                fail(f"unmanaged user timer requires review: {unit}")
-            if spec["account"] is not None and str(fragment.parent) not in spec["unit_roots"]:
-                fail(f"{unit}: unit outside the manager's XDG config root requires review")
+                    fail("User timer identity or generated Vaultkeep definition does not match.")
+                if str(fragment.parent) not in spec["unit_roots"]:
+                    fail("Launcher is outside the manager's configured unit root.")
+            except (ValueError, OSError) as error:
+                fail(issue(launcher_resource(spec, unit), exception_summary(error)))
             spec["states"][unit] = state["UnitFileState"]
-            if state["ActiveState"] == "active":
+            # A restarting/starting launcher must also be stopped, otherwise it
+            # can race refresh forever. Failed/inactive units remain stopped,
+            # independently of their enablement.
+            if state["ActiveState"] not in ("inactive", "failed"):
                 spec["active"].append(unit)
     return {"accounts": specs}
 
 
 def pause(path: Path, layout: Layout) -> None:
     document = inventory(layout)
+    check_activity(layout, document)
     # Persist the full resume list before the first stop (including signals).
     save(path, document)
     for spec in document["accounts"]:
         for unit in spec["active"]:
             execute([*spec["command"], "stop", unit])
         print(f"Inventoried jobs for {spec['account'] or 'root'}")
+
+
+def check_activity(layout: Layout, document: dict | None = None) -> None:
+    activity(layout, True, False, ["core", "trigger"], launchers=document or inventory(layout))
 
 
 def account_operation(spec: dict, python: str, action: str, payload: dict) -> dict | None:
@@ -430,6 +434,13 @@ def resume(path: Path) -> None:
 
 def main() -> None:
     action, *args = sys.argv[1:]
+    if action == "check-launchers":
+        for spec in inventory(Layout())["accounts"]:
+            account_operation(spec, args[0], action, {**spec, "user": spec["account"] is not None})
+        return
+    if action == "check-activity":
+        check_activity(Layout())
+        return
     if action == "check-configurations":
         check_configurations(Layout(), args[0])
         return

@@ -51,6 +51,7 @@ def test_empty_system_and_user_launcher_inventories_can_pause_and_resume(
         registry=tmp_path / "registry",
     )
     journal = tmp_path / "journal.json"
+    monkeypatch.setattr(helper, "check_activity", lambda *args: None)
 
     helper.pause(journal, layout)
     helper.resume(journal)
@@ -80,6 +81,8 @@ def test_user_launchers_preserve_all_activity_enablement_combinations(
             "SubState": "running" if index % 2 == 0 else "dead",
             "FragmentPath": str(path),
             "DropInPaths": "",
+            "ExecStart": "{ path=/usr/local/bin/vaultkeep ; argv[]=/usr/local/bin/vaultkeep "
+            "--user --config /jobs/app.yaml trigger monitor ; ignore_errors=no ; }",
             "UnitFileState": "enabled-runtime" if index < 2 else "disabled",
         }
     monkeypatch.setattr(helper, "user_managers", lambda: [("alice", 1000)])
@@ -111,7 +114,10 @@ def test_user_launchers_preserve_all_activity_enablement_combinations(
         return ""
 
     monkeypatch.setattr(helper, "execute", execute)
-    layout = SimpleNamespace(timer=tmp_path / "vaultkeep@.timer")
+    monkeypatch.setattr(helper, "check_activity", lambda *args: None)
+    layout = SimpleNamespace(
+        timer=tmp_path / "vaultkeep@.timer", bin=Path("/usr/local/bin/vaultkeep")
+    )
     helper.pause(journal, layout)
     assert actions == [("stop", units[0]), ("stop", units[2])]
     helper.resume(journal)
@@ -354,12 +360,7 @@ def test_account_configuration_failure_propagates_without_prefixes(helper, monke
 @pytest.mark.parametrize(
     "changed,reason",
     [
-        (
-            {"ActiveState": "activating", "SubState": "auto-restart"},
-            "Unexpected systemd state: activating/auto-restart.",
-        ),
-        ({"SubState": "stop-sigterm"}, "Unexpected systemd state: active/stop-sigterm."),
-        ({"LoadState": "masked"}, "Unexpected systemd LoadState: masked."),
+        ({"LoadState": "masked"}, "Cannot resolve launcher definition: LoadState=masked"),
         ({"UnitFileState": "masked"}, "Unexpected systemd UnitFileState: 'masked'"),
     ],
 )
@@ -405,3 +406,297 @@ def test_account_refusal_propagates_actionable_nonconfiguration_error(helper, mo
         helper.account_operation({"account": None}, "python", "plan", {})
     assert str(caught.value) == f"Issue: User 'root', managed jobs\n       {reason}"
     assert "configuration" not in str(caught.value)
+
+
+@pytest.fixture
+def managed_monitor(helper, monkeypatch, tmp_path, valid_config):
+    """Real managed files, inventory and safety; only the service manager is fake."""
+    import importlib
+    import os
+    import pwd
+
+    from vaultkeep import maintenance
+    from vaultkeep.trigger.config import load_config
+    from vaultkeep.trigger.service import render_service, service_name
+
+    support = importlib.import_module("install_support")
+    home = tmp_path / "alice"
+    root = home / ".config/systemd/user"
+    root.mkdir(parents=True)
+    jobs = home / ".config/vaultkeep/jobs"
+    jobs.mkdir(parents=True)
+    config = jobs / "app.yaml"
+    valid_config["application"] = {
+        "name": "bisq",
+        "user": pwd.getpwuid(os.geteuid()).pw_name,
+        "data_dir": str(home),
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq"}]},
+    }
+    valid_config["trigger"] = {"enabled": True}
+    config.write_text(json.dumps(valid_config))
+    trigger = load_config(config)
+    unit = service_name(trigger)
+    fragment = root / unit
+    fragment.write_text(render_service(trigger))
+    raw_command = next(
+        line[10:] for line in fragment.read_text().splitlines() if line.startswith("ExecStart=")
+    )
+    states = {
+        unit: {
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "FragmentPath": str(fragment),
+            "DropInPaths": "",
+            "UnitFileState": "enabled",
+            "ExecStart": (
+                f"{{ path=/usr/local/bin/vaultkeep ; argv[]={raw_command} ; ignore_errors=no ; }}"
+            ),
+            "Type": "simple",
+            "Restart": "on-failure",
+            "UMask": "0077",
+            "MainPID": "99999999",
+            "ControlPID": "0",
+        }
+    }
+    entry = SimpleNamespace(pw_dir=str(home), pw_name="alice")
+    original = helper.pwd.getpwnam
+    monkeypatch.setattr(
+        helper.pwd, "getpwnam", lambda name: entry if name == "alice" else original(name)
+    )
+    monkeypatch.setattr(helper.pwd, "getpwall", lambda: [entry])
+    monkeypatch.setattr(helper, "user_managers", lambda: [("alice", 1000)])
+    calls = []
+
+    def execute(argv, **kwargs):
+        calls.append(argv)
+        if "show-environment" in argv:
+            return ""
+        if "list-jobs" in argv:
+            return ""
+        if "list-units" in argv or "list-unit-files" in argv:
+            return (
+                "\n".join(
+                    f"{name} loaded {state['ActiveState']} {state['SubState']}"
+                    for name, state in states.items()
+                )
+                if "--user" in argv
+                else ""
+            )
+        if "stop" in argv or "start" in argv:
+            state = states[argv[-1]]
+            action = "start" if "start" in argv else "stop"
+            state.update(
+                ActiveState="active" if action == "start" else "inactive",
+                SubState="running" if action == "start" else "dead",
+            )
+            return ""
+        pytest.fail(f"unexpected command: {argv}")
+
+    absent = {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "FragmentPath": "",
+        "DropInPaths": "",
+        "ExecStart": "",
+        "UnitFileState": "",
+    }
+    for module in (helper, support):
+        monkeypatch.setattr(module, "execute", execute)
+        monkeypatch.setattr(
+            module, "properties", lambda command, name: dict(states.get(name, absent))
+        )
+    layout = SimpleNamespace(
+        service=tmp_path / "system/vaultkeep@.service",
+        timer=tmp_path / "system/vaultkeep@.timer",
+        config=tmp_path / "etc",
+        registry=tmp_path / "registry",
+        bin=Path("/usr/local/bin/vaultkeep"),
+        manifest=tmp_path / "manifest",
+        var=tmp_path / "var",
+    )
+    # Validate with the candidate's real schema without changing account privileges.
+    monkeypatch.setattr(
+        helper,
+        "account_operation",
+        lambda spec, python, action, payload: maintenance.check_configurations(payload),
+    )
+    return SimpleNamespace(
+        layout=layout,
+        unit=unit,
+        states=states,
+        fragment=fragment,
+        config=config,
+        calls=calls,
+        data=valid_config,
+    )
+
+
+@pytest.mark.parametrize(
+    "active,sub",
+    [
+        ("active", "running"),
+        ("activating", "auto-restart"),
+        ("failed", "failed"),
+        ("inactive", "dead"),
+        ("activating", "start"),
+        ("deactivating", "stop-sigterm"),
+    ],
+)
+def test_launcher_identity_is_independent_of_runtime_state(helper, managed_monitor, active, sub):
+    job = managed_monitor
+    job.states[job.unit].update(ActiveState=active, SubState=sub)
+    spec = helper.inventory(job.layout)["accounts"][1]
+    assert spec["states"] == {job.unit: "enabled"}
+    assert spec["active"] == ([] if active in ("inactive", "failed") else [job.unit])
+
+
+@pytest.mark.parametrize("enabled", ["enabled", "enabled-runtime", "disabled"])
+@pytest.mark.parametrize(
+    "active,sub",
+    [
+        ("active", "running"),
+        ("activating", "auto-restart"),
+        ("failed", "failed"),
+        ("inactive", "dead"),
+    ],
+)
+def test_monitor_pause_resume_preserves_enablement_and_runtime_intent(
+    helper, managed_monitor, tmp_path, enabled, active, sub
+):
+    job = managed_monitor
+    job.states[job.unit].update(
+        ActiveState=active,
+        SubState=sub,
+        UnitFileState=enabled,
+        MainPID="99999999" if active == "active" else "0",
+    )
+    journal = tmp_path / "journal.json"
+    helper.pause(journal, job.layout)
+    helper.resume(journal)
+    actions = [call for call in job.calls if "start" in call or "stop" in call]
+    assert [call[-2] for call in actions] == (
+        ["stop", "start"] if active in ("active", "activating") else []
+    )
+    assert job.states[job.unit]["UnitFileState"] == enabled
+
+
+@pytest.mark.parametrize(
+    "problem,reason",
+    [
+        ("marker", "ownership marker"),
+        ("override", "local overrides"),
+        ("executable", "ExecStart executable"),
+        ("arguments", "ExecStart arguments"),
+        ("location", "configured unit root"),
+        ("identity", "unit identity"),
+    ],
+)
+def test_foreign_or_malformed_launcher_is_rejected_without_mutation(
+    helper, managed_monitor, tmp_path, problem, reason
+):
+    job = managed_monitor
+    state = job.states[job.unit]
+    if problem == "marker":
+        job.fragment.write_text("# foreign\n")
+    elif problem == "override":
+        state["DropInPaths"] = "/override.conf"
+    elif problem == "executable":
+        state["ExecStart"] = state["ExecStart"].replace("/usr/local/bin/vaultkeep", "/bin/foreign")
+    elif problem == "arguments":
+        state["ExecStart"] = state["ExecStart"].replace("trigger monitor", "run")
+    else:
+        path = tmp_path / (job.unit if problem == "location" else "wrong.service")
+        path.write_bytes(job.fragment.read_bytes())
+        state["FragmentPath"] = str(path)
+    before = job.fragment.read_bytes()
+    with pytest.raises(ValueError, match=reason) as caught:
+        helper.pause(tmp_path / "journal.json", job.layout)
+    assert job.unit in str(caught.value)
+    assert job.fragment.read_bytes() == before
+    assert not any("stop" in call for call in job.calls)
+
+
+def test_restarting_monitor_reports_exact_yaml_user_error_before_any_mutation(
+    helper, managed_monitor, monkeypatch
+):
+    job = managed_monitor
+    job.states[job.unit].update(ActiveState="activating", SubState="auto-restart", MainPID="0")
+    job.data["application"]["user"] = "dutu"
+    job.config.write_text(json.dumps(job.data))
+    original = helper.pwd.getpwnam
+
+    def account(name):
+        if name == "dutu":
+            raise KeyError(name)
+        return original(name)
+
+    monkeypatch.setattr(helper.pwd, "getpwnam", account)
+    before = job.fragment.read_bytes(), job.config.read_bytes()
+    with pytest.raises(ValueError) as caught:
+        helper.check_configurations(job.layout, "/candidate/python")
+    assert str(caught.value) == (
+        f"Issue: {job.config}\n       User 'dutu' does not exist (field: application.user)."
+    )
+    assert (job.fragment.read_bytes(), job.config.read_bytes()) == before
+    assert not any("stop" in call for call in job.calls)
+
+
+@pytest.mark.parametrize("problem", ["backup", "transition", "pid", "lock"])
+def test_restarting_monitor_cannot_hide_protected_or_unknown_activity(
+    helper, managed_monitor, tmp_path, problem
+):
+    import fcntl
+
+    job = managed_monitor
+    state = job.states[job.unit]
+    state.update(ActiveState="activating", SubState="auto-restart", MainPID="0")
+    if problem == "backup":
+        job.states["vaultkeep@app.service"] = {
+            **state,
+            "ActiveState": "active",
+            "SubState": "running",
+        }
+        reason = "protected backup/worker activity"
+    elif problem == "transition":
+        state["SubState"] = "start-post"
+        reason = "Cannot establish safe monitor activity"
+    elif problem == "pid":
+        del state["MainPID"]
+        reason = "MainPID is missing or invalid"
+    else:
+        job.layout.var.mkdir()
+        locks = job.layout.var / "locks"
+        locks.mkdir()
+        reason = "held runtime/job lock"
+    with (tmp_path / "backup.lock" if problem != "lock" else locks / "backup.lock").open(
+        "w"
+    ) as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match=reason):
+            helper.pause(tmp_path / "journal.json", job.layout)
+    assert not (tmp_path / "journal.json").exists()
+    assert not any("stop" in call for call in job.calls)
+
+
+def test_legacy_monitor_launcher_order_is_identified(helper, managed_monitor):
+    job = managed_monitor
+    state = job.states[job.unit]
+    state["ExecStart"] = state["ExecStart"].replace("--user --config", "--user trigger --config")
+    state["ExecStart"] = state["ExecStart"].replace(" trigger monitor ;", " monitor ;")
+    assert helper.inventory(job.layout)["accounts"][1]["states"] == {job.unit: "enabled"}
+
+
+def test_disabled_unloaded_monitor_is_discovered_from_unit_files(
+    helper, managed_monitor, monkeypatch
+):
+    job = managed_monitor
+    job.states[job.unit].update(ActiveState="inactive", SubState="dead", UnitFileState="disabled")
+    execute = helper.execute
+    monkeypatch.setattr(
+        helper, "execute", lambda argv, **kw: "" if "list-units" in argv else execute(argv, **kw)
+    )
+    spec = helper.inventory(job.layout)["accounts"][1]
+    assert spec["states"] == {job.unit: "disabled"} and spec["active"] == []
+    helper.check_configurations(job.layout, "/candidate/python")

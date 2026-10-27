@@ -601,7 +601,7 @@ def properties(command: list[str], unit: str) -> dict[str, str]:
             unit,
             "--no-pager",
             "--all",
-            "--property=LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,UnitFileState,Type,Restart,TimeoutStartUSec,UMask,PartOf,BindsTo",
+            "--property=LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,UnitFileState,Type,Restart,TimeoutStartUSec,UMask,PartOf,BindsTo,MainPID,ControlPID",
         ],
         timeout=20,
     )
@@ -648,8 +648,14 @@ def check_trigger_command(
 ) -> None:
     value = state["ExecStart"]
     match = re.fullmatch(r"\{ path=(.+?) ; argv\[\]=(.+?) ; .*\}", value)
-    if match is None or match[1] != str(executable):
-        fail(f"{label}: unexpected ExecStart: {unit}")
+    allowed = {str(executable)}
+    if not legacy and unit.startswith("vaultkeep-trigger@"):
+        # Per-job monitors from the previous renderer used the default entry
+        # point even with a custom install layout. Refresh migrates this path.
+        allowed.add("/usr/local/bin/vaultkeep")
+    if match is None or match[1] not in allowed:
+        fail(f"{label}: unexpected ExecStart executable or encoding: {unit}")
+    executable = Path(match[1])
     argv = shlex.split(match[2])
     expected = [str(executable)] if legacy else [str(executable), "--user", "trigger"]
     offset = len(expected)
@@ -689,7 +695,8 @@ def check_manager(
     trigger_bin: Path,
     validate_trigger: bool = True,
     legacy_trigger: bool = False,
-) -> None:
+    launchers: set[str] | None = None,
+) -> set[int]:
     patterns = [
         "vaultkeep@*.timer",
         "vaultkeep@*.service",
@@ -713,14 +720,17 @@ def check_manager(
         units.update(
             ["vaultkeep-trigger.service", "vaultkeep-trigger-exec@installer-check.service"]
         )
+    monitor_pids: set[int] = set()
     for unit in sorted(units):
         state = properties(command, unit)
-        if state["ActiveState"] not in ("inactive", "failed"):
+        launcher = launchers is not None and unit in launchers
+        if not launcher and state["ActiveState"] not in ("inactive", "failed"):
             fail(
                 issue(
                     unit_resource(command, unit),
                     f"Systemd state: {state['ActiveState']}/{state['SubState']}; "
-                    "pause/drain work before maintenance.",
+                    "protected backup/worker activity cannot be ruled out; "
+                    "wait for work to finish.",
                 )
             )
         if state["LoadState"] not in ("loaded", "not-found"):
@@ -730,7 +740,7 @@ def check_manager(
                     f"Unexpected systemd LoadState: {state['LoadState']}.",
                 )
             )
-        if state["SubState"] not in ("dead", "failed", "exited"):
+        if not launcher and state["SubState"] not in ("dead", "failed", "exited"):
             fail(
                 issue(
                     unit_resource(command, unit),
@@ -826,13 +836,49 @@ def check_manager(
         ):
             if str(Layout().bin) not in state["ExecStart"]:
                 fail(f"{label}: unexpected core service executable: {unit}")
+        if launcher and unit.startswith("vaultkeep-trigger@"):
+            pair = (state["ActiveState"], state["SubState"])
+            if (
+                pair
+                not in {
+                    ("active", "running"),
+                    ("activating", "auto-restart"),
+                    ("inactive", "dead"),
+                    ("failed", "failed"),
+                }
+                or state.get("ControlPID") != "0"
+            ):
+                fail(
+                    issue(
+                        unit_resource(command, unit),
+                        f"Cannot establish safe monitor activity in {pair[0]}/{pair[1]} "
+                        f"(ControlPID={state.get('ControlPID', '<missing>')}); "
+                        "inspect the unit and wait for its transition to finish.",
+                    )
+                )
+            pid = state.get("MainPID", "")
+            if not pid.isdecimal() or ((int(pid) > 0) != (pair == ("active", "running"))):
+                fail(
+                    issue(
+                        unit_resource(command, unit),
+                        "Cannot identify the monitor process: MainPID is missing or invalid; "
+                        "inspect systemctl show before retrying.",
+                    )
+                )
+            if int(pid):
+                monitor_pids.add(int(pid))
     jobs = execute([*command, "list-jobs", "--no-legend", "--no-pager"])
     for line in jobs.splitlines():
         fields = line.split()
         if len(fields) < 2:
             fail(issue(label, f"Cannot identify queued job in systemd response: {line}"))
-        if relevant_unit(fields[1]):
-            fail(f"{label}: queued job for {fields[1]}; drain work before maintenance")
+        if relevant_unit(fields[1]) and not (launchers and fields[1] in launchers):
+            fail(
+                issue(
+                    unit_resource(command, fields[1]),
+                    "Queued protected work; let the job finish before maintenance.",
+                )
+            )
     if uninstall:
         files = execute(
             [*command, "list-unit-files", "--no-legend", "--no-pager", *patterns],
@@ -842,6 +888,8 @@ def check_manager(
             fields = line.split()
             if len(fields) < 2 or fields[1] not in ("disabled", "static", "generated"):
                 fail(f"{label}: disable/review schedule enablement before uninstall")
+
+    return monitor_pids
 
 
 def relevant_unit(name: str) -> bool:
@@ -854,7 +902,7 @@ def relevant_unit(name: str) -> bool:
     )
 
 
-def check_lock(path: Path, label: str) -> None:
+def check_lock(path: Path, label: str, *, monitor_pids: set[int] | None = None) -> None:
     if not os.path.lexists(path):
         return
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -864,39 +912,96 @@ def check_lock(path: Path, label: str) -> None:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            fail(f"{label}: held runtime/job lock; drain work before maintenance")
+            if monitor_pids:
+                # Exempt only the positively identified monitor's lifetime lock.
+                # Backup/job locks are never exempted, even for the same PID.
+                info = os.fstat(descriptor)
+                for line in Path("/proc/locks").read_text().splitlines():
+                    fields = line.split()
+                    if len(fields) < 8 or fields[1:4] != ["FLOCK", "ADVISORY", "WRITE"]:
+                        continue
+                    major, minor, inode = fields[5].split(":")
+                    if (int(major, 16), int(minor, 16), int(inode)) == (
+                        os.major(info.st_dev),
+                        os.minor(info.st_dev),
+                        info.st_ino,
+                    ) and int(fields[4]) in monitor_pids:
+                        return
+            if monitor_pids is not None:
+                fail(
+                    issue(
+                        str(path),
+                        f"User '{label}': held monitor lifetime lock has an "
+                        "unidentified owner; inspect the monitor process and /proc/locks "
+                        "before retrying.",
+                    )
+                )
+            fail(
+                issue(
+                    str(path),
+                    f"User '{label}': held runtime/job lock; "
+                    "wait for protected work to finish before maintenance.",
+                )
+            )
     finally:
         os.close(descriptor)
 
 
-def activity(layout: Layout, include_users: bool, uninstall: bool, components: list[str]) -> None:
+def activity(
+    layout: Layout,
+    include_users: bool,
+    uninstall: bool,
+    components: list[str],
+    *,
+    launchers: dict | None = None,
+) -> None:
     data = read_manifest(layout) if layout.manifest.exists() else None
     legacy = bool(data and data["schema_version"] < 3 and "trigger" in data["components"])
     executable = layout.trigger_bin if legacy else layout.bin
-    check_manager(
-        ["systemctl"],
-        "system manager",
-        uninstall=uninstall,
-        trigger_bin=executable,
-        legacy_trigger=legacy,
-        validate_trigger="trigger" in components,
+    specs = (
+        launchers["accounts"]
+        if launchers is not None
+        else [{"account": None, "command": ["systemctl"], "env": {}}]
     )
-    managers = user_managers() if include_users else []
-    for account, uid in managers:
-        check_manager(
-            manager_command(account, uid),
-            account,
-            uninstall=uninstall,
-            trigger_bin=executable,
-            legacy_trigger=legacy,
-            validate_trigger="trigger" in components,
-        )
-        runtime = Path(f"/run/user/{uid}")
-        home = Path(pwd.getpwuid(uid).pw_dir)
-        check_lock(runtime / "vaultkeep-trigger/monitor.lock", account)
-        for path in (runtime / "vaultkeep-trigger/jobs").glob("*/monitor.lock"):
-            check_lock(path, account)
-        for root in (runtime / "vaultkeep/locks", home / ".cache/vaultkeep/locks"):
+    if launchers is None and include_users:
+        for account, uid in user_managers():
+            home = Path(pwd.getpwuid(uid).pw_dir)
+            specs.append(
+                {
+                    "account": account,
+                    "uid": uid,
+                    "command": manager_command(account, uid),
+                    "env": {"HOME": str(home)},
+                }
+            )
+    monitor_pids: set[int] = set()
+    for spec in specs:
+        account = spec["account"] or "root"
+        pids = set()
+        if spec["command"] is not None:
+            pids = check_manager(
+                spec["command"],
+                account,
+                uninstall=uninstall,
+                trigger_bin=executable,
+                legacy_trigger=legacy,
+                validate_trigger="trigger" in components,
+                launchers=set(spec["states"]) if launchers is not None else None,
+            )
+            monitor_pids.update(pids)
+        if spec["account"] is None:
+            continue
+        env = spec["env"]
+        home = Path(env["HOME"])
+        runtime = Path(f"/run/user/{spec['uid']}") if spec["uid"] is not None else None
+        if runtime is not None:
+            check_lock(runtime / "vaultkeep-trigger/monitor.lock", account, monitor_pids=pids)
+            for path in (runtime / "vaultkeep-trigger/jobs").glob("*/monitor.lock"):
+                check_lock(path, account, monitor_pids=pids)
+        roots = {Path(env.get("XDG_CACHE_HOME", home / ".cache")) / "vaultkeep/locks"}
+        if runtime is not None:
+            roots.add(runtime / "vaultkeep/locks")
+        for root in roots:
             for path in root.glob("*.lock"):
                 check_lock(path, account)
     for root in (Path("/run/lock/vaultkeep"), layout.var / "locks"):
@@ -920,6 +1025,14 @@ def activity(layout: Layout, include_users: bool, uninstall: bool, components: l
                 )
             words = [os.fsdecode(word) for word in argv if word]
             names = [Path(word).name for word in words[:3]]
+            known_monitor = (
+                int(directory.name) in monitor_pids
+                and "monitor" in words
+                and "exec-worker" not in words
+                and not any(word in words for word in ("run", "prune", "verify"))
+            )
+            if known_monitor:
+                continue
             if (
                 (
                     "vaultkeep-trigger" in names
@@ -928,7 +1041,16 @@ def activity(layout: Layout, include_users: bool, uninstall: bool, components: l
                 )
                 and ("monitor" in words or "exec-worker" in words)
             ) or ("vaultkeep" in names and any(w in words for w in ("run", "prune", "verify"))):
-                fail(f"foreground backup/monitor detected: PID {directory.name}")
+                operation = next(
+                    (word for word in ("run", "prune", "verify", "exec-worker") if word in words),
+                    "monitor",
+                )
+                reason = (
+                    "Unidentified foreground monitor; inspect its launcher before maintenance."
+                    if operation == "monitor"
+                    else f"Vaultkeep {operation} is running; wait for protected work to finish."
+                )
+                fail(issue(f"Process {directory.name}", reason))
 
 
 def main() -> None:

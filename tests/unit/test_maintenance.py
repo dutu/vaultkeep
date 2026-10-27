@@ -697,3 +697,41 @@ def test_preflight_reports_disabled_active_monitor_field(tmp_path, valid_config)
     assert issue["file"] == str(config)
     assert issue["issues"][0]["path"] == "trigger.enabled"
     assert "false" in issue["issues"][0]["message"]
+
+
+@pytest.mark.parametrize("user", [False, True])
+def test_launcher_identification_does_not_validate_yaml(tmp_path, valid_config, monkeypatch, user):
+    with monkeypatch.context() as setup:
+        spec, paths, config = scheduled_job(tmp_path, valid_config, setup, user=user)
+    config.write_text("job: [\n")
+    before = {path: path.read_bytes() for path in paths.units_root.rglob("*") if path.is_file()}
+    result = subprocess.run(
+        [sys.executable, "-I", "-m", "vaultkeep.maintenance", "check-launchers"],
+        input=json.dumps(spec),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert {path: path.read_bytes() for path in before} == before
+    assert maintenance.check_configurations(spec)["errors"][0]["file"] == str(config)
+
+
+def test_offline_monitor_command_refusal_identifies_unit_before_loading_yaml(
+    tmp_path, valid_config
+):
+    spec, unit, _ = monitor_job(tmp_path, valid_config)
+    config = tmp_path / "directory with spaces/app.yaml"
+    config.write_text("job: [\n")
+    unit.write_text(unit.read_text().replace(" monitor\n", " run\n"))
+    result = subprocess.run(
+        [sys.executable, "-I", "-m", "vaultkeep.maintenance", "check-launchers"],
+        input=json.dumps(spec),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert str(unit) in json.loads(result.stdout)["failure"]
+    assert "custom managed service arguments require manual review" in result.stdout
+    assert "YAML" not in result.stdout

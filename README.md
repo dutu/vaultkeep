@@ -104,8 +104,10 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
    abort installation before activation or changes to schedules. Each issue shows
    the absolute YAML path and the affected property when available. Correct the
    reported files as their owner and rerun the same installer command. Launcher
-   failures identify the account, unit, and actual systemd state; resolve that
-   condition before retrying. Technical details remain in the private diagnostics log.
+   identification failures name the account, unit, and failed ownership condition.
+   A managed monitor restart loop does not block YAML validation; protected backup
+   activity or uncertain runtime evidence is reported separately before schedules
+   are paused. Technical details remain in the private diagnostics log.
 
 The checkout can be removed after installation; updates require another trusted
 checkout. Custom paths, installed files, and recovery are described in the

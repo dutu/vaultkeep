@@ -420,7 +420,7 @@ def test_manager_probe_checks_queued_jobs_and_complete_enablement(monkeypatch) -
         return ""
 
     monkeypatch.setattr(support, "execute", execute)
-    with pytest.raises(ValueError, match="queued job"):
+    with pytest.raises(ValueError, match="Queued protected work"):
         support.check_manager(
             ["systemctl"], "test", uninstall=False, trigger_bin=Path("/bin/trigger")
         )
@@ -635,3 +635,67 @@ def test_per_job_monitors_are_checked_without_changing_user_units(tmp_path, monk
             trigger_bin=Path("/usr/local/bin/vaultkeep"),
         )
     assert fragment.read_bytes() == before
+
+
+@pytest.mark.parametrize("known", [False, True])
+def test_only_identified_monitor_may_hold_lifetime_lock(tmp_path, known):
+    import os
+
+    path = tmp_path / "monitor.lock"
+    with path.open("w") as monitor:
+        fcntl.flock(monitor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if known:
+            support.check_lock(path, "alice", monitor_pids={os.getpid()})
+        else:
+            with pytest.raises(
+                ValueError, match="held monitor lifetime lock has an unidentified owner"
+            ):
+                support.check_lock(path, "alice", monitor_pids={os.getpid() + 1})
+
+
+@pytest.mark.parametrize("command", ["monitor", "exec-worker", "run", "verify", "prune"])
+def test_foreground_scan_exempts_only_the_identified_monitor(tmp_path, monkeypatch, command):
+    from types import SimpleNamespace
+
+    process = tmp_path / "123"
+    process.mkdir()
+    (process / "cmdline").write_bytes(f"/usr/local/bin/vaultkeep\0--user\0{command}\0".encode())
+    iterdir = Path.iterdir
+    monkeypatch.setattr(
+        Path, "iterdir", lambda path: iter([process]) if path == Path("/proc") else iterdir(path)
+    )
+    monkeypatch.setattr(support, "check_manager", lambda *args, **kw: {123})
+    layout = SimpleNamespace(
+        manifest=tmp_path / "manifest", bin=Path("/usr/local/bin/vaultkeep"), var=tmp_path / "var"
+    )
+    launchers = {"accounts": [{"account": None, "command": ["systemctl"], "states": {}}]}
+    if command == "monitor":
+        support.activity(layout, True, False, ["core", "trigger"], launchers=launchers)
+    else:
+        with pytest.raises(ValueError, match=f"Vaultkeep {command} is running"):
+            support.activity(layout, True, False, ["core", "trigger"], launchers=launchers)
+
+
+def test_unreadable_foreground_activity_is_a_safety_failure(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    process = tmp_path / "123"
+    iterdir = Path.iterdir
+    monkeypatch.setattr(
+        Path, "iterdir", lambda path: iter([process]) if path == Path("/proc") else iterdir(path)
+    )
+    read_bytes = Path.read_bytes
+
+    def denied(path):
+        if path == process / "cmdline":
+            raise PermissionError("hidepid")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    monkeypatch.setattr(support, "check_manager", lambda *args, **kw: set())
+    monkeypatch.setattr(support, "user_managers", lambda: [])
+    layout = SimpleNamespace(
+        manifest=tmp_path / "manifest", bin=Path("/usr/local/bin/vaultkeep"), var=tmp_path / "var"
+    )
+    with pytest.raises(ValueError, match="Permission denied inspecting foreground backup activity"):
+        support.activity(layout, True, False, ["core", "trigger"])

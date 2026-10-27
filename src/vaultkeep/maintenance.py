@@ -116,7 +116,7 @@ def require_generated(
 def managed_units(
     document: dict[str, Any], manager: Any
 ) -> tuple[set[str], set[Path], dict[str, str]]:
-    """Discover installed timers and monitors without loading their YAML files."""
+    """Identify managed files and selections without loading YAML or runtime state."""
     timers: set[str] = set()
     monitors: set[Path] = set()
     for root in map(Path, document["unit_roots"]):
@@ -127,6 +127,43 @@ def managed_units(
             timers.update(path.name[10:-8] for path in root.glob("vaultkeep@*.timer.d"))
     registry = manager._registry()
     timers.update(registry)
+    user = document["user"]
+    for instance in sorted(timers):
+        timer = manager._timer_drop_in_path(instance)
+        service = manager._service_drop_in_path(instance)
+        if instance not in registry or registry[instance] != str(timer):
+            raise ValueError(f"timer ownership registry requires review: {timer}")
+        if read_file(timer) is None:
+            raise ValueError(f"managed timer is missing: {timer}")
+        if user or service.exists() or service.is_symlink():
+            snapshot = read_file(service)
+            if snapshot is None:
+                raise ValueError(f"managed service is missing: {service}")
+            try:
+                command_selection(
+                    base64.b64decode(snapshot["content"]).decode(), monitor=False, user=user
+                )
+            except ValueError as error:
+                raise ValueError(f"{service}: {error}") from error
+        for directory, allowed in (
+            (manager.paths.units_root / f"vaultkeep@{instance}.timer.d", {timer}),
+            (manager.paths.units_root / f"vaultkeep@{instance}.service.d", {service}),
+        ):
+            if any(path not in allowed for path in directory.glob("*.conf")):
+                raise ValueError(f"local schedule overrides require review: {directory}")
+    for path in sorted(monitors):
+        snapshot = read_file(path)
+        if snapshot is None:
+            raise ValueError(f"managed monitor disappeared: {path}")
+        content = base64.b64decode(snapshot["content"]).decode()
+        if not content.startswith(f"# Managed by Vaultkeep: {path.name}\n"):
+            raise ValueError(f"unmanaged monitor service: {path}")
+        if path.with_name(path.name + ".d").exists():
+            raise ValueError(f"local monitor overrides require review: {path}")
+        try:
+            command_selection(content, monitor=True, user=True)
+        except ValueError as error:
+            raise ValueError(f"{path}: {error}") from error
     return timers, monitors, registry
 
 
@@ -381,15 +418,13 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
         after = base64.b64encode(content.encode()).decode("ascii") if content is not None else None
         changes.append({"path": str(path), "before": before, "after": after})
 
-    timers, monitors, registry = managed_units(document, manager)
+    timers, monitors, _ = managed_units(document, manager)
     for instance in sorted(timers):
         timer = manager._timer_drop_in_path(instance)
         service = manager._service_drop_in_path(instance)
-        if instance not in registry or registry[instance] != str(timer):
-            raise ValueError(f"timer ownership registry requires review: {timer}")
         timer_snapshot = read_file(timer)
         if timer_snapshot is None:
-            raise ValueError(f"managed timer is missing: {timer}")
+            raise ValueError(f"managed timer disappeared: {timer}")
         service_content = None
         service_snapshot = None
         if user or service.exists() or service.is_symlink():
@@ -409,13 +444,6 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
             validate_execution_identity(user=user)
         if manager._instance_id(config_path, config.job.id, params) != instance:
             raise ValueError(f"job identity changed: {timer}")
-        # Additional local unit overrides must never be silently overwritten.
-        for directory, allowed in (
-            (paths.units_root / f"vaultkeep@{instance}.timer.d", {timer}),
-            (paths.units_root / f"vaultkeep@{instance}.service.d", {service}),
-        ):
-            if any(path not in allowed for path in directory.glob("*.conf")):
-                raise ValueError(f"local schedule overrides require review: {directory}")
         rendered_timer = manager._timer_content(instance, render_schedule(config))
         rendered_service = manager._service_content(config_path, instance, params)
         require_generated(
@@ -442,12 +470,9 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
         )
     for path in sorted(monitors):
         snapshot = read_file(path)
-        assert snapshot is not None
+        if snapshot is None:
+            raise ValueError(f"managed monitor disappeared: {path}")
         content = base64.b64decode(snapshot["content"]).decode()
-        if not content.startswith(f"# Managed by Vaultkeep: {path.name}\n"):
-            raise ValueError(f"unmanaged monitor service: {path}")
-        if path.with_name(path.name + ".d").exists():
-            raise ValueError(f"local monitor overrides require review: {path}")
         config_path, params = command_selection(content, monitor=True, user=True)
         with configuration_context(config_path):
             validate_execution_identity(user=user)
@@ -541,7 +566,12 @@ def main() -> None:
     from vaultkeep.errors import VaultkeepError
 
     try:
-        if action == "plan":
+        if action == "check-launchers":
+            from vaultkeep.schedule import TimerManager, TimerPaths
+
+            paths = TimerPaths(**{key: Path(value) for key, value in document["paths"].items()})
+            managed_units(document, TimerManager(paths, user_mode=document["user"]))
+        elif action == "plan":
             print(json.dumps(plan(document)))
         elif action == "check-configurations":
             print(json.dumps(check_configurations(document)))

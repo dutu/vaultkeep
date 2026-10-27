@@ -83,7 +83,8 @@ from pathlib import Path
 args = sys.argv[1:]
 with open(os.environ['HOST_LOG'], 'a') as log:
     log.write(json.dumps(args) + '\\n')
-if args and args[0] == '--user':
+user_manager = bool(args and args[0] == '--user')
+if user_manager:
     args = args[1:]
 control = json.loads(Path(os.environ['HOST_CONTROL']).read_text())
 if any(arg in args for arg in ('start', 'stop', 'enable', 'disable', 'preset')):
@@ -98,11 +99,16 @@ if args[0] == 'list-units':
     if 'user@*.service' in args:
         print(control.get('managers', ''), end='')
     else:
-        print(control.get('units', ''), end='')
+        key = 'user_units' if user_manager and 'user_units' in control else 'units'
+        print(control.get(key, ''), end='')
 elif args[0] == 'list-jobs':
     print(control.get('jobs', ''), end='')
 elif args[0] == 'list-unit-files':
-    output = control.get('unit_files', '')
+    if control.get('template_available') and args[-1] == 'vaultkeep-trigger-exec@.service':
+        print('vaultkeep-trigger-exec@.service static')
+        raise SystemExit(0)
+    key = 'user_unit_files' if user_manager and 'user_unit_files' in control else 'unit_files'
+    output = control.get(key, '')
     print(output, end='')
     raise SystemExit(0 if output else 1)
 elif args[0] == 'show':
@@ -113,13 +119,17 @@ elif args[0] == 'show':
         state = control['launcher_states'][unit]
         substate = 'running' if unit.endswith('.service') else 'waiting'
         if state != 'active':
-            substate = 'dead'
+            substate = {'activating': 'auto-restart', 'failed': 'failed'}.get(state, 'dead')
         output = '\\n'.join(
             'ActiveState=' + state if line.startswith('ActiveState=')
             else 'SubState=' + substate if line.startswith('SubState=')
+            else 'MainPID=' + ('99999999' if state == 'active' else '0')
+                if line.startswith('MainPID=')
             else line for line in output.splitlines()
         )
     print(output)
+elif args[0] == 'cat' and control.get('template_available'):
+    print((Path(os.environ['VAULTKEEP_USER_SYSTEMD_ROOT']) / args[-1]).read_text())
 elif args[0] == 'show-environment':
     print(control.get('environment', ''))
 elif args[0] == 'daemon-reload':
@@ -605,9 +615,7 @@ def test_missing_cli_module_reports_traceback_and_preserves_existing_install(
     )
 
 
-def test_unexpected_launcher_state_reaches_installer_before_any_schedule_changes(
-    installed, tmp_path
-):
+def test_unidentified_launcher_is_reported_before_configuration_validation(installed, tmp_path):
     source = candidate_source(tmp_path, "update")
     helper = source / "scripts/install_maintenance.py"
     helper.write_text(
@@ -631,10 +639,14 @@ def test_unexpected_launcher_state_reaches_installer_before_any_schedule_changes
 
     result = run_installer(installed, "update", check=False, source=source)
 
-    assert_configuration_refusal(installed, result, before)
+    assert result.returncode != 0
+    assert snapshot(installed) == before
+    assert "Launcher identification" in result.stdout
+    assert "Configuration validation" not in result.stdout
+    assert "Pause schedules" not in result.stdout
     assert result.stderr.startswith(
         f"Issue: User 'bisquser', unit '{unit}'\n"
-        "       Unexpected systemd state: activating/auto-restart.\n"
+        "       Launcher fragment must be an absolute, regular unit file.\n"
         "Installation aborted. Previous installation preserved.\n"
     )
     assert result.stderr.count("Issue:") == 1
@@ -1354,7 +1366,9 @@ def test_activity_refusal_resumes_launchers_without_stopping_workers(
     calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
     assert ["stop", "worker"] not in calls
     assert ["stop", worker] not in calls
-    assert ["start", "vaultkeep@app.timer"] in calls
+    assert ["start", "vaultkeep@app.timer"] not in calls
+    assert ["stop", "vaultkeep@app.timer"] not in calls
+    assert "Runtime safety checks" in result.stdout and "Pause schedules" not in result.stdout
 
 
 def test_job_runtime_validation_failure_restores_units_then_resumes_original_schedule(
@@ -1934,3 +1948,191 @@ def test_incomplete_rollback_is_reported_without_claiming_preservation(
     assert list(prefix.glob(".transaction.*"))
     settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
     assert settings["launcher_states"]["vaultkeep@app.timer"] == "inactive"
+
+
+def restarting_user_monitor(host, source, tmp_path, valid_config, monkeypatch, *, enabled):
+    """Seed a previous per-job monitor; all account and systemd access is disposable."""
+    import pwd
+
+    from vaultkeep.trigger.config import load_config
+    from vaultkeep.trigger.service import render_service, service_name
+
+    home = tmp_path / "bisquser"
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    jobs = home / ".config/vaultkeep/jobs"
+    jobs.mkdir(parents=True)
+    units = home / ".config/systemd/user"
+    units.mkdir(parents=True)
+    wallet = home / "wallet"
+    wallet.mkdir()
+    destination = home / "backups"
+    destination.mkdir()
+    valid_config["job"]["id"] = "Bisq_sd0-srv_backups"
+    valid_config["application"] = {
+        "name": "bisq",
+        "user": pwd.getpwuid(os.getuid()).pw_name,
+        "data_dir": str(wallet),
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq/bin/Bisq"}]},
+    }
+    valid_config["sources"][0]["path"] = str(wallet)
+    valid_config["destination"]["root"] = str(destination)
+    valid_config["trigger"] = {"enabled": True}
+    config = jobs / "Bisq_sd0-srv_backups.yaml"
+    config.write_text(json.dumps(valid_config))
+    monkeypatch.setenv("VAULTKEEP_BIN_LINK", host["VAULTKEEP_BIN_LINK"])
+    trigger = load_config(config)
+    unit = service_name(trigger)
+    content = render_service(trigger)
+    # Exercise the previous release's default executable and option ordering.
+    old = content.replace(host["VAULTKEEP_BIN_LINK"], "/usr/local/bin/vaultkeep")
+    old = old.replace("--user --config", "--user trigger --config")
+    old = old.replace(" trigger monitor\n", " monitor\n")
+    fragment = units / unit
+    fragment.write_text(old)
+    fragment.chmod(0o600)
+    command = next(line[10:] for line in old.splitlines() if line.startswith("ExecStart="))
+    host.update(HOST_USER_HOME=str(home), HOST_USER_RUNTIME=str(runtime))
+    helper = source / "scripts/install_maintenance.py"
+    helper.write_text(
+        helper.read_text()
+        .replace("managers = user_managers()", f"managers = [('bisquser', {os.getuid()})]")
+        .replace(
+            "entry = pwd.getpwnam(account)",
+            f"entry = pwd.struct_passwd(('bisquser', 'x', {os.getuid()}, {os.getgid()}, '', "
+            f"{str(home)!r}, '/bin/sh'))",
+        )
+        .replace('f"/run/user/{uid}"', 'os.environ["HOST_USER_RUNTIME"]')
+    )
+    support = source / "scripts/install_support.py"
+    support.write_text(
+        support.read_text()
+        .replace('Path(f"/run/user/{uid}")', 'Path(os.environ["HOST_USER_RUNTIME"])')
+        .replace("Path(f\"/run/user/{spec['uid']}\")", 'Path(os.environ["HOST_USER_RUNTIME"])')
+        .replace("Path(pwd.getpwuid(uid).pw_dir)", 'Path(os.environ["HOST_USER_HOME"])')
+    )
+    paths = source / "src/vaultkeep/trigger/paths.py"
+    paths.write_text(
+        paths.read_text().replace("return Path(home)", 'return Path(os.environ["HOME"])')
+    )
+    fake = Path(host["PATH"].split(":")[0])
+    executable(
+        fake / "runuser",
+        """#!/usr/bin/python3
+import os, sys
+args = sys.argv[sys.argv.index('--') + 1:]
+assert args.pop(0) == 'env'
+if args and args[0] == '-i':
+    args.pop(0)
+while args and '=' in args[0]:
+    key, value = args.pop(0).split('=', 1)
+    if key != 'PATH':
+        os.environ[key] = value
+os.execvp(args[0], args)
+""",
+    )
+    control(
+        host,
+        managers=f"user@{os.getuid()}.service loaded active running user manager\n",
+        user_units=f"{unit} loaded activating auto-restart monitor\n",
+        user_unit_files=f"{unit} {enabled}\n",
+        launcher_states={unit: "activating"},
+        template_available=True,
+        properties="LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+        "FragmentPath=\nDropInPaths=\nUnitFileState=\nExecStart=\n",
+        properties_by_unit={
+            unit: f"LoadState=loaded\nActiveState=activating\nSubState=auto-restart\n"
+            f"FragmentPath={fragment}\nDropInPaths=\nUnitFileState={enabled}\n"
+            f"ExecStart={{ path=/usr/local/bin/vaultkeep ; argv[]={command} ; "
+            "ignore_errors=no ; }\n"
+            "Type=simple\nRestart=on-failure\nUMask=0077\nMainPID=0\nControlPID=0\n"
+        },
+    )
+    return config, fragment, content, unit
+
+
+@pytest.mark.parametrize("enabled", ["enabled", "disabled"])
+def test_restarting_monitor_reaches_yaml_validation_then_updates_after_correction(
+    installed, tmp_path, valid_config, monkeypatch, enabled
+):
+    source = candidate_source(tmp_path, "update")
+    config, fragment, rendered, unit = restarting_user_monitor(
+        installed, source, tmp_path, valid_config, monkeypatch, enabled=enabled
+    )
+    valid_config["application"]["user"] = "vaultkeep-test-nonexistent-dutu"
+    config.write_text(json.dumps(valid_config))
+    before = snapshot(installed)
+    original = fragment.read_bytes(), fragment.stat().st_mtime_ns
+    Path(installed["HOST_LOG"]).write_text("")
+
+    result = run_installer(installed, "update", check=False, source=source)
+
+    assert_configuration_refusal(installed, result, before)
+    assert result.stderr.startswith(
+        f"Issue: {config}\n"
+        "       User 'vaultkeep-test-nonexistent-dutu' does not exist (field: application.user).\n"
+    )
+    assert (fragment.read_bytes(), fragment.stat().st_mtime_ns) == original
+    assert (
+        json.loads(Path(installed["HOST_CONTROL"]).read_text())["launcher_states"][unit]
+        == "activating"
+    )
+    # Correcting the owner reaches the real refresh/runtime checks and activation.
+    import pwd
+
+    valid_config["application"]["user"] = pwd.getpwuid(os.getuid()).pw_name
+    config.write_text(json.dumps(valid_config))
+    config_before = config.read_bytes(), config.stat().st_mtime_ns
+    success = run_installer(installed, "update", source=source)
+    assert "Runtime safety checks" in success.stdout and "Result: INSTALLED" in success.stdout
+    assert manifest(installed)["version"] == "0.3.0"
+    assert fragment.read_text() == rendered
+    assert fragment.stat().st_mode & 0o777 == 0o600
+    assert (config.read_bytes(), config.stat().st_mtime_ns) == config_before
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    assert settings["launcher_states"][unit] == "active"
+    assert f"UnitFileState={enabled}" in settings["properties_by_unit"][unit]
+    calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
+    assert ["--user", "stop", unit] in calls and ["--user", "start", unit] in calls
+    assert not any(set(call) & {"enable", "disable"} for call in calls)
+
+
+@pytest.mark.parametrize("problem", ["backup", "uncertain"])
+def test_restarting_monitor_safety_failure_leaves_launchers_and_release_untouched(
+    installed, tmp_path, valid_config, monkeypatch, problem
+):
+    source = candidate_source(tmp_path, "update")
+    config, fragment, _, unit = restarting_user_monitor(
+        installed, source, tmp_path, valid_config, monkeypatch, enabled="enabled"
+    )
+    settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
+    if problem == "backup":
+        settings["units"] = "vaultkeep@app.service loaded active running backup\n"
+        settings["properties_by_unit"]["vaultkeep@app.service"] = (
+            "LoadState=loaded\nActiveState=active\nSubState=running\n"
+            "FragmentPath=/system/vaultkeep@.service\nDropInPaths=\nUnitFileState=static\n"
+            "ExecStart=backup\n"
+        )
+        reason = "protected backup/worker activity cannot be ruled out"
+    else:
+        settings["properties_by_unit"][unit] = settings["properties_by_unit"][unit].replace(
+            "ControlPID=0", "ControlPID=42"
+        )
+        reason = "Cannot establish safe monitor activity"
+    control(installed, **settings)
+    before = snapshot(installed)
+    originals = fragment.read_bytes(), config.read_bytes()
+    Path(installed["HOST_LOG"]).write_text("")
+
+    result = run_installer(installed, "update", check=False, source=source)
+
+    assert result.returncode != 0
+    assert "Runtime safety checks" in result.stdout and "Pause schedules" not in result.stdout
+    assert reason in result.stderr
+    assert "Installation aborted. Previous installation preserved." in result.stderr
+    assert snapshot(installed) == before
+    assert (fragment.read_bytes(), config.read_bytes()) == originals
+    calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
+    assert not any(
+        set(call) & {"stop", "start", "enable", "disable", "daemon-reload"} for call in calls
+    )
