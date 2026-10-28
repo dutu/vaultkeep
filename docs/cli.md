@@ -247,7 +247,7 @@ A demonstrated checksum or archive-structure problem records a
 `.vaultkeep-suspect` marker with its original reason and detection time. `list`
 shows the `SUSPECT` reason directly below the backup directory. An unresolved
 suspect is protected and forces a fresh archive in the same compatible history.
-After reliable creation, required state persistence, and successful hooks, the engine
+After archive verification, required state persistence, and successful hooks, the engine
 records the replacement ID and may remove the superseded suspect. Suspects do not
 fill ordinary retention slots. Ordinary cleanup failures preserve the new archive and report
 `run: created` with an actionable warning; retry with explicit `prune` or a later

@@ -108,7 +108,9 @@ Configuration errors name the absolute YAML path and affected property, for exam
 as its owner and retry. Failed or restarting monitors do not hide these errors.
 A failed configuration check leaves units, enablement, job data, and the active
 release unchanged. Unit ownership failures appear under **Launcher identification**;
-protected or uncertain activity appears under **Runtime safety checks**.
+they name the account, unit, and failed ownership condition. Protected or uncertain
+activity appears under **Runtime safety checks**. Technical details remain in the
+private `Diagnostics:` log.
 
 This includes running and lingering user managers and jobs in the standard unit
 locations of accounts without a running manager. Stopped user managers remain

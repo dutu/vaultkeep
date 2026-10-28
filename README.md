@@ -60,6 +60,7 @@ successful archive verification do not establish application-level consistency.
 - Debian 13 `trixie`, amd64 or arm64, with systemd 247+ as the active manager.
 - Root access for installation, a trusted source checkout, and network access to
   Debian repositories and the Python package index.
+- Git and a text editor. These procedures use `nano`; substitute your preferred editor.
 - Readable sources and an existing writable destination on a supported local Linux
   filesystem or mounted CIFS/SMB or NFS share with server locking enabled.
   Subdirectory mounts are supported; mounts nested inside a destination remain unsupported.
@@ -75,7 +76,14 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
 ## Installation
 
 <a id="install-the-application"></a>
-1. Replace `/path/to/vaultkeep` in both commands with your chosen local checkout
+1. Install the checkout and editing tools if they are not already available:
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y git nano
+   ```
+
+2. Replace `/path/to/vaultkeep` in both commands with your chosen local checkout
    directory, and `<release-tag-or-commit>` with a published release tag or reviewed
    commit. Then clone and select that version. A development commit is not a released version.
 
@@ -85,7 +93,7 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
    git checkout <release-tag-or-commit>
    ```
 
-2. <a id="check-the-installed-version"></a>Preview and apply the installation:
+3. <a id="check-the-installed-version"></a>Preview and apply the installation:
 
    ```bash
    sudo ./install.sh install --dry-run
@@ -98,16 +106,13 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
    enables no jobs or lingering. Reinstallation/update automatically pauses,
    refreshes, validates, and resumes previously active managed automation.
 
-   Both `install` and `update` first validate existing system and user job YAML
-   against the selected release's schema, resolve application users and required
-   service accounts/groups, and check managed-job generation. Invalid configurations
-   abort installation before activation or changes to schedules. Each issue shows
-   the absolute YAML path and the affected property when available. Correct the
-   reported files as their owner and rerun the same installer command. Launcher
-   identification failures name the account, unit, and failed ownership condition.
-   A managed monitor restart loop does not block YAML validation; protected backup
-   activity or uncertain runtime evidence is reported separately before schedules
-   are paused. Technical details remain in the private diagnostics log.
+   Both `install` and `update` check existing system and user jobs before activation
+   or changes to schedules. Invalid configurations abort installation and report
+   the YAML path and affected property when available. Correct the reported files
+   as their owner and rerun the same command. See
+   [configuration validation failures](docs/maintenance.md#configuration-validation-fails)
+   for account checks and [maintenance safety checks](docs/maintenance.md#pause-and-resume-for-maintenance)
+   for launcher and runtime failures.
 
 The checkout can be removed after installation; updates require another trusted
 checkout. Custom paths, installed files, and recovery are described in the
@@ -196,12 +201,11 @@ if needed.
    each child history separately; independent histories can run concurrently.
    Keep lock files in place, including after a crash.
 
-   For CIFS/NFS, whole-share and subdirectory mounts are supported. Writers must
-   reach the same remote lock file through the same server locking domain. Keep
-   server locks enabled: omit CIFS `nobrl` and NFS
-   `nolock`/`local_lock=all`/`local_lock=flock`. Access to the share root is not required.
-   NFS commits use an atomic rename under the history lock; an unrelated writer
-   racing to create an empty target directory can have that empty directory replaced.
+   For CIFS/NFS, writers must reach the same remote lock file through the same
+   server locking domain. Keep server locks enabled: omit CIFS `nobrl` and NFS
+   `nolock`/`local_lock=all`/`local_lock=flock`. See
+   [CIFS and NFS locking](docs/configuration.md#cifs-and-nfs-locking) for supported
+   mount layouts, cross-machine requirements, and the NFS commit limitation.
 
 <a id="start-backups-in-the-chosen-mode"></a>
 <a id="run-a-job-manually"></a>
@@ -242,14 +246,12 @@ choices, and complete relative backup directories. Invalid entries produce warni
 and `UNKNOWN` decisions. `verify` checks archive contents and checksums without
 requiring sources and may record demonstrated corruption as `SUSPECT`.
 
-An unresolved suspect is protected and forces a new compatible archive. After that
-archive is verified, state is saved, and hooks succeed, cleanup may remove the
-superseded suspect and ordinary retention candidates. An ordinary cleanup failure keeps
-`run: created` successful with a warning; retry with `prune` or a later new archive.
-Corruption found in the newly committed archive fails the run, including when
-discovered during cleanup.
-Unchanged runs never prune. Wrong credentials or temporarily unavailable tools do not
-automatically classify an archive as corrupt. See [recovery details](docs/cli.md#run-a-job-manually).
+Unresolved suspects are protected and force a new compatible archive. Ordinary
+cleanup failures leave `run: created` successful with a warning; retry with `prune`
+or a later archive-creating run. Corruption found in the newly committed archive
+fails the run, including during cleanup. Unchanged runs never prune. See
+[suspect protection, replacement, and cleanup](docs/cli.md#run-a-job-manually)
+before removing suspect backups.
 
 Jobs and destinations use schema/layout version 2 and fresh local state; version-1
 repositories have no migration support and must be preserved separately. Mutations
@@ -445,10 +447,12 @@ before manual pruning. A failure can occur after archive commit, so inspect exis
 rather than assuming none was created.
 
 For application backups, set `consistency.mode: application_offline` and configure
-the shared `application` identity, including its owning user. This applies equally
-to manual, scheduled, and Trigger execution. `files` is the default and uses file
-consistency checks. `after_archive` may restart the application after source reads
-finish. See [consistency settings](docs/configuration.md#consistency-and-shared-application-identity).
+the shared `application` identity. In user mode, omit `application.user`; the job's
+execution account owns the application. In root mode, set `application.user` when
+targeting another account. This policy applies equally to manual, scheduled, and
+Trigger execution. `files` is the default and uses file consistency checks.
+`after_archive` may restart the application after source reads finish. See
+[consistency settings](docs/configuration.md#consistency-and-shared-application-identity).
 
 ### Update a job configuration
 
