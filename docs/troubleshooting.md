@@ -54,18 +54,19 @@ configured marker files and filesystem types. Full validation writes, renames, a
 removes a temporary probe; it is not read-only. If cleanup fails, correct permissions
 and remove only the reported probe. Schema-only validation skips these checks.
 
-[Destination safety checks](configuration.md#destination-safety-checks) explain supported filesystems
-and why unsafe locking options, subtree aliases, and nested destination mounts reject mutation. Checks establish conditions at inspection time; they cannot
-prevent later mount changes or storage failures.
+[Destination safety checks](configuration.md#destination-safety-checks) explain
+supported filesystems and why unsafe locking options and nested destination mounts
+reject mutation. Subdirectory mounts are supported. Checks establish conditions at
+inspection time; they cannot prevent later mount changes or storage failures.
 
-For CIFS/NFS, a destination-lock error can mean another machine holds the share's
-`.vaultkeep.lock`, server locking is disabled/unavailable, or the account cannot
-create/open the shared anchor. Keep CIFS `nobrl` and NFS
+For CIFS/NFS, a destination-lock error can mean another machine holds the history
+directory's `.vaultkeep.lock`, server locking is disabled/unavailable, or the account
+cannot create/open the shared anchor. Keep CIFS `nobrl` and NFS
 `nolock`/`local_lock=all`/`local_lock=flock` disabled and grant all backup accounts
-read/write access to the same whole-share/export root lock file. A persistent lock
-file alone does not mean a writer is active. Never delete it to bypass contention;
+read/write access to the same history lock file, including each managed child of a
+`per_file` job. A persistent lock file alone does not mean a writer is active. Never delete it to bypass contention;
 stop or wait for the actual writer. Full validation also takes this lock for its probe.
-A CIFS message saying the share lock is "busy or denied by the server" can indicate
+A CIFS message saying the history lock is "busy or denied by the server" can indicate
 remote contention or a server locking policy; inspect the other writers and server
 permissions. Ordinary lock-file open/access failures remain destination errors.
 

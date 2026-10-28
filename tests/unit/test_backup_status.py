@@ -81,7 +81,7 @@ def test_manual_execution_records_success_then_unchanged_without_new_archive(loc
     assert first.archive_path.is_file()
     assert workflow.run_backup(local_job, user_mode=True).result == "unchanged"
     assert status(local_job)["previous"]["result"] == "UNCHANGED"
-    assert len(list((local_job.parent / "backups").iterdir())) == 1
+    assert len([path for path in (local_job.parent / "backups").iterdir() if path.is_dir()]) == 1
 
 
 def test_running_execution_keeps_previous_result_and_reports_both_elapsed_times(

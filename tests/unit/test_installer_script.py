@@ -1393,6 +1393,9 @@ def test_job_runtime_validation_failure_restores_units_then_resumes_original_sch
     before = snapshot(installed)
     result = run_installer(installed, "install", check=False)
     assert result.returncode != 0
+    # Runtime validation leaves its reusable history lock in place on failure.
+    lock = Path(valid_config["destination"]["root"]) / ".vaultkeep.lock"
+    before[str(lock)] = ("file", b"")
     assert snapshot(installed) == before
     assert "01:00:00" in timer.read_text()
     settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())

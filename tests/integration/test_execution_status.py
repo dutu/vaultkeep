@@ -18,6 +18,7 @@ from tests.trigger.test_monitor import _running_proc
 from vaultkeep.backup.paths import user_workflow_paths
 from vaultkeep.backup.status import backup_status
 from vaultkeep.config import JobConfig
+from vaultkeep.locking import DESTINATION_LOCK_NAME, destination_lock
 from vaultkeep.notifications.notifier import build_notifier
 from vaultkeep.schedule import TimerManager
 from vaultkeep.state.identity import job_identity_hash
@@ -89,9 +90,14 @@ raise SystemExit(main(['--user', '--config', sys.argv[1], 'run']))
         assert final["previous"]["result"] == outcome
         if outcome == "INTERRUPTED":
             assert process.returncode == 143
-            assert not list((job.parent / "backups").iterdir())
+            assert {path.name for path in (job.parent / "backups").iterdir()} == {
+                DESTINATION_LOCK_NAME
+            }
         else:
             assert final["previous"]["completed_at"] is None
+        # Kernel/server ownership ends on both handled termination and SIGKILL.
+        with destination_lock(job.parent / "backups"):
+            pass
     finally:
         if process.poll() is None:
             process.kill()

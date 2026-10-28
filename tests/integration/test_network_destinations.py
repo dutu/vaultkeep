@@ -18,7 +18,7 @@ from vaultkeep.archive import passwords as passwords_module
 from vaultkeep.backup import workflow
 from vaultkeep.destination.suspect import mark_backup_suspect
 from vaultkeep.errors import DestinationError, LockError
-from vaultkeep.locking import NETWORK_LOCK_NAME, destination_lock
+from vaultkeep.locking import DESTINATION_LOCK_NAME, destination_lock
 
 share = network_fixtures.share
 archive_tool_deadline = archive_fixtures.archive_tool_deadline
@@ -80,7 +80,7 @@ def test_network_backup_verify_replacement_and_prune(
     def archive(result):
         return result.archive_path if backup_mode == "combined" else result.files[0].archive_path
 
-    # Validation acquires the same share lock for its rename probe.
+    # Validation acquires the destination lock for its rename probe.
     assert workflow.validate_job(config, user_mode=True).result == "valid"
     first = run()
     assert first.result == "created" and run().result == "unchanged"
@@ -102,17 +102,23 @@ def test_network_backup_verify_replacement_and_prune(
     assert archive(latest).is_file() and not archive(replacement).exists()
     assert workflow.verify_backups(config, user_mode=True).backups == 1
 
-    with destination_lock(root):
-        for mutate in (
-            run,
-            lambda: workflow.verify_backups(config, user_mode=True),
-            lambda: workflow.prune_backups(config, dry_run=False, user_mode=True),
-        ):
+    history = root if backup_mode == "combined" else archive(latest).parent.parent
+    with destination_lock(history):
+        if backup_mode == "combined":
             with pytest.raises(LockError):
-                mutate()
+                run()
+            error = LockError
+        else:
+            assert run().result == "failed"
+            error = DestinationError
+        with pytest.raises(error):
+            workflow.verify_backups(config, user_mode=True)
+        with pytest.raises(LockError if backup_mode == "combined" else workflow.PruneError):
+            workflow.prune_backups(config, dry_run=False, user_mode=True)
         assert workflow.prune_backups(config, dry_run=True, user_mode=True).result == "planned"
         assert len(workflow.list_backups(config, user_mode=True).backups) == 1
-    assert (share.root / NETWORK_LOCK_NAME).is_file()
+    assert (history / DESTINATION_LOCK_NAME).is_file()
+    assert not (share.root / DESTINATION_LOCK_NAME).exists()
 
 
 @pytest.mark.parametrize("kind", ["CIFS", "NFS"])
@@ -158,7 +164,7 @@ def test_share_root_destination_ignores_persistent_lock_in_inventory(
 ):
     config, paths = _job(tmp_path, share.root, valid_config)
     result = workflow.run_backup(config, paths=paths, user_mode=True)
-    lock = share.root / NETWORK_LOCK_NAME
+    lock = share.root / DESTINATION_LOCK_NAME
     assert result.result == "created" and lock.is_file()
     inventory = workflow.list_backups(config, user_mode=True)
     assert len(inventory.backups) == 1 and inventory.malformed == ()

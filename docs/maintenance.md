@@ -196,6 +196,14 @@ If the installed version is different from the checkout version, `install` stops
 
 ## Update behavior and failure recovery
 
+Before moving from ancestor-directory or share-root locks to history-directory
+`.vaultkeep.lock` files, stop automation on every machine writing to the affected
+destinations and wait for active operations to finish. Update all writers before
+resuming them: the two protocols do not exclude each other. The installer pauses
+and resumes local managed launchers only; keep those launchers stopped throughout
+a coordinated update. Existing backups and YAML need no migration. Old share-root
+lock files can remain in place; they are not used for descendant histories.
+
 The update mode:
 
 - requires an existing installation and accepts a newer candidate release or an exact version-and-source match for idempotent verification;

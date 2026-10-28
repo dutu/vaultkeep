@@ -28,6 +28,7 @@ from vaultkeep.application import (
 from vaultkeep.archive import (
     ArchiveBuildRequest,
     ArchiveTools,
+    PasswordSecret,
     build_archive,
     encrypted_backup_credential_verifier,
     load_password_file,
@@ -62,6 +63,7 @@ from vaultkeep.errors import (
     ArchiveCorruptionError,
     ArchiveVerificationError,
     DestinationError,
+    LockError,
     PruneError,
     RetentionError,
     SourceDiscoveryError,
@@ -319,10 +321,16 @@ def prune_backups(
     _validate_runtime(config, require_sources=False, require_writable_destination=not dry_run)
     removed: list[Path] = []
     failures: list[str] = []
-    with nullcontext() if dry_run else destination_lock(Path(config.destination.root)):
-        destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
-        for destination in destinations:
-            try:
+    destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
+    for destination in destinations:
+        try:
+            root = Path(destination.destination.root)
+            if config.backup_mode == "per_file":
+                require_file_directory(root)
+            _validate_runtime(
+                destination, require_sources=False, require_writable_destination=False
+            )
+            with nullcontext() if dry_run else destination_lock(root):
                 discovered = _active_history(
                     discover_backups(destination, runtime_params=parameters, metadata_only=True),
                     destination,
@@ -331,10 +339,12 @@ def prune_backups(
                 plan = build_prune_plan(discovered, config.retention)
                 if not dry_run:
                     removed.extend(execute_prune_plan(plan, discovered))
-            except (VaultkeepError, OSError) as error:
-                if isinstance(error, PruneError):
-                    removed.extend(Path(path) for path in error.removed)
-                failures.append(f"{destination.destination.root}: {error}")
+        except (VaultkeepError, OSError) as error:
+            if config.backup_mode != "per_file" and isinstance(error, LockError):
+                raise
+            if isinstance(error, PruneError):
+                removed.extend(Path(path) for path in error.removed)
+            failures.append(f"{destination.destination.root}: {error}")
     if failures:
         raise PruneError(
             f"Pruning stopped in affected histories after {len(removed)} deletions: "
@@ -360,27 +370,85 @@ def verify_backups(
             with suppress(Exception):
                 progress(message)
 
-    runtime_owner(user_mode, config_path=config_path)
+    owner_uid, owner_gid = runtime_owner(user_mode, config_path=config_path)
     parameters = dict(runtime_params or {})
     report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
     _validate_runtime(config, require_sources=False, require_writable_destination=False)
-    with destination_lock(Path(config.destination.root)):
-        return _verify_backups(
-            config,
-            parameters=parameters,
-            user_mode=user_mode,
-            report=report,
-            on_verified=on_verified,
-            on_progress=on_progress,
+    per_file = config.backup_mode == "per_file"
+    destinations = file_destinations(config) if per_file else (config,)
+    report_progress(
+        on_progress,
+        VerificationProgress(
+            "discovery", "Verification destination", path=Path(config.destination.root)
+        ),
+    )
+    loaded_password = (
+        load_password_file(
+            Path(config.encryption.password_file), owner_uid=owner_uid, owner_gid=owner_gid
         )
+        if config.encryption.password_file
+        else None
+    )
+    try:
+        count = 0
+        failures: list[str] = []
+        archive_failed = False
+        for destination in destinations:
+            root = Path(destination.destination.root)
+            started = False
+            try:
+                if per_file:
+                    require_file_directory(root)
+                _validate_runtime(
+                    destination, require_sources=False, require_writable_destination=False
+                )
+                with destination_lock(root):
+                    started = True
+                    result = _verify_history(
+                        destination,
+                        parameters=parameters,
+                        password=loaded_password.secret if loaded_password else None,
+                        report=report,
+                        on_verified=on_verified,
+                        on_progress=on_progress,
+                    )
+                count += result.backups
+            except (VaultkeepError, OSError) as error:
+                if not per_file:
+                    raise
+                archive_failed |= isinstance(error, ArchiveVerificationError)
+                failures.append(f"{root}: {error}")
+                if not started:
+                    report_progress(
+                        on_progress,
+                        VerificationProgress(
+                            "discovery", "History verification", "failed", root, error=str(error)
+                        ),
+                    )
+        if failures:
+            error_type = ArchiveVerificationError if archive_failed else DestinationError
+            raise error_type("Backup verification failed:\n" + "\n".join(failures))
+        if not destinations:
+            for phase in ("discovery", "archive"):
+                report_progress(
+                    on_progress,
+                    VerificationProgress(
+                        phase, "Verification complete", "complete", completed=0, total=0
+                    ),
+                )
+        return CommandResult("verify", "verified", backups=count)
+
+    finally:
+        if loaded_password is not None:
+            loaded_password.secret.clear()
 
 
-def _verify_backups(
+def _verify_history(
     config: JobConfig,
     *,
     parameters: Mapping[str, str],
-    user_mode: bool,
+    password: PasswordSecret | None,
     report: Callable[[str], None],
     on_verified: Callable[[Path], None] | None,
     on_progress: Callable[[VerificationProgress], None] | None,
@@ -391,166 +459,148 @@ def _verify_backups(
     report_progress(
         on_progress,
         VerificationProgress(
-            "discovery", "Verification destination", path=Path(config.destination.root)
+            "discovery", "Verification history", path=Path(config.destination.root)
         ),
-    )
-    destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
-    owner_uid, owner_gid = runtime_owner(user_mode)
-    loaded_password = (
-        load_password_file(
-            Path(config.encryption.password_file), owner_uid=owner_uid, owner_gid=owner_gid
-        )
-        if config.encryption.password_file
-        else None
     )
     tools = ArchiveTools()
     count = 0
     failures: list[str] = []
     archive_failed = False
+    backups: list[DiscoveredBackup] = []
     try:
-        backups: list[DiscoveredBackup] = []
-        backup_total: int | None = 0
-        for destination in destinations:
-            try:
-                discovered = discover_backups(
-                    destination,
-                    runtime_params=parameters,
-                    metadata_only=True,
-                    on_progress=on_progress,
-                )
-            except (DestinationError, OSError) as error:
-                failures.append(f"{destination.destination.root}: {error}")
-                backup_total = None
-                report_progress(
-                    on_progress,
-                    VerificationProgress(
-                        "discovery",
-                        "Backup discovery",
-                        "failed",
-                        Path(destination.destination.root),
-                        error=str(error),
-                    ),
-                )
-                continue
-            if backup_total is not None:
-                backup_total += len(discovered.backups) + len(discovered.malformed)
-            for backup in discovered.backups:
-
-                def checksum_progress(
-                    event: VerificationProgress, *, backup: DiscoveredBackup = backup
-                ) -> None:
-                    report_progress(
-                        on_progress,
-                        replace(
-                            event,
-                            backup_directory=backup.directory,
-                            created_at=backup.manifest.created_at,
-                            backup_id=backup.manifest.backup_id,
-                        ),
-                    )
-
-                try:
-                    verify_backup_checksum(backup, on_progress=checksum_progress)
-                except (VaultkeepError, OSError) as error:
-                    archive_failed = True
-                    if isinstance(error, ArchiveCorruptionError):
-                        mark_backup_suspect(backup.directory, str(error))
-                    failures.append(f"{backup.directory}: SHA-256: {error}")
-                    checksum_progress(
-                        VerificationProgress(
-                            "backup", "SHA-256", "failed", backup.archive_path, error=str(error)
-                        )
-                    )
-                    continue
-                backups.append(backup)
-            failures.extend(
-                f"{backup.directory}: SUSPECT: {backup.suspect_reason}"
-                for backup in discovered.backups
-                if backup.suspect_reason is not None
-            )
-            failures.extend(
-                f"{entry.path}: malformed backup: {entry.reason}" for entry in discovered.malformed
-            )
+        discovered = discover_backups(
+            config,
+            runtime_params=parameters,
+            metadata_only=True,
+            on_progress=on_progress,
+        )
+    except (DestinationError, OSError) as error:
         report_progress(
             on_progress,
             VerificationProgress(
                 "discovery",
-                "SHA-256 verification complete",
-                "complete",
-                completed=len(backups),
-                total=backup_total,
+                "Backup discovery",
+                "failed",
+                Path(config.destination.root),
+                error=str(error),
             ),
         )
-        for index, backup in enumerate(backups, start=1):
-            operation = "Archive verification"
+        raise
+    backup_total = len(discovered.backups) + len(discovered.malformed)
+    for backup in discovered.backups:
 
-            def archive_progress(
-                event: VerificationProgress,
-                *,
-                index: int = index,
-                backup: DiscoveredBackup = backup,
-            ) -> None:
-                nonlocal operation
-                operation = event.operation
-                report_progress(
-                    on_progress,
-                    replace(
-                        event,
-                        index=index,
-                        total=len(backups),
-                        backup_directory=backup.directory,
-                        created_at=backup.manifest.created_at,
-                        backup_id=backup.manifest.backup_id,
-                    ),
-                )
-
-            if on_progress is None:
-                report(f"Verifying archive {str(backup.archive_path)!r}")
-            archive_progress(VerificationProgress("archive", operation, path=backup.archive_path))
-            try:
-                if backup.manifest.archive_format == "tar.zst":
-                    verify_tar_zstd(backup.archive_path, tools=tools, on_progress=archive_progress)
-                else:
-                    if loaded_password is None:
-                        raise ArchiveVerificationError("Encrypted backup requires a password")
-                    verify_tar_7z(
-                        backup.archive_path,
-                        job_id=backup.manifest.job,
-                        password=loaded_password.secret,
-                        tools=tools,
-                        on_progress=archive_progress,
-                    )
-            except (VaultkeepError, OSError) as error:
-                if isinstance(error, (ArchiveChecksumMismatchError, ArchiveCorruptionError)):
-                    mark_backup_suspect(backup.directory, str(error))
-                archive_failed = True
-                failures.append(f"{backup.archive_path}: {operation}: {error}")
-                archive_progress(
-                    VerificationProgress(
-                        "archive", operation, "failed", backup.archive_path, error=str(error)
-                    )
-                )
-                continue
-            count += 1
-            archive_progress(
-                VerificationProgress("archive", "Archive verification", "ok", backup.archive_path)
+        def checksum_progress(
+            event: VerificationProgress, *, backup: DiscoveredBackup = backup
+        ) -> None:
+            report_progress(
+                on_progress,
+                replace(
+                    event,
+                    backup_directory=backup.directory,
+                    created_at=backup.manifest.created_at,
+                    backup_id=backup.manifest.backup_id,
+                ),
             )
-            if on_verified is not None:
-                with suppress(Exception):
-                    on_verified(backup.archive_path)
-        report_progress(
-            on_progress,
-            VerificationProgress(
-                "archive",
-                "Archive verification complete",
-                "complete",
-                completed=count,
-                total=len(backups),
-            ),
+
+        try:
+            verify_backup_checksum(backup, on_progress=checksum_progress)
+        except (VaultkeepError, OSError) as error:
+            archive_failed = True
+            if isinstance(error, ArchiveCorruptionError):
+                mark_backup_suspect(backup.directory, str(error))
+            failures.append(f"{backup.directory}: SHA-256: {error}")
+            checksum_progress(
+                VerificationProgress(
+                    "backup", "SHA-256", "failed", backup.archive_path, error=str(error)
+                )
+            )
+            continue
+        backups.append(backup)
+    failures.extend(
+        f"{backup.directory}: SUSPECT: {backup.suspect_reason}"
+        for backup in discovered.backups
+        if backup.suspect_reason is not None
+    )
+    failures.extend(
+        f"{entry.path}: malformed backup: {entry.reason}" for entry in discovered.malformed
+    )
+    report_progress(
+        on_progress,
+        VerificationProgress(
+            "discovery",
+            "SHA-256 verification complete",
+            "complete",
+            completed=len(backups),
+            total=backup_total,
+        ),
+    )
+    for index, backup in enumerate(backups, start=1):
+        operation = "Archive verification"
+
+        def archive_progress(
+            event: VerificationProgress,
+            *,
+            index: int = index,
+            backup: DiscoveredBackup = backup,
+        ) -> None:
+            nonlocal operation
+            operation = event.operation
+            report_progress(
+                on_progress,
+                replace(
+                    event,
+                    index=index,
+                    total=len(backups),
+                    backup_directory=backup.directory,
+                    created_at=backup.manifest.created_at,
+                    backup_id=backup.manifest.backup_id,
+                ),
+            )
+
+        if on_progress is None:
+            report(f"Verifying archive {str(backup.archive_path)!r}")
+        archive_progress(VerificationProgress("archive", operation, path=backup.archive_path))
+        try:
+            if backup.manifest.archive_format == "tar.zst":
+                verify_tar_zstd(backup.archive_path, tools=tools, on_progress=archive_progress)
+            else:
+                if password is None:
+                    raise ArchiveVerificationError("Encrypted backup requires a password")
+                verify_tar_7z(
+                    backup.archive_path,
+                    job_id=backup.manifest.job,
+                    password=password,
+                    tools=tools,
+                    on_progress=archive_progress,
+                )
+        except (VaultkeepError, OSError) as error:
+            if isinstance(error, (ArchiveChecksumMismatchError, ArchiveCorruptionError)):
+                mark_backup_suspect(backup.directory, str(error))
+            archive_failed = True
+            failures.append(f"{backup.archive_path}: {operation}: {error}")
+            archive_progress(
+                VerificationProgress(
+                    "archive", operation, "failed", backup.archive_path, error=str(error)
+                )
+            )
+            continue
+        count += 1
+        archive_progress(
+            VerificationProgress("archive", "Archive verification", "ok", backup.archive_path)
         )
-    finally:
-        if loaded_password is not None:
-            loaded_password.secret.clear()
+        if on_verified is not None:
+            with suppress(Exception):
+                on_verified(backup.archive_path)
+    report_progress(
+        on_progress,
+        VerificationProgress(
+            "archive",
+            "Archive verification complete",
+            "complete",
+            completed=count,
+            total=len(backups),
+        ),
+    )
     if failures:
         error_type = ArchiveVerificationError if archive_failed else DestinationError
         raise error_type("Backup verification failed:\n" + "\n".join(failures))
@@ -605,7 +655,11 @@ def run_backup(
         # Check operator-selected mount/marker guards before a network lock file
         # can be created, then repeat normal preflight under the acquired lock.
         _validate_runtime(config, require_sources=False, require_writable_destination=False)
-        with destination_lock(Path(config.destination.root)):
+        with (
+            nullcontext()
+            if config.backup_mode == "per_file"
+            else destination_lock(Path(config.destination.root))
+        ):
             result = (
                 _run_file_backups if config.backup_mode == "per_file" else _run_single_backup
             )(
@@ -651,16 +705,18 @@ def _run_file_backups(
             _validate_runtime(config, require_sources=False, require_writable_destination=False)
             child = file_config(config, source)
             require_file_directory(Path(child.destination.root), create=True)
-            result = _run_single_backup(
-                config_path,
-                child,
-                runtime_params=runtime_params,
-                paths=paths,
-                user_mode=user_mode,
-                progress=progress,
-                source_file_key=file_key(source.name),
-                application=application,
-            )
+            _validate_runtime(child, require_sources=False, require_writable_destination=False)
+            with destination_lock(Path(child.destination.root)):
+                result = _run_single_backup(
+                    config_path,
+                    child,
+                    runtime_params=runtime_params,
+                    paths=paths,
+                    user_mode=user_mode,
+                    progress=progress,
+                    source_file_key=file_key(source.name),
+                    application=application,
+                )
             outcomes.append(FileBackupResult(source, result.result, result.archive_path))
             cleanup_errors.extend(f"{source}: {error}" for error in result.cleanup_errors)
             removed += result.removed

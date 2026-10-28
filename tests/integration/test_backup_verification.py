@@ -24,6 +24,7 @@ from vaultkeep.destination.identity import replacement_identity
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
 from vaultkeep.destination.suspect import read_suspect_marker
 from vaultkeep.file_backups import file_config
+from vaultkeep.locking import DESTINATION_LOCK_NAME
 
 TOOLS = ArchiveTools()
 pytestmark = pytest.mark.skipif(
@@ -150,7 +151,7 @@ def _files(root: Path) -> dict[Path, tuple[bytes, int]]:
     return {
         path.relative_to(root): (path.read_bytes(), path.stat().st_mtime_ns)
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() and path.name != DESTINATION_LOCK_NAME
     }
 
 
@@ -171,8 +172,12 @@ def test_verify_real_archives_without_sources_preserves_backups_and_state(
     assert "Verified:  2/2 backups" in output.out
     assert "Result:    VERIFIED" in output.out
     assert "verify: verified" not in output.out
-    assert output.err.index("Phase 1/2: 2/2 passed") < output.err.index(
+    phase_total = 1 if backup_mode == "per_file" else 2
+    assert output.err.index(f"Phase 1/2: {phase_total}/{phase_total} passed") < output.err.index(
         "Phase 2/2: Archive integrity"
+    )
+    assert len(tuple((job.parent / "backups").rglob(DESTINATION_LOCK_NAME))) == (
+        2 if backup_mode == "per_file" else 1
     )
     for number, archive in enumerate(archives, 1):
         assert f"2026-10-24 {number:02d}:00  OK        OK       OK" in output.out

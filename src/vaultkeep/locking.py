@@ -15,7 +15,7 @@ from pathlib import Path
 from vaultkeep.errors import DestinationError, LockError
 from vaultkeep.installation import installation_path
 
-NETWORK_LOCK_NAME = ".vaultkeep.lock"
+DESTINATION_LOCK_NAME = ".vaultkeep.lock"
 _NETWORK_FILESYSTEMS = frozenset({"cifs", "smb3", "nfs", "nfs4"})
 _LOCAL_FILESYSTEMS = frozenset({"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay"})
 _HELD_DESTINATION: ContextVar[tuple[Path, str] | None] = ContextVar(
@@ -33,9 +33,9 @@ class _DestinationMount:
 
 
 def held_destination_filesystem(root: Path) -> str | None:
-    """Return the filesystem only when this context holds a covering destination lock."""
+    """Return the filesystem only for the exact locked history directory."""
     held = _HELD_DESTINATION.get()
-    if held is not None and root.resolve(strict=True).is_relative_to(held[0]):
+    if held is not None and root.resolve(strict=True) == held[0]:
         return held[1]
     return None
 
@@ -191,8 +191,8 @@ def job_lock_owner(path: Path) -> int | None:
 def destination_lock(root: Path) -> Iterator[None]:
     """Serialize writers independently of YAML path, user, and destination aliases.
 
-    Local histories use directory locks. Network histories use one persistent
-    regular lock file at the mounted share/export root, shared by every client.
+    Every history uses a persistent regular lock file in its own directory.
+    Network clients must expose the same file through server-backed locking.
     """
     import fcntl
 
@@ -202,43 +202,29 @@ def destination_lock(root: Path) -> Iterator[None]:
         mounted = _validate_destination_mounts(canonical)
         if mounted.filesystem in _NETWORK_FILESYSTEMS:
             _validate_network_locking(mounted)
-            lock = mounted.directory / NETWORK_LOCK_NAME
-            descriptor = os.open(
-                lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o666
-            )
-            descriptors.append(descriptor)
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise DestinationError(f"Shared destination lock must be a regular file: {lock}")
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except PermissionError as error:
-                # Linux SMB also maps remote lock conflicts to EACCES.
-                # Anchor open/access failures above remain destination errors.
-                if mounted.filesystem in {"cifs", "smb3"} and error.errno == errno.EACCES:
-                    raise LockError(
-                        f"Destination share lock is busy or denied by the server: {lock}"
-                    ) from error
-                raise
-            current = lock.lstat()
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                raise DestinationError(
-                    f"Shared destination lock changed during acquisition: {lock}"
-                )
-            scope = mounted.directory
-        elif mounted.filesystem in _LOCAL_FILESYSTEMS:
-            for directory in (*reversed(canonical.parents), canonical):
-                descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                descriptors.append(descriptor)
-                fcntl.flock(
-                    descriptor,
-                    (fcntl.LOCK_EX if directory == canonical else fcntl.LOCK_SH) | fcntl.LOCK_NB,
-                )
-            scope = canonical
-        else:
+        elif mounted.filesystem not in _LOCAL_FILESYSTEMS:
             raise DestinationError(
                 f"Reliable shared locking is unsupported on destination filesystem: {root}"
             )
+        lock = canonical / DESTINATION_LOCK_NAME
+        descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o666)
+        descriptors.append(descriptor)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise DestinationError(f"Shared destination lock must be a regular file: {lock}")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except PermissionError as error:
+            # Linux SMB also maps remote lock conflicts to EACCES.
+            # Anchor open/access failures above remain destination errors.
+            if mounted.filesystem in {"cifs", "smb3"} and error.errno == errno.EACCES:
+                raise LockError(
+                    f"Destination history lock is busy or denied by the server: {lock}"
+                ) from error
+            raise
+        current = lock.lstat()
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise DestinationError(f"Shared destination lock changed during acquisition: {lock}")
     except BaseException as error:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
@@ -253,7 +239,7 @@ def destination_lock(root: Path) -> Iterator[None]:
                 f"Cannot establish destination locking at {root}: {error}"
             ) from error
         raise
-    token = _HELD_DESTINATION.set((scope, mounted.filesystem))
+    token = _HELD_DESTINATION.set((canonical, mounted.filesystem))
     try:
         yield
     finally:
@@ -278,7 +264,7 @@ def _validate_network_locking(mount: _DestinationMount) -> None:
 
 
 def _validate_destination_mounts(root: Path) -> _DestinationMount:
-    """Inspect the visible mount and reject layouts that hide overlapping histories."""
+    """Inspect the visible mount and reject mounts nested inside a history."""
 
     def decode(value: str) -> str:
         return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), value)
@@ -309,8 +295,6 @@ def _validate_destination_mounts(root: Path) -> _DestinationMount:
         if len(containing) != 1:
             raise ValueError("destination mount cannot be established")
         mounted = containing[0]
-        if mounted.root != "/":
-            raise ValueError("subtree mounts hide physical ancestor locks")
         if any(
             mount.directory != root and mount.directory.is_relative_to(root) for mount in entries
         ):

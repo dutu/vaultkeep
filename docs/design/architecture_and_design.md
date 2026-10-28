@@ -151,12 +151,13 @@ Vaultkeep must not depend on:
 
 ### 3.3 Safe operation on mounted network shares
 
-Mutation supports local Linux filesystems with reliable kernel directory locks
-(ext2/3/4, XFS, Btrfs, ZFS, tmpfs, overlay), and mounted CIFS/SMB and NFS shares with
-server-backed regular-file locks. Network writers share a persistent `.vaultkeep.lock`
-at the mounted whole-share/export root. All clients must expose the same anchor
-and permit read/write access by each backup owner. Client-local locking options,
-unsafe anchors, and unsupported mount layouts are rejected. See the operational
+Mutation supports local Linux filesystems (ext2/3/4, XFS, Btrfs, ZFS, tmpfs,
+overlay), and mounted CIFS/SMB and NFS shares with server-backed file locks. Every
+history uses a persistent `.vaultkeep.lock` in its own directory, including each
+child of a per-file job. Clients must expose the same file in the same locking
+domain and permit read/write access by every backup owner. Subdirectory mounts are
+supported. Client-local network locking options, unsafe anchors, and mounts nested
+inside a destination are rejected. See the operational
 [network locking requirements](../configuration.md#cifs-and-nfs-locking).
 
 Vaultkeep supports two independent, optional destination safety checks before writes:
@@ -935,7 +936,7 @@ Backup creation:
 
 The final directory rename is the backup commit point. Before this point, failures remove partial artifacts and leave the previous successful state unchanged. Required post-commit integrity, state, or hook failures fail execution while preserving committed artifacts. Ordinary cleanup failures retain the successful creation outcome with diagnostics.
 
-Temporary and final directories are on the same destination filesystem. Local/CIFS finalization uses native atomic no-overwrite rename. NFS falls back only for unsupported rename flags and only under the covering shared destination lock: check that the final path is absent, then atomically rename. Existing nonempty backup directories remain protected; a non-cooperating writer racing to create an empty target directory can have it replaced. Other rename failures propagate. Each manifest contains a collision-resistant backup ID; new final directory names use the template base name with a numeric suffix only when needed.
+Temporary and final directories are on the same destination filesystem. Local/CIFS finalization uses native atomic no-overwrite rename. NFS falls back only for unsupported rename flags and only under the exact history lock: check that the final path is absent, then atomically rename. Existing nonempty backup directories remain protected; a non-cooperating writer racing to create an empty target directory can have it replaced. Other rename failures propagate. Each manifest contains a collision-resistant backup ID; new final directory names use the template base name with a numeric suffix only when needed.
 
 After writing files, Vaultkeep flushes file data and directory metadata. Durability remains subject to the filesystem and storage device, and to the server honoring flush requests for network shares. Flush errors remain failures.
 
@@ -1471,7 +1472,7 @@ nonempty directory with the same filesystem-specific operation used for backup f
 and removing the probe. Configured filesystem type and marker checks precede probe
 creation. Failures name the operation and destination; cleanup failures report the
 remaining probe path and preserve any preceding probe error. The probe holds or
-reuses a covering destination lock, with the same NFS empty-target race limitation
+reuses a exact history lock, with the same NFS empty-target race limitation
 as finalization. The probe checks current access under the calling identity, not future access
 or the durability of a completed backup.
 
@@ -1942,29 +1943,29 @@ A local job lock retains execution/progress ownership using canonical configurat
 path, job ID, and runtime parameters. Per-file state also includes its file key.
 This local lock remains separate from destination mutual exclusion.
 
-`run`, mutating `verify`, and actual `prune` acquire destination locks before
-inspecting mutable histories. For local destinations, canonical physical
-ancestors receive shared locks and the destination root an exclusive lock. This
-serializes aliases and root/user access and rejects overlapping parent/child writers;
-independent sibling histories may proceed. A per-file run locks its parent namespace
-once through every child archive, marker update, post-commit check, and cleanup.
-Automatic cleanup reuses that lock.
+`run`, mutating `verify`, and actual `prune` acquire an exclusive lock on the
+persistent regular `<history>/.vaultkeep.lock` file before inspecting mutable
+history. The same protocol covers local and network filesystems, aliases, root/user
+execution, and cooperating clients reaching the same server lock domain. The file
+is opened read/write, never truncated or removed, and checked for a single regular
+inode and stable identity. Its contents are not ownership evidence.
 
-CIFS/SMB and NFS writers acquire an exclusive server-backed lock on the persistent
-regular `.vaultkeep.lock` file at the mounted whole-share/export root. The file is
-opened read/write, never truncated or removed, and checked for a single regular
-inode and stable identity. All histories on that share serialize, including sibling
-namespaces, aliases, and cooperating clients on other machines. Reject CIFS `nobrl`
-and NFS `nolock`/`local_lock=all`/`local_lock=flock`; there is no machine-local fallback.
-Mount identity and options come from `/proc/self/mountinfo`, selected by the actual
-directory descriptor's mount ID from `/proc/self/fdinfo`, including stacked mounts.
-The held scope/filesystem is tracked in the execution context so validation probes
-reuse a covering lock and the NFS rename fallback cannot run without one.
-Unsupported filesystems, inaccessible anchors, and lock failures stop mutation.
-Subtree mounts (including bind-subtree aliases and mounted Btrfs subvolumes) and
-destinations containing nested mount points are rejected. They can hide physical
-parent/child overlap from this directory-lock protocol. Mount topology must remain
-stable during execution.
+A per-file job acquires one child's lock at a time through discovery, archive
+creation or verification, marker updates, and cleanup. A direct job targeting that
+child acquires the same lock. Children remain independent: no parent or share-wide
+lock reserves the batch, and failures in one child do not prevent processing its
+siblings. The parent writable probe takes only a temporary parent lock. Held-lock
+reuse is restricted to the exact canonical history directory; a parent lock cannot
+authorize a child's probe or NFS rename fallback.
+
+Reject CIFS `nobrl` and NFS `nolock`/`local_lock=all`/`local_lock=flock`; there is no
+machine-local fallback. Mount identity and options come from `/proc/self/mountinfo`,
+selected by the actual directory descriptor's mount ID from `/proc/self/fdinfo`,
+including stacked mounts. Subtree mounts, bind-subtree aliases, and mounted Btrfs
+subvolumes are supported. Mounts nested inside a destination, unsupported
+filesystems, inaccessible anchors, and lock failures stop mutation. Mount topology
+must remain stable during execution. A coordinated upgrade of all writing clients
+is required when replacing ancestor-directory or share-root locking.
 
 `list`, `status`, and `prune --dry-run` create no locks and authorize no future
 deletion. Mutation always refreshes locked discovery and candidate validation.
@@ -2932,7 +2933,7 @@ V1 Vaultkeep is designed as:
 - able to create independent unencrypted `.tar.zst` archives;
 - able to create password-protected `.tar.7z` archives containing one inner TAR;
 - readable without Vaultkeep;
-- guarded by physical-directory locks locally and shared regular-file locks on CIFS/NFS;
+- guarded by per-history regular-file locks on local and CIFS/NFS destinations;
 - configured with one directory per backup;
 - strict about unknown and malformed configuration;
 - count-based and calendar-bucketed for hourly/daily/weekly/monthly/yearly retention with coarser-tier horizons limiting finer-tier selections;

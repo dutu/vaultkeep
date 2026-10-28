@@ -167,27 +167,26 @@ removal is acceptable; no new maintenance command is needed.
 
 ## Shared locking
 
-`run`, mutating `verify`, and actual `prune` use one mutually exclusive locking
-protocol for every overlapping physical backup history. A coarse lock for the whole
-destination/job namespace is sufficient, including all its per-file histories.
+`run`, mutating `verify`, and actual `prune` use an exclusive lock on the
+persistent regular `<history>/.vaultkeep.lock` file, independently of configuration
+path, job ID, account, and mount path. Local and CIFS/SMB/NFS destinations use the
+same history-level protocol; network locks must be server-backed and all clients
+must access the same file in the same locking domain.
 
-Establish a stable, validated shared lock anchor independent of configuration path
-and local reporting identity. Different YAML paths, destination aliases, or root
-versus user execution must not provide independent locks for overlapping histories.
-Per-file parent and child namespace overlap must either resolve to the same shared
-lock or be rejected. Reject configurations/filesystems for which reliable shared
-mutual exclusion cannot be established. Preserve filesystem and lock-file safety.
+Per-file jobs lock each child separately through discovery, mutation, verification,
+and cleanup, then release it before processing the next child. Direct jobs targeting
+that child acquire the same lock. Independent children and sibling destinations can
+proceed concurrently; the batch is not reserved as a whole. Busy or failed children
+are reported while siblings continue. Held-lock reuse covers only the exact history.
 
-Local destinations use shared physical ancestor directory locks and an exclusive
-destination directory lock. CIFS/SMB and NFS destinations use one persistent regular
-`.vaultkeep.lock` at the mounted whole-share/export root, with an exclusive
-server-backed lock shared across machines and all its histories. Reject mounts
-that disable server locking, unsafe anchors, subtree/nested layouts, and lock
-failures. Never remove or replace the persistent lock file during operation.
+Reject mounts that disable server locking, unsafe anchors, mounts nested inside a
+destination, unsupported filesystems, and lock failures. Subtree and bind mounts are
+supported. Never truncate, remove, or replace the persistent lock file during
+operation. All writers must be updated together when changing locking protocols.
 
 Keep native no-overwrite atomic directory commits for local/CIFS destinations.
 When NFS rejects the no-overwrite rename flag, allow an ordinary atomic directory
-rename only under the covering shared destination lock after checking the target
+rename only under the exact history lock after checking the target
 is absent. Existing nonempty backup directories remain protected; an unrelated
 process racing to create an empty target directory can have it replaced. Validation
 probes use the same lock and fallback. Other rename failures remain errors.

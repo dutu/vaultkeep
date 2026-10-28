@@ -219,10 +219,10 @@ def test_release_failure_preserves_primary_error(job, monkeypatch):
     with pytest.raises(SourceDiscoveryError, match="primary") as caught:
         run(job)
     assert any("release failed" in note for note in caught.value.__notes__)
-    assert list((job.parent / "backups").iterdir()) == []
+    assert {path.name for path in (job.parent / "backups").iterdir()} == {".vaultkeep.lock"}
 
 
-def test_shared_lock_covers_aliases_ancestors_and_all_mutators(job):
+def test_history_lock_covers_aliases_and_all_mutators(job):
     alias = job.parent / "alias"
     alias.symlink_to(job.parent / "backups", target_is_directory=True)
     config = workflow.load_validated_config(job)
@@ -235,11 +235,11 @@ def test_shared_lock_covers_aliases_ancestors_and_all_mutators(job):
             workflow.prune_backups(job, dry_run=False, user_mode=True)
         assert workflow.prune_backups(job, dry_run=True, user_mode=True).result == "planned"
         assert workflow.list_backups(job, user_mode=True).backups == ()
-        with pytest.raises(LockError), destination_lock(job.parent):
+        with destination_lock(job.parent):
             pass
         child = Path(config.destination.root) / "child"
         child.mkdir()
-        with pytest.raises(LockError), destination_lock(child):
+        with destination_lock(child):
             pass
     assert run(job).result == "created"
 
@@ -588,7 +588,7 @@ def test_offline_inspection_failure_is_not_absence(job, monkeypatch):
     )
     with pytest.raises(SourceDiscoveryError, match="metadata inaccessible"):
         run(job)
-    assert list((job.parent / "backups").iterdir()) == []
+    assert {path.name for path in (job.parent / "backups").iterdir()} == {".vaultkeep.lock"}
 
 
 def test_release_hook_cannot_commit_unexpected_staging_artifacts(job, monkeypatch):
@@ -604,7 +604,7 @@ def test_release_hook_cannot_commit_unexpected_staging_artifacts(job, monkeypatc
     monkeypatch.setattr(workflow, "_run_configured_hook", hook)
     with pytest.raises(DestinationError, match="unexpected staging artifacts"):
         run(job)
-    assert list((job.parent / "backups").iterdir()) == []
+    assert {path.name for path in (job.parent / "backups").iterdir()} == {".vaultkeep.lock"}
 
 
 def test_explicit_per_file_prune_cleans_valid_history_despite_unsafe_sibling(job, monkeypatch):
@@ -636,8 +636,7 @@ def test_explicit_per_file_prune_cleans_valid_history_despite_unsafe_sibling(job
     } == before
 
 
-@pytest.mark.parametrize("layout", ["subtree", "nested"])
-def test_shared_lock_rejects_mount_layouts_that_hide_ancestor_overlap(job, monkeypatch, layout):
+def test_history_lock_rejects_nested_destination_mounts(job, monkeypatch):
     from vaultkeep import locking
 
     destination = job.parent / "backups"
@@ -646,15 +645,11 @@ def test_shared_lock_rejects_mount_layouts_that_hide_ancestor_overlap(job, monke
     def mountinfo(path, *args, **kwargs):
         if path == Path("/proc/self/mountinfo"):
             text = "1 0 1:1 / / rw - tmpfs tmpfs rw\n"
-            if layout == "subtree":
-                return text + f"2 1 1:1 /hidden/child {destination} rw - tmpfs tmpfs rw\n"
             return text + f"2 1 2:1 / {destination}/nested rw - tmpfs tmpfs rw\n"
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", mountinfo)
-    monkeypatch.setattr(
-        locking, "_destination_mount_id", lambda path: 2 if layout == "subtree" else 1
-    )
+    monkeypatch.setattr(locking, "_destination_mount_id", lambda path: 1)
     with (
         pytest.raises(DestinationError, match="mount layout"),
         locking.destination_lock(destination),

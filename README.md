@@ -61,8 +61,8 @@ successful archive verification do not establish application-level consistency.
 - Root access for installation, a trusted source checkout, and network access to
   Debian repositories and the Python package index.
 - Readable sources and an existing writable destination on a supported local Linux
-  filesystem or mounted CIFS/SMB or NFS share with server locking enabled. Subtree
-  and nested destination mounts remain unsupported.
+  filesystem or mounted CIFS/SMB or NFS share with server locking enabled.
+  Subdirectory mounts are supported; mounts nested inside a destination remain unsupported.
 
 The installer provides Debian Python 3.13+, `python3-venv`, GNU TAR, Zstandard,
 Debian `7zip`, `rsync`, and mount utilities including `util-linux`. It does not use
@@ -191,15 +191,17 @@ if needed.
    [destination safety procedure](docs/configuration.md#destination-safety-checks)
    before writing. Vaultkeep never creates a configured marker for you.
 
-   For CIFS/NFS, mount the same whole share/export on every writing machine, with
-   server locks enabled: omit CIFS `nobrl` and NFS `nolock`/`local_lock=all`/`local_lock=flock`.
-   Vaultkeep creates `.vaultkeep.lock` at the mounted share/export root and locks it
-   for each write operation. That root must allow initial lock-file creation, and
-   every backup account must have read/write access to the file through server ACLs
-   or shared-group permissions. All jobs on that share serialize. Keep the lock file
-   in place; never delete or replace it while writers may run. NFS commits use an
-   atomic rename under this lock; an unrelated writer racing to create an empty
-   target directory can have that empty directory replaced.
+   Vaultkeep creates a persistent `.vaultkeep.lock` in each destination history.
+   Every backup account needs read/write access to that file. `per_file` jobs lock
+   each child history separately; independent histories can run concurrently.
+   Keep lock files in place, including after a crash.
+
+   For CIFS/NFS, whole-share and subdirectory mounts are supported. Writers must
+   reach the same remote lock file through the same server locking domain. Keep
+   server locks enabled: omit CIFS `nobrl` and NFS
+   `nolock`/`local_lock=all`/`local_lock=flock`. Access to the share root is not required.
+   NFS commits use an atomic rename under the history lock; an unrelated writer
+   racing to create an empty target directory can have that empty directory replaced.
 
 <a id="start-backups-in-the-chosen-mode"></a>
 <a id="run-a-job-manually"></a>
@@ -588,6 +590,12 @@ cache; do not edit destination manifests to repair it. Full diagnosis is in
 <a id="maintenance-and-removal"></a>
 <a id="update-the-application"></a>
 ## Update or reinstall Vaultkeep
+
+When upgrading from ancestor-directory or share-root locking, stop automation on
+all machines writing to the affected destinations and wait for active operations
+to finish. Upgrade every writer before resuming automation; old and new releases
+use different locks. Backup files and configuration need no migration. See
+[maintenance guidance](docs/maintenance.md#update-behavior-and-failure-recovery).
 
 1. From a trusted checkout on Debian 13, select the intended newer source:
 

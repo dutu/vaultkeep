@@ -16,6 +16,7 @@ from vaultkeep.cli.commands import main
 from vaultkeep.config import JobConfig
 from vaultkeep.destination import finalize as finalize_module
 from vaultkeep.errors import DestinationError
+from vaultkeep.locking import DESTINATION_LOCK_NAME
 from vaultkeep.progress import VerificationProgress
 
 EXAMPLE_CONFIG = Path(__file__).parents[2] / "examples" / "vaultkeep-schedule.yaml"
@@ -133,7 +134,7 @@ def local_job(tmp_path: Path, valid_config: dict[str, Any]) -> Path:
     return config
 
 
-def test_full_validation_probes_destination_and_leaves_no_artifacts(
+def test_full_validation_probes_destination_and_leaves_only_persistent_lock(
     local_job: Path, capsys: Any
 ) -> None:
     assert main(["--user", "--config", str(local_job), "validate"]) == 0
@@ -141,7 +142,9 @@ def test_full_validation_probes_destination_and_leaves_no_artifacts(
     assert "  Backup paths   OK" in output
     assert "  Schedule  DISABLED\n  Trigger   DISABLED" in output
     assert "Result:  OK" in output
-    assert list((local_job.parent / "destination").iterdir()) == []
+    assert {path.name for path in (local_job.parent / "destination").iterdir()} == {
+        DESTINATION_LOCK_NAME
+    }
 
 
 @pytest.mark.parametrize("command", ["validate", "run"])
@@ -164,7 +167,9 @@ def test_validation_and_backup_reject_denied_atomic_rename_before_archiving(
     error = capsys.readouterr().err
     assert "cannot atomically rename a probe directory: rename denied" in error
     assert str(local_job.parent / "destination") in error
-    assert list((local_job.parent / "destination").iterdir()) == []
+    assert {path.name for path in (local_job.parent / "destination").iterdir()} == {
+        DESTINATION_LOCK_NAME
+    }
 
 
 def test_schema_only_validation_never_probes_destination(
@@ -187,7 +192,7 @@ def test_schema_only_validation_never_probes_destination(
 
 
 @pytest.mark.parametrize("command", [["list"], ["verify"], ["prune", "--dry-run"]])
-def test_read_only_commands_never_probe_destination(
+def test_inventory_and_verify_commands_never_probe_destination(
     local_job: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
 ) -> None:
     def unexpected_probe(root: Path) -> None:
@@ -196,7 +201,8 @@ def test_read_only_commands_never_probe_destination(
     monkeypatch.setattr(workflow, "probe_destination_writability", unexpected_probe)
 
     assert main(["--user", "--config", str(local_job), *command]) == 0
-    assert list((local_job.parent / "destination").iterdir()) == []
+    expected = {DESTINATION_LOCK_NAME} if command == ["verify"] else set()
+    assert {path.name for path in (local_job.parent / "destination").iterdir()} == expected
 
 
 @pytest.mark.parametrize("malformed", [False, True])

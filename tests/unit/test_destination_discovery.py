@@ -227,6 +227,7 @@ def test_verify_checks_all_archives_and_reports_all_failures(
     assert "malformed backup" in str(caught.value)
 
 
+@pytest.mark.parametrize("backup_mode", ["combined", "per_file"])
 @pytest.mark.parametrize("user_mode", [False, True])
 @pytest.mark.parametrize("outcome", ["verified", "failed", "interrupted"])
 def test_verify_loads_one_password_for_all_backups_and_always_clears_it(
@@ -234,8 +235,10 @@ def test_verify_loads_one_password_for_all_backups_and_always_clears_it(
     valid_config: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     user_mode: bool,
+    backup_mode: str,
     outcome: str,
 ) -> None:
+    valid_config["backup_mode"] = backup_mode
     valid_config["archive"]["format"] = "tar.7z"
     valid_config["encryption"] = {
         "mode": "password",
@@ -243,7 +246,13 @@ def test_verify_loads_one_password_for_all_backups_and_always_clears_it(
     }
     config = _config(tmp_path, valid_config)
     for number in (1, 2):
-        _create_backup(config, number, datetime(2026, 7, 23, number, tzinfo=UTC))
+        destination = (
+            file_config(config, Path("/missing") / f"wallet-{number}")
+            if backup_mode == "per_file"
+            else config
+        )
+        Path(destination.destination.root).mkdir(exist_ok=True)
+        _create_backup(destination, number, datetime(2026, 7, 23, number, tzinfo=UTC))
     config_path = tmp_path / "app.yaml"
     config_path.write_text(config.model_dump_json())
     secret = PasswordSecret(b"secret")
@@ -697,12 +706,27 @@ def test_verification_phase_totals_and_operation_failures(
             verify_backups(config_path, on_progress=events.append, user_mode=True)
     else:
         assert verify_backups(config_path, on_progress=events.append, user_mode=True).backups == 2
-    discovery_done = next(
-        i for i, e in enumerate(events) if e.phase == "discovery" and e.status == "complete"
-    )
-    assert all(e.phase != "archive" for e in events[:discovery_done])
-    assert all(e.phase != "backup" for e in events[discovery_done:])
-    discovery = events[discovery_done]
+    starts = [i for i, event in enumerate(events) if event.operation == "Verification history"]
+    completed = []
+    for start, end in zip(starts, [*starts[1:], len(events)], strict=True):
+        history_events = events[start:end]
+        phases = [event for event in history_events if event.status == "complete"]
+        if not phases:
+            assert failure == "discovery"
+            assert any(event.status == "failed" for event in history_events)
+            assert all(event.phase != "archive" for event in history_events)
+            continue
+        discovery_done = next(
+            i
+            for i, event in enumerate(history_events)
+            if event.phase == "discovery" and event.status == "complete"
+        )
+        assert all(event.phase != "archive" for event in history_events[:discovery_done])
+        assert all(event.phase != "backup" for event in history_events[discovery_done:])
+        assert [event.phase for event in phases] == ["discovery", "archive"]
+        assert phases[0].total == (1 if backup_mode == "per_file" else 2)
+        assert phases[1].total == phases[0].completed
+        completed.extend(phases)
     eligible = (
         1
         if failure == "manifest" or (failure == "discovery" and backup_mode == "per_file")
@@ -710,14 +734,13 @@ def test_verification_phase_totals_and_operation_failures(
         if failure == "discovery"
         else 2
     )
-    assert discovery.completed == eligible
-    assert discovery.total == (None if failure == "discovery" else 2)
-    assert events[-1].phase == "archive" and events[-1].status == "complete"
-    assert events[-1].total == eligible
-    assert events[-1].completed == eligible - (failure in ("stream", "tar"))
+    assert sum(event.completed for event in completed if event.phase == "discovery") == eligible
+    assert sum(event.completed for event in completed if event.phase == "archive") == (
+        eligible - (failure in ("stream", "tar"))
+    )
     if failure in ("stream", "tar"):
         failed = next(e for e in events if e.status == "failed")
-        assert failed.path == bad and failed.total == 2
+        assert failed.path == bad and failed.total == (1 if backup_mode == "per_file" else 2)
         assert failed.operation == (
             "Zstandard stream test"
             if failure == "stream"

@@ -349,39 +349,46 @@ Runtime parameter values are part of the effective backup identity. Different pa
 
 ## Destination safety checks
 
-Mutating `run`, `verify`, and actual `prune` serialize through shared destination
-locks. YAML aliases and root/user execution cannot create independent locks for
-overlapping histories. Supported Linux local filesystems are ext2/3/4, XFS, Btrfs,
-ZFS, tmpfs, and overlay; they use locks on physical directories and their ancestors.
-Mounted CIFS/SMB (`cifs`, `smb3`) and NFS (`nfs`, `nfs4`) shares are also supported,
-using the network locking requirements below. Other filesystem types are rejected
-for mutation. Read-only inventory and prune previews remain available. Directory
-read/search access is required along the canonical destination path.
-Subtree mounts (including bind-subtree aliases and mounted Btrfs subvolumes) and
-destinations containing nested mount points are rejected. They can hide physical
-parent/child overlap from this directory-lock protocol. Mount topology must remain
-stable during execution.
+Mutating `run`, `verify`, and actual `prune` acquire an exclusive file lock on
+`<destination.root>/.vaultkeep.lock` before inspecting or modifying that history.
+The lock is independent of YAML path, job ID, execution account, and local mount
+path: all writers accessing the same physical history must reach the same lock
+file. Different history directories can be processed concurrently.
+
+Supported Linux local filesystems are ext2/3/4, XFS, Btrfs, ZFS, tmpfs, and overlay.
+Mounted CIFS/SMB (`cifs`, `smb3`) and NFS (`nfs`, `nfs4`) shares require server-backed
+locking as described below. Other filesystems are rejected for mutation. Subtree
+mounts, bind-subtree aliases, and mounted Btrfs subvolumes are supported; mounts
+nested inside a destination remain unsupported. Mount topology must remain stable
+during execution.
+
+For `per_file` jobs, each child history has its own `.vaultkeep.lock`. Backup,
+verification, and pruning lock one child at a time through discovery, archive
+checks, marker updates, and cleanup, then release it before proceeding. A job
+targeting that child directly uses the same lock. Busy or failed histories are
+reported while independent siblings continue; the overall command reports failure.
+The batch does not reserve all children together. The parent directory's writable
+probe uses a short-lived parent lock and does not reserve its child histories.
+
+Vaultkeep creates `.vaultkeep.lock` when absent, with permissions subject to the
+creating process's umask. The history directory must permit creation, or an
+administrator must provision the file first. Every backup account needs read/write
+access through filesystem permissions, server ACLs, or a shared group. Existing
+contents and permissions are preserved. The file remains after success or failure
+and is reused; its presence or contents do not establish that a writer is active.
+Never remove or replace it while writers may run. Symlinks, hard links, and
+non-regular lock files are rejected. Marker and filesystem guards precede lock-file
+creation and the writable-destination probe. Lock contention fails without waiting;
+a later invocation can retry. Read-only inventory and prune previews create no locks.
 
 ### CIFS and NFS locking
 
-Every cooperating writing machine must mount the same whole share/export, using the
-same protocol, so its mounted root exposes the same `.vaultkeep.lock` file. Do not
-use overlapping exports, share-subdirectory mounts, or independent SMB/NFS exports
-of the same backup tree: they can expose different lock anchors or lock domains.
-One exclusive server-backed file lock serializes all Vaultkeep jobs on that
-share/export, including sibling and per-file histories. Lock contention fails
-without waiting; a later invocation can retry.
-
-Vaultkeep creates the regular `.vaultkeep.lock` file at the mounted share/export
-root when absent, with permissions subject to the creating process's umask. That
-root must permit creation, or an administrator must provision the file first.
-Configured marker and filesystem guards are checked before creating the lock file
-and before the destination write probe.
-Grant read/write access to every backup account through server ACLs or a shared
-group. Existing permissions are preserved. The file remains after success or
-failure and is reused; no owner/PID record or stale-file deletion is needed because
-the kernel/server owns the live lock. Never remove or replace it while writers may
-run. Symlinks, hard links, and non-regular lock anchors are rejected.
+Every cooperating writer must access the same physical history directory and lock
+file through the same server locking domain. Whole-share and share-subdirectory
+mounts are supported, including different local mount paths. Separate SMB/NFS
+exports or different protocols exposing the same data may use independent lock
+domains and must not be used concurrently for the same history. Access to the
+share/export root is not required.
 
 Keep server locking enabled. CIFS `nobrl`, NFS `nolock`, and NFS
 `local_lock=all`/`local_lock=flock` are rejected. Lock/open failures stop the operation
@@ -393,14 +400,14 @@ See the Linux [flock reference](https://man7.org/linux/man-pages/man2/flock.2.ht
 [CIFS mount options](https://man7.org/linux/man-pages/man8/mount.cifs.8.html), and
 [NFS mount options](https://man7.org/linux/man-pages/man5/nfs.5.html).
 
-Linux NFS rejects `renameat2(RENAME_NOREPLACE)`. While the covering shared lock is
+Linux NFS rejects `renameat2(RENAME_NOREPLACE)`. While the history lock is
 held, Vaultkeep falls back to checking that the final path is absent and then
 performing an ordinary atomic directory rename. Existing nonempty backup
 directories cannot be replaced. A non-cooperating process racing to create an
 empty target directory between those operations can have that empty directory
 replaced. Other rename errors still fail. Local/CIFS commits retain the native
 no-overwrite operation. Full validation acquires the destination lock for its
-write/rename/remove probe, and reuses a covering lock during a backup run.
+write/rename/remove probe, and reuses the exact history lock during a backup run.
 
 ### Marker and filesystem checks
 
@@ -466,8 +473,8 @@ destination:
    findmnt --uniq --target /mnt/backups/app --output TARGET,SOURCE,FSTYPE
    ```
 
-   Confirm the intended device or share and filesystem. Mount the whole supported
-   filesystem/share; subtree aliases and nested destination mounts are rejected for mutation.
+   Confirm the intended device or share and filesystem. Subdirectory mounts are
+   supported; mounts nested inside the destination are rejected for mutation.
 
 2. Create the marker only after confirming that destination:
 

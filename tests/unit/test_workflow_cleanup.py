@@ -20,6 +20,7 @@ from vaultkeep.errors import (
     DestinationTemplateError,
     HookError,
 )
+from vaultkeep.locking import DESTINATION_LOCK_NAME
 from vaultkeep.state.identity import job_identity_hash
 
 
@@ -116,7 +117,11 @@ def test_precommit_failure_removes_only_current_partial_and_preserves_previous_b
     assert report["previous"]["result"] == "FAILED"
     if stage == "rename":
         assert report["previous"]["reason"] == "Backup finalization failed"
-    assert set(destination.iterdir()) == {previous.archive_path.parent, older_partial}
+    assert set(destination.iterdir()) == {
+        previous.archive_path.parent,
+        older_partial,
+        destination / DESTINATION_LOCK_NAME,
+    }
     assert previous.archive_path.read_bytes() == b"archive"
     assert (older_partial / "data").read_bytes() == b"preserve"
     assert _run(job).result == "created"
@@ -140,7 +145,9 @@ def test_cleanup_failure_reports_remaining_path_and_preserves_original_error(
         _run(job)
 
     assert caught.value is original_error
-    (partial,) = (job.parent / "backups").iterdir()
+    (partial,) = (
+        path for path in (job.parent / "backups").iterdir() if path.name != DESTINATION_LOCK_NAME
+    )
     assert partial.name.startswith("~$.partial-vaultkeep-")
     assert f"Cannot remove partial backup directory {partial}" in caplog.text
     assert "cleanup denied" in caplog.text
@@ -165,7 +172,7 @@ def test_cleanup_does_not_follow_symlinks_inside_staging(
     with pytest.raises(HookError, match="archive failed"):
         _run(job)
 
-    assert list((job.parent / "backups").iterdir()) == []
+    assert {path.name for path in (job.parent / "backups").iterdir()} == {DESTINATION_LOCK_NAME}
     assert (outside / "data").read_bytes() == b"preserve"
 
 
@@ -205,7 +212,7 @@ def test_parent_flush_failure_preserves_committed_backup(
     with pytest.raises(DestinationCommitDurabilityError, match="committed"):
         _run(job)
 
-    (backup,) = destination.iterdir()
+    (backup,) = (path for path in destination.iterdir() if path.name != DESTINATION_LOCK_NAME)
     assert not backup.name.startswith("~$.partial-")
     assert len(list(backup.iterdir())) == 3
     assert workflow.verify_backups(job, user_mode=True).backups == 1
@@ -221,6 +228,8 @@ def test_failure_after_commit_preserves_backup(job: Path, monkeypatch: pytest.Mo
     assert result.result == "created"
     assert result.cleanup_errors == ("retention failed",)
 
-    (backup,) = (job.parent / "backups").iterdir()
+    (backup,) = (
+        path for path in (job.parent / "backups").iterdir() if path.name != DESTINATION_LOCK_NAME
+    )
     assert not backup.name.startswith("~$.partial-")
     assert workflow.verify_backups(job, user_mode=True).backups == 1

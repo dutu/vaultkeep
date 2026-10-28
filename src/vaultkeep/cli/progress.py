@@ -435,6 +435,9 @@ class VerificationDisplay:
             if event.operation == "Verification destination":
                 self._destination = event.path
                 return
+            if event.operation == "Verification history":
+                self._completed.clear()
+                return
             if event.status == "failed":
                 self._unknown_total = True
                 self._failure(None, "Discovery", event)

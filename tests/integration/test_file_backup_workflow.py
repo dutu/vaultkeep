@@ -17,9 +17,9 @@ from vaultkeep import hooks
 from vaultkeep.backup import workflow
 from vaultkeep.backup.results import classify_command
 from vaultkeep.cli.commands import main
-from vaultkeep.errors import ArchiveCreationError, DestinationError, LockError
+from vaultkeep.errors import ArchiveCreationError, DestinationError, LockError, PruneError
 from vaultkeep.file_backups import file_key
-from vaultkeep.locking import JobLock, job_lock_path
+from vaultkeep.locking import JobLock, destination_lock, held_destination_filesystem, job_lock_path
 from vaultkeep.state.identity import job_identity_hash
 
 pytestmark = pytest.mark.skipif(
@@ -476,3 +476,98 @@ def test_manual_prune_validates_each_history_independently(file_job: Path) -> No
     assert workflow.prune_backups(file_job, dry_run=True, user_mode=True).removed == 0
     assert workflow.prune_backups(file_job, dry_run=False, user_mode=True).removed == 1
     assert workflow.verify_backups(file_job, user_mode=True).backups == 2
+
+
+@pytest.mark.parametrize("operation", ["run", "verify", "prune"])
+def test_busy_child_history_does_not_block_siblings(file_job, monkeypatch, operation):
+    first = _run(file_job)
+    histories = [item.archive_path.parent.parent for item in first.files]
+    original_prune = workflow.execute_prune_plan
+    monkeypatch.setattr(workflow, "execute_prune_plan", lambda *args: ())
+    for source in (file_job.parent / "wallets").iterdir():
+        source.write_text("changed wallet")
+    _run(file_job)
+    monkeypatch.setattr(workflow, "execute_prune_plan", original_prune)
+    protected = {path: path.read_bytes() for path in histories[0].rglob("*") if path.is_file()}
+    verified = []
+    with destination_lock(histories[0]):
+        if operation == "run":
+            result = _run(file_job)
+            assert [item.result for item in result.files] == ["failed", "unchanged"]
+            assert "already locked" in result.files[0].error
+        elif operation == "verify":
+            with pytest.raises(DestinationError, match="already locked"):
+                workflow.verify_backups(file_job, user_mode=True, on_verified=verified.append)
+            assert len(verified) == 2
+            assert all(path.is_relative_to(histories[1]) for path in verified)
+        else:
+            with pytest.raises(PruneError, match="already locked") as caught:
+                workflow.prune_backups(file_job, dry_run=False, user_mode=True)
+            assert len(caught.value.removed) == 1
+            assert Path(caught.value.removed[0]).is_relative_to(histories[1])
+        assert {
+            path: path.read_bytes() for path in histories[0].rglob("*") if path.is_file()
+        } == protected
+    assert held_destination_filesystem(histories[0]) is None
+    with destination_lock(histories[0]):
+        pass
+
+
+@pytest.mark.parametrize("operation", ["run", "verify", "prune"])
+def test_child_lock_spans_discovery_and_mutation_and_releases_between_histories(
+    file_job, monkeypatch, operation
+):
+    first = _run(file_job)
+    histories = [item.archive_path.parent.parent for item in first.files]
+    if operation == "run":
+        for source in (file_job.parent / "wallets").iterdir():
+            source.write_text("changed wallet")
+    seen = set()
+
+    def check(root, phase):
+        root = root.resolve()
+        seen.add((root, phase))
+        assert held_destination_filesystem(root) is not None
+        with pytest.raises(LockError), destination_lock(root):
+            pytest.fail("history mutation was not protected")
+        # A previously processed history and the parent remain independent.
+        other = next(history for history in histories if history != root)
+        with destination_lock(other), destination_lock(root.parent):
+            pass
+        assert held_destination_filesystem(root) is not None
+
+    discover = workflow.discover_backups
+    build = workflow.build_archive
+    verify = workflow.verify_tar_zstd
+    prune = workflow.execute_prune_plan
+
+    def checked_discover(config, **kwargs):
+        check(Path(config.destination.root), "discovery")
+        return discover(config, **kwargs)
+
+    def checked_build(request, **kwargs):
+        check(request.archive_path.parent.parent, "archive")
+        return build(request, **kwargs)
+
+    def checked_verify(path, **kwargs):
+        check(path.parent.parent, "archive")
+        return verify(path, **kwargs)
+
+    def checked_prune(plan, discovery):
+        check(discovery.backups[0].directory.parent, "cleanup")
+        return prune(plan, discovery)
+
+    monkeypatch.setattr(workflow, "discover_backups", checked_discover)
+    monkeypatch.setattr(workflow, "build_archive", checked_build)
+    monkeypatch.setattr(workflow, "verify_tar_zstd", checked_verify)
+    monkeypatch.setattr(workflow, "execute_prune_plan", checked_prune)
+    if operation == "run":
+        assert _run(file_job).result == "created"
+    elif operation == "verify":
+        assert workflow.verify_backups(file_job, user_mode=True).backups == 2
+    else:
+        assert workflow.prune_backups(file_job, dry_run=False, user_mode=True).result == "pruned"
+    phases = {"discovery", "archive"} if operation != "prune" else {"discovery", "cleanup"}
+    if operation == "run":
+        phases.add("cleanup")
+    assert seen == {(history, phase) for history in histories for phase in phases}

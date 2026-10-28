@@ -251,7 +251,7 @@ def test_schedule_checks_selected_manager_and_installation(
     assert ("Next scheduled run:" in output) if installed else ("Timer: NOT INSTALLED" in output)
     assert "vaultkeep@app.timer" in calls
     assert "vaultkeep@app.service" in calls
-    assert before == sorted(path.parent.rglob("*"))
+    assert set(path.parent.rglob("*")) == {*before, path.parent / "destination/.vaultkeep.lock"}
 
 
 def test_trigger_params_defaults_are_shared_by_validation_and_service_identity(

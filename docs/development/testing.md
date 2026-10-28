@@ -138,7 +138,7 @@ examples disabled until the installed process model has been reviewed.
 
 Schema/layout-2 tests use disposable sources, destinations and local state. The
 safety suite covers offline boundaries and release hooks, source refresh, physical
-destination locks across aliases/parent-child paths, suspect markers and compatible
+history locks across aliases and per-file/direct-child access, suspect markers and compatible
 references, protected dependencies, unsupported/malformed barriers, cleanup warnings,
 and failure after commitment. Metadata-only inventory/status and dry-run checks do
 not read archives or write classification. Installed workers exercise the same
@@ -154,8 +154,8 @@ verification, suspect replacement, and pruning. They do not establish live serve
 or cross-machine semantics.
 
 To test actual shares, mount disposable CIFS and NFS test shares with server locking
-enabled, and grant the test account access to their root `.vaultkeep.lock` files.
-Then run:
+enabled, and grant the test account permission to create `.vaultkeep.lock` in each
+temporary history directory. Then run:
 
 ```sh
 VAULTKEEP_TEST_CIFS_ROOT=/mnt/vaultkeep-test-cifs \
@@ -163,7 +163,7 @@ VAULTKEEP_TEST_NFS_ROOT=/mnt/vaultkeep-test-nfs \
 pytest --no-cov -q tests/integration/test_network_destinations.py -k live_network
 ```
 
-These opt-in tests create and remove private test directories and leave the stable
-share-root lock file in place. They check real commit/verify/retention and separate
-process contention. Release validation must additionally check contention from two
+These opt-in tests create and remove private test directories, including their
+history lock files after all writers have stopped. They check real
+commit/verify/retention and separate process contention. Release validation must additionally check contention from two
 writing machines, server recovery, and the deployed mount/permission configuration.

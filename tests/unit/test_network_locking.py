@@ -40,8 +40,8 @@ def share(tmp_path, monkeypatch):
     return settings
 
 
-@pytest.mark.parametrize("filesystem", ["cifs", "smb3", "nfs", "nfs4"])
-def test_network_lock_covers_share_aliases_siblings_and_parent_child(share, filesystem):
+@pytest.mark.parametrize("filesystem", ["cifs", "smb3", "nfs", "nfs4", "ext4", "tmpfs"])
+def test_history_lock_covers_aliases_but_not_siblings_or_parent_child(share, filesystem):
     share.filesystem = filesystem
     first, second = share.root / "first", share.root / "second"
     first.mkdir()
@@ -50,28 +50,45 @@ def test_network_lock_covers_share_aliases_siblings_and_parent_child(share, file
     child.mkdir()
     alias = share.root.parent / "alias"
     alias.symlink_to(first, target_is_directory=True)
-    lock = share.root / locking.NETWORK_LOCK_NAME
-
+    lock = first / locking.DESTINATION_LOCK_NAME
+    lock.write_bytes(b"stale diagnostic contents do not own a lock")
     with locking.destination_lock(first):
         assert lock.is_file()
-        assert locking.held_destination_filesystem(child) == filesystem
-        assert locking.held_destination_filesystem(second) == filesystem
-        assert locking.held_destination_filesystem(share.root.parent) is None
-        for other in (first, second, child, alias, share.root):
+        assert locking.held_destination_filesystem(first) == filesystem
+        assert locking.held_destination_filesystem(alias) == filesystem
+        for other in (second, child, share.root):
+            assert locking.held_destination_filesystem(other) is None
+            with locking.destination_lock(other):
+                assert locking.held_destination_filesystem(other) == filesystem
+            assert locking.held_destination_filesystem(first) == filesystem
+        for other in (first, alias):
             with pytest.raises(LockError), locking.destination_lock(other):
-                pytest.fail("overlapping share writer acquired a second lock")
+                pytest.fail("same history acquired a second lock")
     assert locking.held_destination_filesystem(first) is None
     before = lock.stat()
     with locking.destination_lock(alias):
         assert lock.stat().st_ino == before.st_ino
-    assert lock.stat().st_ino == before.st_ino and lock.stat().st_size == 0
-    assert not list(first.glob(".vaultkeep*"))
+    assert lock.stat().st_ino == before.st_ino
+    assert lock.read_bytes() == b"stale diagnostic contents do not own a lock"
+
+
+@pytest.mark.parametrize("filesystem", ["cifs", "smb3", "nfs", "nfs4", "ext4", "btrfs"])
+def test_subtree_mount_uses_lock_in_history_not_mount_root(share, filesystem):
+    share.filesystem = filesystem
+    share.mount_root = "/computers/backups/@hosts/air-bt"
+    history = share.root / "bisq" / "instance"
+    history.mkdir(parents=True)
+    with locking.destination_lock(history):
+        assert (history / locking.DESTINATION_LOCK_NAME).is_file()
+        assert not (share.root / locking.DESTINATION_LOCK_NAME).exists()
+        with pytest.raises(LockError), locking.destination_lock(history):
+            pytest.fail("subtree destination acquired a second lock")
 
 
 @pytest.mark.parametrize("filesystem", ["cifs", "nfs4"])
 def test_share_lock_excludes_separate_process_and_releases_after_error(share, filesystem):
     share.filesystem = filesystem
-    lock = share.root / locking.NETWORK_LOCK_NAME
+    lock = share.root / locking.DESTINATION_LOCK_NAME
     script = (
         "import fcntl,os,sys; fd=os.open(sys.argv[1],os.O_RDWR); "
         "fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)"
@@ -138,7 +155,7 @@ def test_smb_remote_lock_denial_is_distinct_from_anchor_open_failure(
 
 @pytest.mark.parametrize("kind", ["symlink", "directory", "fifo", "hardlink"])
 def test_network_anchor_must_be_a_single_regular_file(share, kind):
-    lock = share.root / locking.NETWORK_LOCK_NAME
+    lock = share.root / locking.DESTINATION_LOCK_NAME
     target = share.root / "operator-file"
     target.write_bytes(b"preserved")
     if kind == "symlink":
@@ -154,12 +171,10 @@ def test_network_anchor_must_be_a_single_regular_file(share, kind):
     assert target.read_bytes() == b"preserved"
 
 
-@pytest.mark.parametrize("failure", ["permission", "unsupported", "read-only", "subtree"])
+@pytest.mark.parametrize("failure", ["permission", "unsupported", "read-only"])
 def test_network_locking_failure_never_falls_back_to_a_local_lock(share, monkeypatch, failure):
     if failure == "read-only":
         share.options = "ro"
-    elif failure == "subtree":
-        share.mount_root = "/hidden/subtree"
     elif failure == "unsupported":
         import fcntl
 
@@ -171,7 +186,7 @@ def test_network_locking_failure_never_falls_back_to_a_local_lock(share, monkeyp
         original = os.open
 
         def denied(path, *args, **kwargs):
-            if Path(path).name == locking.NETWORK_LOCK_NAME:
+            if Path(path).name == locking.DESTINATION_LOCK_NAME:
                 raise PermissionError("anchor inaccessible")
             return original(path, *args, **kwargs)
 
@@ -185,7 +200,7 @@ def test_replaced_lock_anchor_is_rejected_before_history_access(share, monkeypat
     import fcntl
 
     flock = fcntl.flock
-    lock = share.root / locking.NETWORK_LOCK_NAME
+    lock = share.root / locking.DESTINATION_LOCK_NAME
 
     def replaced(fd, operation):
         flock(fd, operation)
@@ -260,19 +275,24 @@ def test_nfs_probe_and_commit_fallback_hold_shared_lock(
         finalize_module.finalize_backup_directory(staging, final)
     assert (final / "archive.tar.zst").read_bytes() == b"archive"
     assert not staging.exists() and len(calls) == no_nfs_noreplace.calls == 2
-    assert set(share.root.iterdir()) == {final, share.root / locking.NETWORK_LOCK_NAME}
+    assert set(share.root.iterdir()) == {final, share.root / locking.DESTINATION_LOCK_NAME}
 
 
-@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("scope", ["none", "history", "parent"])
 @pytest.mark.parametrize("filesystem", ["nfs4", "cifs", "tmpfs"])
-def test_rename_fallback_requires_covering_nfs_lock(share, no_nfs_noreplace, held, filesystem):
+def test_rename_fallback_requires_exact_nfs_history_lock(
+    share, no_nfs_noreplace, scope, filesystem
+):
     from contextlib import nullcontext
 
     share.filesystem = filesystem
-    staging = _staging(share.root)
-    final = share.root / "backup"
-    with nullcontext() if not held else locking.destination_lock(share.root):
-        if held and filesystem == "nfs4":
+    history = share.root / "history"
+    history.mkdir()
+    staging = _staging(history)
+    final = history / "backup"
+    locked = share.root if scope == "parent" else history
+    with nullcontext() if scope == "none" else locking.destination_lock(locked):
+        if scope == "history" and filesystem == "nfs4":
             finalize_module._rename_noreplace(staging, final)
             assert final.is_dir() and not staging.exists()
         else:

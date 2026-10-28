@@ -145,8 +145,9 @@ of the old links, templates and metadata. Core-only and combined layouts are leg
 inputs, not current installation selections.
 
 Provide dedicated disposable user accounts with running user managers and a
-writable supported local filesystem for release validation. Network destinations
-and subtree/nested destination mounts are unsupported.
+writable supported local filesystem for release validation. Use disposable CIFS/NFS
+shares for network checks; subtree mounts are supported, while mounts nested inside
+a destination are rejected.
 
 For each host, record:
 
@@ -187,8 +188,8 @@ For each host, record:
   - `python3`, `tar`, `zstd`, `7z`, `rsync`, `findmnt`, `systemctl`, and
     `systemd-analyze` are present in `PATH`.
 
-- [ ] Confirm the local destination mount and supported filesystem, with no subtree
-  aliases or nested mount points. See [destination locking restrictions](docs/configuration.md#destination-safety-checks).
+- [ ] Confirm the local destination mount and supported filesystem, with no nested
+  mount points inside the destination. See [destination locking restrictions](docs/configuration.md#destination-safety-checks).
 
 ### 3.2 Release-Gate Tests
 
@@ -367,7 +368,9 @@ Run for every destination type and archive format:
 Destination types:
 
 - [ ] Local filesystem
-- [ ] Unsupported network/subtree/nested mounts are rejected before mutation
+- [ ] CIFS/NFS whole-share and subtree mounts with server-backed history locks
+- [ ] Unsupported filesystems, unsafe locking options, and nested destination mounts
+      are rejected before mutation
 
 Archive formats:
 

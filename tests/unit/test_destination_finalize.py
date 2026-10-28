@@ -14,6 +14,7 @@ from vaultkeep.errors import (
     DestinationError,
     DestinationFinalizeError,
 )
+from vaultkeep.locking import DESTINATION_LOCK_NAME
 
 
 def test_destination_probe_checks_nonempty_directory_rename_and_preserves_existing_data(
@@ -35,7 +36,7 @@ def test_destination_probe_checks_nonempty_directory_rename_and_preserves_existi
     probe_destination_writability(tmp_path)
 
     assert len(renames) == 1
-    assert list(tmp_path.iterdir()) == [existing]
+    assert set(tmp_path.iterdir()) == {existing, tmp_path / DESTINATION_LOCK_NAME}
     assert existing.read_bytes() == b"preserve"
 
 
@@ -62,7 +63,8 @@ def test_destination_probe_reports_permission_failures_and_cleanup_paths(
     message = str(caught.value)
     assert str(tmp_path) in message
     assert "denied" in message
-    leftovers = list(tmp_path.iterdir())
+    assert (tmp_path / DESTINATION_LOCK_NAME).is_file()
+    leftovers = [path for path in tmp_path.iterdir() if path.name != DESTINATION_LOCK_NAME]
     if operation in {"unlink", "rmdir"}:
         assert len(leftovers) == 1
         assert f"Cannot remove destination probe {leftovers[0]}" in message
@@ -106,7 +108,7 @@ def test_destination_probe_never_removes_an_existing_rename_target(
     with pytest.raises(DestinationError, match="atomically rename"):
         probe_destination_writability(tmp_path)
 
-    assert list(tmp_path.iterdir()) == collisions
+    assert set(tmp_path.iterdir()) == {*collisions, tmp_path / DESTINATION_LOCK_NAME}
     assert (collisions[0] / "operator-data").read_bytes() == b"preserve"
 
 

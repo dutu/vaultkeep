@@ -385,8 +385,10 @@ SHA-256 displays bytes read and percentage when the compressed size is known,
 using the existing checksum read. Archive operations have no byte percentages.
 Successful checks update the display without adding permanent lines. Noninteractive
 logs print concise phase transitions and coalesce updates into 10-second heartbeats.
-For `per_file` jobs, discovery indices apply to each file's history; archive indices
-cover all eligible backups across those histories.
+For `per_file` jobs, both phases run for one locked child history at a time;
+indices and phase counts apply to that history. The final table and verified count
+include all histories. A busy child is reported as a failure while other histories
+continue.
 
 The final stdout table reports `Manifest`, `SHA-256`, and `Archive` separately:
 
