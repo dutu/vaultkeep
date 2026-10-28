@@ -65,6 +65,75 @@ def test_empty_system_and_user_launcher_inventories_can_pause_and_resume(
     assert listings[1][:3] == ["runuser", "-u", "alice"]
 
 
+def test_summary_lists_owners_instances_and_automation_outcomes(helper, tmp_path, capsys):
+    journal = tmp_path / "journal.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "accounts": [
+                    {
+                        "account": None,
+                        "active": ["vaultkeep@documents.timer"],
+                        "plan": {"jobs": [{"unit": "vaultkeep@documents.timer", "monitor": False}]},
+                    },
+                    {
+                        "account": "alice",
+                        "active": ["vaultkeep-trigger@wallet-scope123.service"],
+                        "plan": {
+                            "jobs": [
+                                {
+                                    "unit": "vaultkeep-trigger@wallet-scope123.service",
+                                    "monitor": True,
+                                },
+                                {
+                                    "unit": "vaultkeep-trigger@paused-scope456.service",
+                                    "monitor": True,
+                                },
+                                {"unit": "vaultkeep@documents.timer", "monitor": False},
+                                {
+                                    "unit": "vaultkeep@archive-repo-nas-abc123.timer",
+                                    "monitor": False,
+                                },
+                                {
+                                    "unit": "vaultkeep@archive-repo-usb-def456.timer",
+                                    "monitor": False,
+                                },
+                            ]
+                        },
+                    },
+                ]
+            }
+        )
+    )
+
+    helper.summary(journal)
+
+    output = capsys.readouterr().out
+    assert output.startswith("Managed jobs refreshed and validated: 6\n\n")
+    assert [line.split() for line in output.splitlines()[2:]] == [
+        ["Owner", "Job", "instance", "Automation", "Outcome"],
+        ["alice", "archive-repo-nas-abc123", "Schedule", "Left", "inactive"],
+        ["alice", "archive-repo-usb-def456", "Schedule", "Left", "inactive"],
+        ["alice", "documents", "Schedule", "Left", "inactive"],
+        ["alice", "paused-scope456", "Trigger", "Left", "inactive"],
+        ["alice", "wallet-scope123", "Trigger", "Resumed"],
+        ["root", "documents", "Schedule", "Resumed"],
+    ]
+
+
+def test_summary_reports_no_installed_jobs(helper, tmp_path, capsys):
+    journal = tmp_path / "journal.json"
+    journal.write_text(
+        json.dumps(
+            {"accounts": [{"account": name, "plan": {"jobs": []}} for name in (None, "alice")]}
+        )
+    )
+
+    helper.summary(journal)
+
+    assert capsys.readouterr().out == "No existing managed jobs to refresh.\n"
+
+
 def test_user_launchers_preserve_all_activity_enablement_combinations(
     helper, monkeypatch, tmp_path
 ):

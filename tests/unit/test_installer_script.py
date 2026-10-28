@@ -449,6 +449,8 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str], vali
     result = run_installer(host, "install")
     assert result.stdout.startswith("Vaultkeep — Installation\n\n")
     assert "Result: INSTALLED" in result.stdout
+    assert "No existing managed jobs to refresh." in result.stdout
+    assert "Managed jobs refreshed and validated:" not in result.stdout
     assert result.stderr == ""
     assert "INFO:" not in result.stdout and "Looking in links" not in result.stdout
     assert "Successfully installed" not in result.stdout
@@ -1340,26 +1342,37 @@ def test_schema_change_after_preflight_is_still_rejected_by_refresh(
 
 
 @pytest.mark.parametrize("mode", ["install", "update"])
+@pytest.mark.parametrize("active", [True, False])
 def test_installer_pauses_refreshes_validates_and_resumes_existing_jobs(
-    installed, valid_config, monkeypatch, mode
+    installed, valid_config, monkeypatch, mode, active
 ):
-    config, timer = managed_timer(installed, valid_config, monkeypatch)
+    config, timer = managed_timer(installed, valid_config, monkeypatch, active=active)
     valid_config["schedule"]["window"] = "02:00-04:00"
     config.write_text(json.dumps(valid_config))
     before = manifest(installed)
     Path(installed["HOST_LOG"]).write_text("")
     result = run_installer(installed, mode)
-    assert "previously active schedules resumed" in result.stdout
+    assert "Managed jobs refreshed and validated: 1" in result.stdout
+    row = next(line for line in result.stdout.splitlines() if line.startswith("root "))
+    assert row.split() == [
+        "root",
+        "app",
+        "Schedule",
+        *(["Resumed"] if active else ["Left", "inactive"]),
+    ]
+    assert result.stdout.index("Result: INSTALLED") < result.stdout.index(row)
     assert "02:00:00" in timer.read_text()
     assert manifest(installed) == before
     calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
-    assert ["stop", "vaultkeep@app.timer"] in calls
-    assert ["start", "vaultkeep@app.timer"] in calls
-    assert (
-        calls.index(["stop", "vaultkeep@app.timer"])
-        < calls.index(["daemon-reload"])
-        < calls.index(["start", "vaultkeep@app.timer"])
-    )
+    if active:
+        assert (
+            calls.index(["stop", "vaultkeep@app.timer"])
+            < calls.index(["daemon-reload"])
+            < calls.index(["start", "vaultkeep@app.timer"])
+        )
+    else:
+        assert ["stop", "vaultkeep@app.timer"] not in calls
+        assert ["start", "vaultkeep@app.timer"] not in calls
     assert not list(Path(installed["VAULTKEEP_INSTALL_PREFIX"]).glob(".maintenance.*"))
 
 
@@ -1489,6 +1502,8 @@ def test_resume_failure_keeps_committed_job_updates_and_resume_journal(
     assert result.returncode != 0
     assert "02:00:00" in timer.read_text()
     assert "deployment is retained; resume list:" in result.stderr
+    assert "Managed jobs refreshed and validated:" not in result.stdout
+    assert "Result: INSTALLED" not in result.stdout
     prefix = Path(installed["VAULTKEEP_INSTALL_PREFIX"])
     assert list(prefix.glob(".maintenance.*/journal.json"))
     retry = run_installer(installed, "install", check=False)
@@ -2097,6 +2112,13 @@ def test_restarting_monitor_reaches_yaml_validation_then_updates_after_correctio
     config_before = config.read_bytes(), config.stat().st_mtime_ns
     success = run_installer(installed, "update", source=source)
     assert "Runtime safety checks" in success.stdout and "Result: INSTALLED" in success.stdout
+    row = next(line for line in success.stdout.splitlines() if line.startswith("bisquser "))
+    assert row.split() == [
+        "bisquser",
+        unit.removeprefix("vaultkeep-trigger@").removesuffix(".service"),
+        "Trigger",
+        "Resumed",
+    ]
     assert manifest(installed)["version"] == "0.3.0"
     assert fragment.read_text() == rendered
     assert fragment.stat().st_mode & 0o777 == 0o600

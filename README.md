@@ -105,6 +105,9 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
    `/usr/local/bin/vaultkeep`. A fresh install starts no backups or monitors and
    enables no jobs or lingering. Reinstallation/update automatically pauses,
    refreshes, validates, and resumes previously active managed automation.
+   The success summary lists each refreshed timer or trigger monitor by owner and
+   job instance, showing whether it resumed or was left inactive. When none are
+   installed, it reports `No existing managed jobs to refresh.`
 
    Both `install` and `update` check existing system and user jobs before activation
    or changes to schedules. Invalid configurations abort installation and report

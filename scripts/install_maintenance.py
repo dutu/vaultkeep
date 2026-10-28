@@ -435,6 +435,37 @@ def resume(path: Path) -> None:
         fail("\n".join(errors))
 
 
+def summary(path: Path) -> None:
+    """Report refreshed launcher instances after successful validation and resumption."""
+    document = json.loads(path.read_text())
+    rows = []
+    for spec in document["accounts"]:
+        for job in spec["plan"]["jobs"]:
+            instance = (
+                job["unit"]
+                .split("@", 1)[1]
+                .removesuffix(".service" if job["monitor"] else ".timer")
+            )
+            rows.append(
+                (
+                    spec["account"] or "root",
+                    instance,
+                    "Trigger" if job["monitor"] else "Schedule",
+                    "Resumed" if job["unit"] in spec["active"] else "Left inactive",
+                )
+            )
+    if not rows:
+        print("No existing managed jobs to refresh.")
+        return
+    print(f"Managed jobs refreshed and validated: {len(rows)}\n")
+    headers = ("Owner", "Job instance", "Automation", "Outcome")
+    widths = [max(len(row[index]) for row in [headers, *rows]) for index in range(len(headers))]
+    for row in [headers, *sorted(rows)]:
+        print(
+            "  ".join(value.ljust(width) for value, width in zip(row, widths, strict=True)).rstrip()
+        )
+
+
 def main() -> None:
     action, *args = sys.argv[1:]
     if action == "check-launchers":
@@ -459,6 +490,8 @@ def main() -> None:
         restore(path)
     elif action == "resume":
         resume(path)
+    elif action == "summary":
+        summary(path)
     else:
         fail(f"unknown maintenance operation: {action}")
 

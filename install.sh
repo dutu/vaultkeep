@@ -18,6 +18,7 @@ UNIT_VALIDATION_DIR=""
 MAINTENANCE_DIR=""
 MAINTENANCE_LOCKED=0
 JOBS_REFRESH_STARTED=0
+MANAGED_JOBS_SUMMARY=""
 
 VK_PREFIX=${VAULTKEEP_INSTALL_PREFIX:-/opt/vaultkeep}
 VK_CONFIG_ROOT=${VAULTKEEP_CONFIG_ROOT:-/etc/vaultkeep}
@@ -248,7 +249,7 @@ installation_result() {
     report_field Version "$version"
     report_field Executable "$VK_BIN_LINK"
     report_field 'Previous release' "$([[ -n "$previous" ]] && echo retained || echo none)"
-    printf '\nExisting managed jobs refreshed and validated; previously active schedules resumed.\n' >&3
+    printf '\n%s\n' "$MANAGED_JOBS_SUMMARY" >&3
     printf 'Diagnostics: %s\n' "$INSTALL_LOG" >&3
 }
 
@@ -674,6 +675,9 @@ resume_schedules() {
             error "could not resume all schedules; deployment is retained; resume list: $MAINTENANCE_DIR/journal.json"
             return 1
         }
+        if [[ "${1:-}" == --report ]]; then
+            MANAGED_JOBS_SUMMARY=$(maintenance summary)
+        fi
     fi
     [[ -z "$MAINTENANCE_DIR" ]] || rm -rf "$MAINTENANCE_DIR"
     MAINTENANCE_DIR=""
@@ -977,7 +981,7 @@ install_or_update() {
         install_examples
         finish_commit_transaction
         stage_start "Resume schedules"
-        resume_schedules
+        resume_schedules --report
         installation_result "$version" "$previous_release"
         return
     fi
@@ -1010,7 +1014,7 @@ install_or_update() {
     fi
     finish_commit_transaction
     stage_start "Resume schedules"
-    resume_schedules
+    resume_schedules --report
     installation_result "$version" "$previous_release"
 }
 
