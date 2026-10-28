@@ -7,10 +7,15 @@ import logging
 import uuid
 from dataclasses import dataclass
 
+from vaultkeep.application import (
+    Observation,
+    ProcessProvider,
+    PsutilProcessProvider,
+    detect_spec,
+    matcher_from_canonical,
+)
 from vaultkeep.backup.results import classify_command
 from vaultkeep.trigger.childproc import ChildRunner, RealChildRunner
-from vaultkeep.trigger.config import matcher_from_canonical
-from vaultkeep.trigger.detection import detect_spec
 from vaultkeep.trigger.errors import (
     EXIT_BACKUP_FAILED,
     EXIT_BLOCKED,
@@ -18,14 +23,7 @@ from vaultkeep.trigger.errors import (
     EXIT_OK,
     IntegrationError,
 )
-from vaultkeep.trigger.models import (
-    AttemptOutcome,
-    Observation,
-    Receipt,
-    Request,
-    utc_now,
-)
-from vaultkeep.trigger.process import ProcessProvider, PsutilProcessProvider
+from vaultkeep.trigger.models import AttemptOutcome, Receipt, Request, utc_now
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.version import DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
 from vaultkeep.version import installed_version

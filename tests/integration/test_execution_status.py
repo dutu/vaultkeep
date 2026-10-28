@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import shlex
 import signal
 import subprocess
@@ -158,7 +157,6 @@ def test_triggered_backup_categories_are_independent(job, notification_log, back
         "name": "electrum",
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/app/run_app"}]},
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
     document["trigger"] = {"enabled": True, "confirm_seconds": 1.0}
     job.write_text(json.dumps(document))
@@ -227,7 +225,6 @@ def test_all_initiators_deliver_start_and_diagnostic_failure_before_exit(
         document = json.loads(job.read_text())
         document["application"] = {
             "name": "electrum",
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
             "data_dir": str(job.parent / "source"),
             "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/app/run_app"}]},
         }

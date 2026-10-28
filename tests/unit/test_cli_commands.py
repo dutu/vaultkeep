@@ -69,7 +69,7 @@ def test_version_does_not_require_a_command(capsys: Any) -> None:
 
 
 def test_schema_only_validation_accepts_disabled_template(capsys: Any) -> None:
-    assert main(["--config", str(EXAMPLE_CONFIG), "validate", "--schema-only"]) == 0
+    assert main(["--user", "--config", str(EXAMPLE_CONFIG), "validate", "--schema-only"]) == 0
     output = capsys.readouterr().out
     assert "  Configuration   VALID" in output
     assert "  Schedule  DISABLED\n  Trigger   DISABLED" in output
@@ -81,7 +81,7 @@ def test_schema_only_validation_uses_config_path(tmp_path: Path, capsys: Any) ->
     lines = ["config_version: 2", "job:", "  id: app"]
     config.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    assert main(["--config", str(config), "validate", "--schema-only"]) == 3
+    assert main(["--user", "--config", str(config), "validate", "--schema-only"]) == 3
     assert "Configuration contains" in capsys.readouterr().err
 
 
@@ -89,7 +89,7 @@ def test_invalid_command_configuration_maps_to_exit_three(tmp_path: Path, capsys
     config = tmp_path / "app.yaml"
     config.write_text("not: a-complete-config\n", encoding="utf-8")
 
-    assert main(["--config", str(config), "validate", "--schema-only"]) == 3
+    assert main(["--user", "--config", str(config), "validate", "--schema-only"]) == 3
     assert "Configuration contains" in capsys.readouterr().err
 
 
@@ -136,7 +136,7 @@ def local_job(tmp_path: Path, valid_config: dict[str, Any]) -> Path:
 def test_full_validation_probes_destination_and_leaves_no_artifacts(
     local_job: Path, capsys: Any
 ) -> None:
-    assert main(["--config", str(local_job), "validate"]) == 0
+    assert main(["--user", "--config", str(local_job), "validate"]) == 0
     output = capsys.readouterr().out
     assert "  Backup paths   OK" in output
     assert "  Schedule  DISABLED\n  Trigger   DISABLED" in output
@@ -183,7 +183,7 @@ def test_schema_only_validation_never_probes_destination(
     monkeypatch.setattr(workflow, "_mounted_filesystem_type", unexpected_mount_check)
     (local_job.parent / "destination").rmdir()
 
-    assert main(["--config", str(local_job), "validate", "--schema-only"]) == 0
+    assert main(["--user", "--config", str(local_job), "validate", "--schema-only"]) == 0
 
 
 @pytest.mark.parametrize("command", [["list"], ["verify"], ["prune", "--dry-run"]])
@@ -195,7 +195,7 @@ def test_read_only_commands_never_probe_destination(
 
     monkeypatch.setattr(workflow, "probe_destination_writability", unexpected_probe)
 
-    assert main(["--config", str(local_job), *command]) == 0
+    assert main(["--user", "--config", str(local_job), *command]) == 0
     assert list((local_job.parent / "destination").iterdir()) == []
 
 
@@ -209,11 +209,11 @@ def test_verify_reports_stages_without_changing_verification_result(
 
     if malformed:
         with pytest.raises(DestinationError, match="malformed"):
-            workflow.verify_backups(local_job, progress=stages.append)
+            workflow.verify_backups(local_job, progress=stages.append, user_mode=True)
     else:
-        assert workflow.verify_backups(local_job, progress=stages.append) == workflow.CommandResult(
-            "verify", "verified", backups=0
-        )
+        assert workflow.verify_backups(
+            local_job, progress=stages.append, user_mode=True
+        ) == workflow.CommandResult("verify", "verified", backups=0)
 
     assert stages == [
         "Loading and validating configuration",
@@ -416,7 +416,7 @@ def test_shared_lifecycle_actions_provide_help(command, capsys):
 
 
 def test_verify_empty_destination_reports_zero_counts(local_job, capsys):
-    assert main(["--config", str(local_job), "verify"]) == 0
+    assert main(["--user", "--config", str(local_job), "verify"]) == 0
     captured = capsys.readouterr()
     assert "Found 0 backups" in captured.err
     assert "Verified:  0/0 backups\nDuration:" in captured.out

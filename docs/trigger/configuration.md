@@ -13,7 +13,6 @@ schedule:
   enabled: false
 application:
   name: electrum
-  user: alice
   data_dir: /home/alice/.electrum
   matcher:
     entrypoints:
@@ -54,8 +53,10 @@ Application-specific setup and multiple-instance guidance:
 
 Unknown keys are rejected. Booleans must be booleans; timing values must be finite
 positive numbers. Application identity is configured once in top-level `application`:
-`name`, `user`, `data_dir`, and `matcher` are all required when that section exists.
-An enabled Trigger requires it, as does `consistency.mode: application_offline`.
+`name`, `data_dir`, and `matcher` are required when that section exists. `name` selects
+application-specific directory detection. Omit `user`: the monitor and worker use
+their execution account. An explicit `application.user` is unsupported in user mode.
+An enabled Trigger requires `application`, as does `consistency.mode: application_offline`.
 See [shared consistency settings](../configuration.md#consistency-and-shared-application-identity).
 
 The backup job's `job.id` identifies the monitored instance. Its `logging.level`

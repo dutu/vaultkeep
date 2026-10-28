@@ -313,6 +313,12 @@ perform one catch-up activation after downtime.
 <a id="start-trigger-explicitly"></a>
 ### Trigger
 
+Omit `application.user` in user-mode YAML; Vaultkeep derives the application owner
+from the job execution account. Remove that field from existing user-mode jobs
+before updating. Keep `application.name`: it selects application-specific
+data-directory detection rules. Root-mode offline backups may use `application.user`
+to target another account. See [application identity](docs/configuration.md#consistency-and-shared-application-identity).
+
 Trigger supports **non-root user mode only**. Run as the application owner with
 `--user`, without `sudo`. It needs an active systemd user manager and a private,
 account-owned `XDG_RUNTIME_DIR`; a graphical desktop is optional.

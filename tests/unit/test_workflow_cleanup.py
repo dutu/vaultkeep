@@ -208,7 +208,7 @@ def test_parent_flush_failure_preserves_committed_backup(
     (backup,) = destination.iterdir()
     assert not backup.name.startswith("~$.partial-")
     assert len(list(backup.iterdir())) == 3
-    assert workflow.verify_backups(job).backups == 1
+    assert workflow.verify_backups(job, user_mode=True).backups == 1
 
 
 def test_failure_after_commit_preserves_backup(job: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,4 +223,4 @@ def test_failure_after_commit_preserves_backup(job: Path, monkeypatch: pytest.Mo
 
     (backup,) = (job.parent / "backups").iterdir()
     assert not backup.name.startswith("~$.partial-")
-    assert workflow.verify_backups(job).backups == 1
+    assert workflow.verify_backups(job, user_mode=True).backups == 1

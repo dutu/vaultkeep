@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import json
-import pwd
 import re
 import subprocess
 from dataclasses import replace
 
 import pytest
 
+from vaultkeep.application import Observation
 from vaultkeep.cli import main, validation
 from vaultkeep.schedule import TimerManager, TimerPaths
 from vaultkeep.state.identity import job_identity_hash, job_state_path
 from vaultkeep.state.models import LastRunState, LastSuccessfulBackup, LocalState
 from vaultkeep.trigger.config import load_config
 from vaultkeep.trigger.errors import BlockedError
-from vaultkeep.trigger.models import InstanceState, Observation, ObservationRecord, utc_now
+from vaultkeep.trigger.models import InstanceState, ObservationRecord, utc_now
 from vaultkeep.trigger.state import StateStore
 
 
@@ -35,7 +35,8 @@ def health_job(tmp_path, valid_config, monkeypatch):
     valid_config["destination"].update(root=str(destination))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(validation, "state_root", lambda _scope: tmp_path / "trigger-state")
-    monkeypatch.setattr(validation.os, "geteuid", lambda: 1000)
+    owner_uid = source.stat().st_uid
+    monkeypatch.setattr(validation.os, "geteuid", lambda: owner_uid)
     return tmp_path / "app.yaml", valid_config
 
 
@@ -47,7 +48,6 @@ def write_job(health_job, *, trigger=False, schedule=False):
             "name": "bisq",
             "data_dir": str(path.parent / "source"),
             "matcher": {"entrypoints": [{"kind": "java_main", "value": "bisq.Main"}]},
-            "user": pwd.getpwuid((path.parent / "source").stat().st_uid).pw_name,
         }
         data["trigger"] = {"enabled": True}
     path.write_text(json.dumps(data))
@@ -174,7 +174,11 @@ def test_trigger_rejects_system_mode_or_root(health_job, monkeypatch, capsys, us
     monkeypatch.setattr(validation, "runtime_preflight", unexpected)
     monkeypatch.setattr(validation, "_unit_properties", unexpected)
     assert main([*(["--user"] if user_mode else []), "--config", str(path), "validate"]) != 0
-    assert "unsupported" in report_text(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    assert (
+        "unsupported" in report_text(captured.out)
+        or "System execution requires root" in captured.err
+    )
 
 
 def test_schema_only_skips_all_automation_checks(health_job, monkeypatch, capsys):
@@ -184,7 +188,7 @@ def test_schema_only_skips_all_automation_checks(health_job, monkeypatch, capsys
         pytest.fail("schema-only validation must not inspect runtime or services")
 
     monkeypatch.setattr(validation, "_unit_properties", unexpected)
-    monkeypatch.setattr(validation, "validate_job", unexpected)
+    monkeypatch.setattr(validation, "validate_prepared_job", unexpected)
     monkeypatch.setattr(validation, "runtime_preflight", unexpected)
     assert main(["--config", str(path), "validate", "--schema-only"]) == 0
     assert "Runtime checks: skipped" in report_text(capsys.readouterr().out)
@@ -203,6 +207,7 @@ def test_backup_preflight_does_not_reenter_automation_health(health_job, monkeyp
 
 @pytest.mark.parametrize("user_mode", [False, True])
 @pytest.mark.parametrize("installed", [False, True])
+@pytest.mark.usefixtures("system_execution")
 def test_schedule_checks_selected_manager_and_installation(
     health_job, monkeypatch, capsys, user_mode, installed
 ):
@@ -491,3 +496,38 @@ def test_preflight_warning_is_visible_at_error_log_level(health_job, monkeypatch
     assert "WARNING" in output.out
     assert output.out.count("executable version differs") == 1
     assert output.err == ""
+
+
+@pytest.mark.parametrize("activation", ["schedule", "trigger"])
+def test_full_health_report_reuses_one_prepared_application(
+    health_job, monkeypatch, capsys, activation
+):
+    from vaultkeep import validation as preparation
+
+    path = write_job(health_job, trigger=True)
+    data = json.loads(path.read_text())
+    data["trigger"]["enabled"] = activation == "trigger"
+    data["schedule"]["enabled"] = activation == "schedule"
+    path.write_text(json.dumps(data))
+    manager = TimerManager(
+        TimerPaths(path.parent, path.parent / "units", path.parent / "registry"), user_mode=True
+    )
+    monkeypatch.setattr(manager, "require_environment", lambda: None)
+    monkeypatch.setattr(manager, "_run", lambda *_a, **_kw: "")
+    monkeypatch.setattr(validation, "TimerManager", lambda **_kw: manager)
+    monkeypatch.setattr(validation, "runtime_preflight", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        validation, "_unit_properties", lambda *_a, **_kw: {"LoadState": "not-found"}
+    )
+    resolver = preparation.resolve_application
+    calls = []
+
+    def resolve(*args, **kwargs):
+        result = resolver(*args, **kwargs)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(preparation, "resolve_application", resolve)
+    assert main(["--user", "--config", str(path), "validate"]) != 0  # automation is not installed
+    assert len(calls) == 1
+    assert "Configuration: VALID" in report_text(capsys.readouterr().out)

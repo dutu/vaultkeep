@@ -12,6 +12,21 @@ from packaging.tags import sys_tags
 from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
 
 
+@pytest.fixture
+def system_execution(monkeypatch):
+    """Authorize disposable system-scope unit tests without changing filesystem UIDs."""
+    from vaultkeep import application, schedule, validation
+    from vaultkeep.backup import workflow
+
+    uid = os.geteuid()
+
+    def owner(user_mode, *, config_path=None):
+        return (uid, None) if user_mode else (0, 0)
+
+    for module in (application, schedule, validation, workflow):
+        monkeypatch.setattr(module, "runtime_owner", owner)
+
+
 @pytest.fixture(scope="session")
 def installer_wheelhouse() -> Path:
     """Skip wheel-installing tests unless the locked wheels support this interpreter."""

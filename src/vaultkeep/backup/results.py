@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from vaultkeep.diagnostics import concise
 from vaultkeep.errors import (
+    ApplicationIdentityError,
     ConfigurationError,
     DestinationCommitDurabilityError,
     DestinationError,
@@ -30,6 +31,7 @@ def failure_exit_code(error: BaseException) -> int:
         return 130
     for kind, code in (
         (ConfigurationError, 3),
+        (ApplicationIdentityError, 3),
         (StateError, 15),
         (DestinationError, 5),
         (HookError, 11),

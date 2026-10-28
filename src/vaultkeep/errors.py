@@ -64,9 +64,11 @@ class SourceDiscoveryError(VaultkeepError):
 class ApplicationIdentityError(SourceDiscoveryError):
     """An application identity cannot be resolved from a configuration field."""
 
-    def __init__(self, issue: ValidationIssue) -> None:
+    def __init__(self, issue: ValidationIssue, *, config_path: Path | None = None) -> None:
         self.issue = issue
-        super().__init__(issue.message)
+        self.config_path = config_path.absolute() if config_path is not None else None
+        location = f"{self.config_path}: " if self.config_path is not None else ""
+        super().__init__(f"{location}{issue.dotted_path}: {issue.message}")
 
 
 class SourceHashError(VaultkeepError):

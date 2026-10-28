@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from tests.unit import test_workflow_cleanup as cleanup_fixtures
+from vaultkeep.application import resolve_application
 from vaultkeep.backup import workflow
 from vaultkeep.backup.status import backup_status
 from vaultkeep.config.models import JobConfig
@@ -62,7 +62,6 @@ def offline(job):
         consistency={"mode": "application_offline"},
         application={
             "name": "bisq",
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
             "data_dir": str(job.parent / "source"),
             "matcher": {"entrypoints": [{"kind": "java_main", "value": "test.App"}]},
         },
@@ -91,14 +90,15 @@ def test_policy_configuration_matrix(valid_config):
 
 def test_replacement_class_excludes_format_retention_and_matcher(job):
     config = offline(job)
-    identity = replacement_identity(config)
+    resolved = resolve_application(config.application, user_mode=True)
+    identity = replacement_identity(config, application=resolved)
     changed = config.model_copy(
         update={
             "archive": config.archive.model_copy(update={"format": "tar.7z"}),
             "retention": config.retention.model_copy(update={"daily": 90}),
         }
     )
-    assert replacement_identity(changed) == identity
+    assert replacement_identity(changed, application=resolved) == identity
     app = config.application
     changed = config.model_copy(
         update={
@@ -107,9 +107,16 @@ def test_replacement_class_excludes_format_retention_and_matcher(job):
             )
         }
     )
-    assert replacement_identity(changed) == identity
-    assert calculate_config_fingerprint(changed) != calculate_config_fingerprint(config)
-    assert replacement_identity(config.model_copy(update={"exclude": ["new-pattern"]})) != identity
+    assert replacement_identity(changed, application=resolved) == identity
+    assert calculate_config_fingerprint(
+        changed, application=resolve_application(changed.application, user_mode=True)
+    ) != calculate_config_fingerprint(config, application=resolved)
+    assert (
+        replacement_identity(
+            config.model_copy(update={"exclude": ["new-pattern"]}), application=resolved
+        )
+        != identity
+    )
     assert (
         replacement_identity(
             config.model_copy(
@@ -125,8 +132,8 @@ def test_offline_checks_bound_source_reads_and_release_restart(job, monkeypatch)
     events = []
     original_snapshot, original_build = workflow.discover_sources, workflow.build_archive
 
-    def check(config, *, owner_uid):
-        assert owner_uid == os.geteuid()
+    def check(config, *, application):
+        assert application.owner_uid == os.geteuid()
         events.append("offline")
 
     def snapshot(config):
@@ -192,7 +199,7 @@ def test_offline_failure_releases_once_and_preserves_existing(job, monkeypatch, 
 
 def test_files_mode_never_inspects_processes(job, monkeypatch):
     monkeypatch.setattr(
-        "vaultkeep.trigger.process.PsutilProcessProvider.snapshot",
+        "vaultkeep.application.PsutilProcessProvider.snapshot",
         lambda *_: pytest.fail("files policy inspected processes"),
     )
     assert run(job).result == "created"
@@ -223,11 +230,11 @@ def test_shared_lock_covers_aliases_ancestors_and_all_mutators(job):
         with pytest.raises(LockError):
             run(job)
         with pytest.raises(LockError):
-            workflow.verify_backups(job)
+            workflow.verify_backups(job, user_mode=True)
         with pytest.raises(LockError):
-            workflow.prune_backups(job, dry_run=False)
-        assert workflow.prune_backups(job, dry_run=True).result == "planned"
-        assert workflow.list_backups(job).backups == ()
+            workflow.prune_backups(job, dry_run=False, user_mode=True)
+        assert workflow.prune_backups(job, dry_run=True, user_mode=True).result == "planned"
+        assert workflow.list_backups(job, user_mode=True).backups == ()
         with pytest.raises(LockError), destination_lock(job.parent):
             pass
         child = Path(config.destination.root) / "child"
@@ -281,7 +288,7 @@ def test_superseded_suspect_survives_failed_delete_without_forcing_archive(job, 
         job_identity_hash(job, "app"),
     )
     assert report["previous"]["result"] == "UNCHANGED"
-    assert workflow.prune_backups(job, dry_run=False).removed == 1
+    assert workflow.prune_backups(job, dry_run=False, user_mode=True).removed == 1
     assert result.archive_path.is_file() and not first.exists()
 
 
@@ -293,7 +300,7 @@ def test_corrupt_replacement_prevents_every_deletion(job, monkeypatch):
         second = run(job).archive_path
     second.write_bytes(b"corrupt")
     with pytest.raises(PruneError, match="corrupt"):
-        workflow.prune_backups(job, dry_run=False)
+        workflow.prune_backups(job, dry_run=False, user_mode=True)
     assert first.is_file() and second.is_file()
     assert read_suspect_marker(second.parent) is not None
     assert run(job).result == "created"
@@ -351,7 +358,7 @@ def test_incompatible_history_does_not_force_endless_creation_or_cleanup(job):
     assert run(job).result == "created"
     assert first.is_file()
     assert run(job).result == "unchanged"
-    assert workflow.prune_backups(job, dry_run=False).removed == 0
+    assert workflow.prune_backups(job, dry_run=False, user_mode=True).removed == 0
 
 
 @pytest.mark.parametrize("failure", ["state", "success-hook"])
@@ -397,7 +404,7 @@ def test_unsupported_matching_manifest_blocks_cleanup(job):
         run(job)
     assert list((job.parent / "backups").rglob("*.tar.zst")) == [first]
     with pytest.raises(PruneError, match="malformed"):
-        workflow.prune_backups(job, dry_run=False)
+        workflow.prune_backups(job, dry_run=False, user_mode=True)
 
 
 def test_child_snapshot_must_match_frozen_policy(job, monkeypatch):
@@ -419,11 +426,11 @@ def test_explicit_verify_marks_corruption_but_operational_errors_do_not(job, mon
             lambda *args, **kwargs: (_ for _ in ()).throw(ArchiveVerificationError("tool missing")),
         )
         with pytest.raises(ArchiveVerificationError, match="tool missing"):
-            workflow.verify_backups(job)
+            workflow.verify_backups(job, user_mode=True)
     assert read_suspect_marker(first.parent) is None
     first.write_bytes(b"corrupt")
     with pytest.raises(ArchiveVerificationError, match="checksum"):
-        workflow.verify_backups(job)
+        workflow.verify_backups(job, user_mode=True)
     assert read_suspect_marker(first.parent) is not None
 
 
@@ -437,12 +444,12 @@ def test_invalid_markers_are_barriers_and_previews_do_not_repair(job, payload):
     marker = first.parent / SUSPECT_MARKER_NAME
     marker.write_bytes(payload)
     before = {path: path.read_bytes() for path in first.parent.iterdir()}
-    inventory = workflow.list_backups(job)
+    inventory = workflow.list_backups(job, user_mode=True)
     assert inventory.malformed and not inventory.backups
     with pytest.raises(PruneError, match="malformed"):
-        workflow.prune_backups(job, dry_run=True)
+        workflow.prune_backups(job, dry_run=True, user_mode=True)
     with pytest.raises(PruneError, match="malformed"):
-        workflow.prune_backups(job, dry_run=False)
+        workflow.prune_backups(job, dry_run=False, user_mode=True)
     assert {path: path.read_bytes() for path in first.parent.iterdir()} == before
 
 
@@ -551,13 +558,12 @@ def test_status_keeps_local_reporting_when_application_account_is_unavailable(jo
     paths = workflow.WorkflowPaths(job.parent / "state", job.parent / "cache", job.parent / "locks")
     run(job)
     config = offline(job)
-    with pytest.raises(SourceDiscoveryError):
-        configure(
-            job,
-            application=config.application.model_dump()
-            | {"user": "vaultkeep-test-account-does-not-exist"},
-            trigger={"enabled": True},
-        )
+    configure(
+        job,
+        application=config.application.model_dump()
+        | {"user": "vaultkeep-test-account-does-not-exist"},
+        trigger={"enabled": True},
+    )
     monkeypatch.setattr(status, "user_workflow_paths", lambda: paths)
     report = status.collect_status(job, user_mode=True, runtime_params={})
     assert report["backup"]["previous"]["result"] == "SUCCESS"
@@ -566,12 +572,11 @@ def test_status_keeps_local_reporting_when_application_account_is_unavailable(jo
 
 
 def test_offline_inspection_failure_is_not_absence(job, monkeypatch):
-    from vaultkeep.trigger.detection import DetectionResult
-    from vaultkeep.trigger.models import Observation
+    from vaultkeep.application import DetectionResult, Observation
 
     offline(job)
     monkeypatch.setattr(
-        "vaultkeep.trigger.detection.detect_spec",
+        "vaultkeep.application.detect_spec",
         lambda **kwargs: DetectionResult(
             Observation.INSPECTION_UNAVAILABLE, reason="process metadata inaccessible"
         ),
@@ -621,7 +626,7 @@ def test_explicit_per_file_prune_cleans_valid_history_despite_unsafe_sibling(job
         if path.is_file()
     }
     with pytest.raises(PruneError, match="affected histories") as caught:
-        workflow.prune_backups(job, dry_run=False)
+        workflow.prune_backups(job, dry_run=False, user_mode=True)
     assert not old["data"].exists()
     assert len(caught.value.removed) == 1
     assert {
@@ -655,7 +660,7 @@ def test_shared_lock_rejects_mount_layouts_that_hide_ancestor_overlap(job, monke
         locking.destination_lock(destination),
     ):
         pytest.fail("unsupported overlap acquired a mutation lock")
-    assert workflow.prune_backups(job, dry_run=True).result == "planned"
+    assert workflow.prune_backups(job, dry_run=True, user_mode=True).result == "planned"
 
 
 def test_automatic_cleanup_cannot_remove_new_archive_on_exact_timestamp_tie(job, monkeypatch):

@@ -82,7 +82,7 @@ def test_sidecar_disagrees_with_manifest_marks_replacement_before_deletion(job, 
     sidecar = replacement.with_suffix(replacement.suffix + ".sha256")
     sidecar.write_text("0" * 64 + f"  {replacement.name}\n")
     with pytest.raises(PruneError, match="immutable manifest"):
-        workflow.prune_backups(job, dry_run=False)
+        workflow.prune_backups(job, dry_run=False, user_mode=True)
     assert old.is_file() and replacement.is_file()
     assert read_suspect_marker(replacement.parent) is not None
 
@@ -102,7 +102,7 @@ def test_missing_version_fields_block_destructive_work(job, missing):
     assert not discovery.backups and len(discovery.malformed) == 1
     for dry_run in (True, False):
         with pytest.raises(PruneError, match="malformed"):
-            workflow.prune_backups(job, dry_run=dry_run)
+            workflow.prune_backups(job, dry_run=dry_run, user_mode=True)
     assert {path: path.read_bytes() for path in archive.parent.iterdir()} == before
 
 
@@ -129,7 +129,7 @@ def test_backward_clock_replacement_remains_usable_and_can_be_cleaned(job, monke
     marker = read_suspect_marker(old.parent)
     assert (marker.reason, marker.detected_at) == (original.reason, original.detected_at)
     assert safety.run(job).result == "unchanged"
-    assert workflow.prune_backups(job, dry_run=False).removed == 1
+    assert workflow.prune_backups(job, dry_run=False, user_mode=True).removed == 1
     assert not old.exists() and result.archive_path.is_file()
 
 
@@ -150,7 +150,7 @@ def test_circular_suspect_references_preserve_both_until_fresh_replacement(job, 
     for index, archive in enumerate(archives):
         mark_backup_suspect(archive.parent, "original")
         record_suspect_replacement(archive.parent, ids[archives[1 - index]])
-    assert workflow.prune_backups(job, dry_run=False).removed == 0
+    assert workflow.prune_backups(job, dry_run=False, user_mode=True).removed == 0
     assert all(path.is_file() for path in archives)
     result = safety.run(job)
     assert result.result == "created" and not result.cleanup_errors
@@ -171,7 +171,7 @@ def test_duplicate_replacement_identity_blocks_every_deletion(job, monkeypatch):
         len(discover_backups(workflow.load_validated_config(job), metadata_only=True).backups) == 3
     )
     with pytest.raises(PruneError, match="Duplicate"):
-        workflow.prune_backups(job, dry_run=False)
+        workflow.prune_backups(job, dry_run=False, user_mode=True)
     assert old.is_file() and replacement.is_file() and duplicate.is_dir()
 
 

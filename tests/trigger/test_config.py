@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
-import pwd
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from vaultkeep.trigger.config import (
-    load_config,
-    matcher_from_canonical,
-    validate_vaultkeep_executable,
-)
+from vaultkeep.application import matcher_from_canonical
+from vaultkeep.trigger.config import load_config, validate_vaultkeep_executable
 from vaultkeep.trigger.errors import ConfigurationError
 
 
@@ -30,7 +25,6 @@ def write_job(tmp_path: Path, valid_config: dict, trigger: dict | None = None) -
         "application",
         {
             "name": "electrum",
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
             "data_dir": "/home/user/.electrum",
             "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum"}]},
         },
@@ -60,6 +54,7 @@ def test_loads_job_without_separate_trigger_configuration(
 def test_runtime_parameters_and_job_identity(tmp_path: Path, valid_config: dict) -> None:
     settings = trigger_settings()
     settings["params"] = {"NETWORK": "mainnet"}
+    valid_config["destination"]["root"] += "/{NETWORK}"
     path = write_job(tmp_path, valid_config, settings)
     first = load_config(path)
     second = load_config(path, runtime_params={"NETWORK": "testnet"})
@@ -71,13 +66,14 @@ def test_runtime_parameters_and_job_identity(tmp_path: Path, valid_config: dict)
 
 def test_jobs_have_distinct_scopes(tmp_path: Path, valid_config: dict) -> None:
     path = write_job(tmp_path, valid_config)
-    other = tmp_path / "other.yaml"
+    other = tmp_path / "other" / "app.yaml"
+    other.parent.mkdir()
     other.write_bytes(path.read_bytes())
     assert load_config(path).scope != load_config(other).scope
 
 
 def test_trigger_is_disabled_when_omitted(tmp_path: Path, valid_config: dict) -> None:
-    path = tmp_path / "ordinary.yaml"
+    path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))
     assert not load_config(path).enabled_instances()
 
@@ -112,12 +108,11 @@ def test_invalid_trigger_settings_rejected(
         load_config(write_job(tmp_path, valid_config, settings))
 
 
-@pytest.mark.parametrize("field", ["name", "user", "data_dir", "matcher"])
+@pytest.mark.parametrize("field", ["name", "data_dir", "matcher"])
 def test_enabled_trigger_requires_identity(tmp_path: Path, valid_config: dict, field) -> None:
     settings = trigger_settings()
     valid_config["application"] = {
         "name": "electrum",
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run_electrum"}]},
     }
@@ -156,7 +151,6 @@ def test_weak_or_invalid_matcher_rejected(tmp_path: Path, valid_config: dict, ma
         "application",
         {
             "name": "electrum",
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
             "data_dir": "/home/user/.electrum",
         },
     )["matcher"] = matcher
@@ -172,7 +166,6 @@ def test_unknown_entrypoint_property_reports_path_and_suggestion(
         "application",
         {
             "name": "electrum",
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
             "data_dir": "/home/user/.electrum",
         },
     )["matcher"] = {
@@ -192,7 +185,6 @@ def test_matcher_canonical_roundtrip(tmp_path: Path, valid_config: dict) -> None
         "application",
         {
             "name": "electrum",
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
             "data_dir": "/home/user/.electrum",
         },
     ).setdefault(
@@ -206,13 +198,12 @@ def test_alternative_entrypoints_load_and_roundtrip(tmp_path: Path, valid_config
     settings = trigger_settings()
     valid_config.setdefault(
         "application",
-        {"user": pwd.getpwuid(os.geteuid()).pw_name, "data_dir": "/home/user/.electrum"},
+        {"data_dir": "/home/user/.electrum"},
     )["name"] = "bisq"
     valid_config.setdefault(
         "application",
         {
             "name": "electrum",
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
             "data_dir": "/home/user/.electrum",
         },
     )["matcher"] = {

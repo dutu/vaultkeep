@@ -77,7 +77,6 @@ consistency:
 ## Electrum identity below is illustrative; see app-specific examples.
 # application:
 #   name: electrum                       # electrum | bisq | wasabi
-#   user: user                           # Account that owns the application
 #   data_dir: /home/user/.electrum       # Application data directory
 #   matcher:
 #     entrypoints:                      # At least one; script | jar | java_main

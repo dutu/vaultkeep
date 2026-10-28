@@ -409,11 +409,9 @@ def test_account_refusal_propagates_actionable_nonconfiguration_error(helper, mo
 
 
 @pytest.fixture
-def managed_monitor(helper, monkeypatch, tmp_path, valid_config):
-    """Real managed files, inventory and safety; only the service manager is fake."""
+def managed_monitor(helper, monkeypatch, tmp_path, valid_config, system_execution):
+    """Disposable managed files with simulated service manager and execution scope."""
     import importlib
-    import os
-    import pwd
 
     from vaultkeep import maintenance
     from vaultkeep.trigger.config import load_config
@@ -428,7 +426,6 @@ def managed_monitor(helper, monkeypatch, tmp_path, valid_config):
     config = jobs / "app.yaml"
     valid_config["application"] = {
         "name": "bisq",
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
         "data_dir": str(home),
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq"}]},
     }
@@ -637,7 +634,9 @@ def test_restarting_monitor_reports_exact_yaml_user_error_before_any_mutation(
     with pytest.raises(ValueError) as caught:
         helper.check_configurations(job.layout, "/candidate/python")
     assert str(caught.value) == (
-        f"Issue: {job.config}\n       User 'dutu' does not exist (field: application.user)."
+        f"Issue: {job.config}\n"
+        "       Unsupported property for user execution; remove application.user. "
+        "The application owner is the job's execution account (field: application.user)."
     )
     assert (job.fragment.read_bytes(), job.config.read_bytes()) == before
     assert not any("stop" in call for call in job.calls)

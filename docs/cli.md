@@ -42,7 +42,9 @@ Every command and action supports `-h` or `--help` in its own position, for exam
 `vaultkeep schedule --help`, `vaultkeep schedule install --help`, or
 `vaultkeep status --help`. Version inspection uses `vaultkeep --version`.
 
-Use `--user` for per-user job configuration, per-user state, and systemd user timers. Omit it for root mode. Root-mode operations that read protected sources, write root-owned state, manage system timers, or use root-owned secrets must be run with `sudo`.
+Use `--user` for per-user job configuration, per-user state, and systemd user timers.
+Omit it for root mode. Root-mode backup execution, full validation, inventory,
+verification, pruning, and timer management require root privileges; use `sudo`.
 
 ## Contents
 
@@ -333,7 +335,9 @@ per-backup archive paths, or verbose metadata sections.
 Listing reads manifests and filesystem metadata, requires the archive and checksum
 sidecar to exist as regular files, and checks the expected directory layout. It
 does not read archive or checksum sidecar contents, calculate SHA-256, load encryption
-passwords, require original sources, or modify backup or local state. **Being listed
+passwords, require original sources or a live application account, or modify backup
+or local state. Current-history retention previews can be incomplete when application
+identity is unavailable. **Being listed
 does not establish archive integrity**; use `verify` to check contents and checksums.
 A completed inventory exits zero, including empty inventories and incomplete previews
 with warnings. Configuration and destination failures retain the
@@ -355,7 +359,8 @@ Verification checks:
   inner `{job}.tar` member for `.tar.7z`;
 - TAR member paths, rejecting duplicate, absolute, and parent-traversal paths.
 
-Verification works without the original sources. It records a suspect marker when
+Verification works without the original sources, application installation, processes,
+or application account. It records a suspect marker when
 checksum or structural checks demonstrate corruption, without rewriting archive
 contents, updating local backup state, or running retention. Encrypted jobs require a password file containing the archive's
 passphrase, with the same ownership and permissions required by `run`.
@@ -488,7 +493,8 @@ Update the timer after changing the job schedule:
 vaultkeep [--user] --config <job.yaml> schedule update
 ```
 
-Install and update validate the generated calendar and staged service/timer units
+Install and update validate the job's execution scope and application identity,
+then the generated calendar and staged service/timer units
 before replacing the managed files. Update preserves timer enablement and restarts
 an enabled timer. If applying either command fails or is interrupted with Ctrl-C,
 Vaultkeep restores the preceding managed files, ownership registry, and timer

@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from vaultkeep.application import Observation
 from vaultkeep.config.models import TriggerMatcherConfig
 from vaultkeep.trigger.version import (
     INSTANCE_STATE_SCHEMA_VERSION,
@@ -147,15 +148,6 @@ def _string_list(data: dict[str, Any], key: str, *, path: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"{path}.{key} must be an array of strings")
     return list(value)
-
-
-class Observation(str, Enum):
-    """One sanitized poll result."""
-
-    RUNNING = "running"
-    STOPPED = "stopped"
-    AMBIGUOUS = "ambiguous"
-    INSPECTION_UNAVAILABLE = "inspection_unavailable"
 
 
 class AttemptOutcome(str, Enum):

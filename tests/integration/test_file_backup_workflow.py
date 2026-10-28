@@ -180,19 +180,19 @@ def test_numbered_directories_and_legacy_backups_share_manageable_histories(file
     assert numbered.parent.name == "backup-app-20261021-2"
     assert numbered.name == original.name
     assert original.is_file()
-    assert workflow.verify_backups(file_job).backups == 3
+    assert workflow.verify_backups(file_job, user_mode=True).backups == 3
 
     manifest = json.loads((original.parent / f"{original.parent.name}.json").read_text())
     legacy = original.parent.with_name(f"{original.parent.name}-{manifest['backup_id']}")
     original.parent.rename(legacy)
     shutil.rmtree(file_job.parent / "state")
     assert _run(file_job).result == "unchanged"
-    assert workflow.verify_backups(file_job).backups == 3
-    assert len(workflow.list_backups(file_job).backups) == 3
+    assert workflow.verify_backups(file_job, user_mode=True).backups == 3
+    assert len(workflow.list_backups(file_job, user_mode=True).backups) == 3
 
     document["retention"]["hourly"] = 1
     file_job.write_text(json.dumps(document))
-    assert workflow.prune_backups(file_job, dry_run=False).removed == 1
+    assert workflow.prune_backups(file_job, dry_run=False, user_mode=True).removed == 1
     assert not legacy.exists()
     assert numbered.is_file()
 
@@ -209,12 +209,12 @@ def test_deleted_renamed_and_excluded_wallet_histories_remain_manageable(file_jo
     document["exclude"].append("renamed")
     file_job.write_text(json.dumps(document))
     assert _run(file_job).files == ()
-    assert workflow.verify_backups(file_job).backups == 3
+    assert workflow.verify_backups(file_job, user_mode=True).backups == 3
     # Management also works after the entire source directory is removed.
     shutil.rmtree(source)
-    assert len(workflow.list_backups(file_job).backups) == 3
-    assert workflow.verify_backups(file_job).backups == 3
-    assert workflow.prune_backups(file_job, dry_run=False).removed == 0
+    assert len(workflow.list_backups(file_job, user_mode=True).backups) == 3
+    assert workflow.verify_backups(file_job, user_mode=True).backups == 3
+    assert workflow.prune_backups(file_job, dry_run=False, user_mode=True).removed == 0
 
 
 def test_partial_failure_continues_reports_nonzero_and_retries_only_failed_wallet(
@@ -324,7 +324,7 @@ def test_parent_marker_is_checked_before_creating_per_file_directories(
     assert list(root.iterdir()) == []
     (root / "share-marker").touch()
     assert _run(file_job).result == "created"
-    assert workflow.verify_backups(file_job).backups == 2
+    assert workflow.verify_backups(file_job, user_mode=True).backups == 2
     assert all(
         not (root / file_key(name) / "share-marker").exists()
         for name in ("personal wallet", "savings")
@@ -425,7 +425,7 @@ def test_previous_fingerprint_requires_new_backup_with_existing_or_reconstructed
     assert _run(file_job).result == "created"
     assert _run(file_job).result == "unchanged"
     expected_backups = 4 if backup_mode == "per_file" else 2
-    assert workflow.verify_backups(file_job).backups == expected_backups
+    assert workflow.verify_backups(file_job, user_mode=True).backups == expected_backups
 
 
 def test_managed_destination_link_is_rejected_without_writing_through_it(file_job: Path) -> None:
@@ -462,17 +462,17 @@ def test_manual_prune_validates_each_history_independently(file_job: Path) -> No
     # Keep both backups for later pruning by putting them in separate hours.
     workflow.datetime.current += timedelta(hours=1)
     _run(file_job)
-    assert len(workflow.list_backups(file_job).backups) == 4
+    assert len(workflow.list_backups(file_job, user_mode=True).backups) == 4
     document["retention"]["hourly"] = 1
     file_job.write_text(json.dumps(document))
     broken = first.files[-1].archive_path.with_suffix(".zst.sha256")
     original = broken.read_bytes()
     broken.write_text("invalid checksum")
     with pytest.raises(DestinationError, match="Malformed"):
-        workflow.prune_backups(file_job, dry_run=False)
+        workflow.prune_backups(file_job, dry_run=False, user_mode=True)
     assert not first.files[0].archive_path.exists()
     assert first.files[-1].archive_path.is_file()
     broken.write_bytes(original)
-    assert workflow.prune_backups(file_job, dry_run=True).removed == 0
-    assert workflow.prune_backups(file_job, dry_run=False).removed == 1
-    assert workflow.verify_backups(file_job).backups == 2
+    assert workflow.prune_backups(file_job, dry_run=True, user_mode=True).removed == 0
+    assert workflow.prune_backups(file_job, dry_run=False, user_mode=True).removed == 1
+    assert workflow.verify_backups(file_job, user_mode=True).backups == 2

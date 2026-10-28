@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 
+from vaultkeep.application import Observation, ProcessProvider, boot_id
 from vaultkeep.notifications.notifier import Notifier
 from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.config import INSTANCE_ID_PATTERN, InstanceConfig, TriggerConfig
@@ -24,7 +25,6 @@ from vaultkeep.trigger.models import (
     AttemptOutcome,
     InstanceState,
     LaunchRecord,
-    Observation,
     Receipt,
     RejectionState,
     Request,
@@ -33,7 +33,6 @@ from vaultkeep.trigger.models import (
     utc_now,
 )
 from vaultkeep.trigger.paths import monitor_lock_path
-from vaultkeep.trigger.process import ProcessProvider, boot_id
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import (
     SubmissionClass,

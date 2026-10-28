@@ -168,19 +168,29 @@ def managed_units(
 
 
 @contextmanager
-def configuration_context(path: Path) -> Iterator[None]:
+def configuration_context(
+    path: Path, *, errors: list[dict[str, Any]] | None = None
+) -> Iterator[None]:
     """Retain the selected file and structured fields through installer layers."""
     from vaultkeep.errors import ApplicationIdentityError, ConfigurationError, VaultkeepError
 
     try:
-        yield
-    except ApplicationIdentityError as error:
-        failure = ConfigurationError((error.issue,))
-        failure.config_path = path.absolute()
-        raise failure from error
+        try:
+            yield
+        except ApplicationIdentityError as error:
+            failure = ConfigurationError((error.issue,))
+            failure.config_path = path.absolute()
+            raise failure from error
+        except VaultkeepError as error:
+            error.config_path = path.absolute()
+            raise
     except VaultkeepError as error:
-        error.config_path = path.absolute()
-        raise
+        if errors is None:
+            raise
+        traceback.print_exc(file=sys.stderr)
+        details = configuration_details(error)
+        if details not in errors:
+            errors.append(details)
 
 
 def configuration_details(error: Any) -> dict[str, Any]:
@@ -290,10 +300,12 @@ def configuration_details(error: Any) -> dict[str, Any]:
 
 def validate_execution_identity(*, user: bool) -> None:
     """Check accounts/groups used by generated services, without inventing YAML fields."""
+    from vaultkeep.application import runtime_owner
     from vaultkeep.errors import ConfigurationError, ValidationIssue
 
+    uid, _gid = runtime_owner(user)
     try:
-        account = pwd.getpwuid(os.geteuid()) if user else pwd.getpwnam("root")
+        account = pwd.getpwuid(uid) if user else pwd.getpwnam("root")
     except KeyError as error:
         name = f"UID {os.geteuid()}" if user else "'root'"
         raise ConfigurationError(
@@ -342,73 +354,47 @@ def require_automation_enabled(enabled: bool, section: str) -> None:
 
 
 def check_configurations(document: dict[str, Any]) -> dict[str, Any]:
-    """Check every managed YAML and installed selection with this release's schema."""
-    from vaultkeep.config import load_config
-    from vaultkeep.errors import VaultkeepError
-    from vaultkeep.schedule import TimerManager, TimerPaths
+    """Prepare all discovered jobs and render installed selections without mutation."""
+    from vaultkeep.application import runtime_owner
+    from vaultkeep.schedule import TimerPaths
 
-    user = document["user"]
+    runtime_owner(document["user"])
     paths = TimerPaths(**{key: Path(value) for key, value in document["paths"].items()})
-    manager = TimerManager(paths, user_mode=user)
-    timers, monitors, _ = managed_units(document, manager)
     try:
         configurations = {path for path in paths.jobs_root.iterdir() if path.suffix == ".yaml"}
     except FileNotFoundError:
         configurations = set()
-    for instance in sorted(timers):
-        service = manager._service_drop_in_path(instance)
-        snapshot = read_file(service)
-        if snapshot is None:
-            configurations.add(paths.jobs_root / f"{instance}.yaml")
-        else:
-            config, _ = command_selection(
-                base64.b64decode(snapshot["content"]).decode(), monitor=False, user=user
-            )
-            configurations.add(config)
-    for path in sorted(monitors):
-        snapshot = read_file(path)
-        if snapshot is None:
-            raise ValueError(f"managed monitor disappeared: {path}")
-        config, _ = command_selection(
-            base64.b64decode(snapshot["content"]).decode(), monitor=True, user=True
-        )
-        configurations.add(config)
-    errors = []
-    for path in sorted(configurations):
-        try:
-            with configuration_context(path):
-                job_config = load_config(path)
-                validate_execution_identity(user=user)
-                if job_config.application is not None:
-                    from vaultkeep.application import resolve_application
-
-                    resolve_application(job_config.application, validate_directory=False)
-        except VaultkeepError as error:
-            traceback.print_exc(file=sys.stderr)
-            errors.append(configuration_details(error))
-    if not errors:
-        # Rendering is read-only. Reuse the real refresh planner, including saved
-        # parameter selections and checks on installed units, before any pause.
-        try:
-            plan(document)
-        except VaultkeepError as error:
-            if error.config_path is None:
-                raise
-            traceback.print_exc(file=sys.stderr)
-            errors.append(configuration_details(error))
+    errors: list[dict[str, Any]] = []
+    _plan(document, configurations=configurations, errors=errors)
     return {"errors": errors}
 
 
 def plan(document: dict[str, Any]) -> dict[str, Any]:
-    """Render existing jobs; retain snapshots before any mutation."""
-    from vaultkeep.backup.workflow import load_validated_config
+    """Prepare installed selections afresh for refresh, retaining original snapshots."""
+    from vaultkeep.application import runtime_owner
+
+    runtime_owner(document["user"])
+    return _plan(document, configurations=set(), errors=None)
+
+
+def _plan(
+    document: dict[str, Any],
+    *,
+    configurations: set[Path],
+    errors: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Prepare each selection once and render from that result; collect preflight errors."""
+    from vaultkeep.config import load_config
+    from vaultkeep.errors import ConfigurationError
     from vaultkeep.schedule import TimerManager, TimerPaths, render_schedule
-    from vaultkeep.trigger.config import load_config as load_trigger
+    from vaultkeep.trigger.config import from_prepared_job
     from vaultkeep.trigger.service import render_service, service_name
+    from vaultkeep.validation import prepare_job, validate_template_semantics
 
     user = document["user"]
     paths = TimerPaths(**{key: Path(value) for key, value in document["paths"].items()})
     manager = TimerManager(paths, user_mode=user)
+    configurations = set(configurations)
     changes = []
     jobs = []
 
@@ -437,57 +423,84 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
             service_content = base64.b64decode(service_snapshot["content"]).decode()
         else:
             config_path, params = paths.jobs_root / f"{instance}.yaml", {}
-        with configuration_context(config_path):
-            config = load_validated_config(config_path, runtime_params=params)
-            manager._load_managed(config_path, require_enabled=False, runtime_params=params)
+        configurations.discard(config_path)
+        with configuration_context(config_path, errors=errors):
+            config, application = prepare_job(
+                load_config(config_path),
+                user_mode=user,
+                config_path=config_path,
+                runtime_params=params,
+            )
+            manager._managed_path(config_path)
             require_automation_enabled(config.schedule.enabled, "schedule")
             validate_execution_identity(user=user)
-        if manager._instance_id(config_path, config.job.id, params) != instance:
-            raise ValueError(f"job identity changed: {timer}")
-        rendered_timer = manager._timer_content(instance, render_schedule(config))
-        rendered_service = manager._service_content(config_path, instance, params)
-        require_generated(
-            base64.b64decode(timer_snapshot["content"]).decode(),
-            rendered_timer,
-            variable=("OnCalendar", "RandomizedDelaySec", "FixedRandomDelay", "Persistent"),
-            path=timer,
-        )
-        if service_content is not None:
-            if rendered_service is None:
-                raise ValueError(f"unexpected service override requires review: {service}")
+            if manager._instance_id(config_path, config.job.id, params) != instance:
+                raise ValueError(f"job identity changed: {timer}")
+            rendered_timer = manager._timer_content(instance, render_schedule(config))
+            rendered_service = manager._service_content(config_path, instance, params)
             require_generated(
-                service_content, rendered_service, variable=("ExecStart",), path=service
+                base64.b64decode(timer_snapshot["content"]).decode(),
+                rendered_timer,
+                variable=("OnCalendar", "RandomizedDelaySec", "FixedRandomDelay", "Persistent"),
+                path=timer,
             )
-        change(timer, rendered_timer, timer_snapshot)
-        change(service, rendered_service, service_snapshot)
-        jobs.append(
-            {
-                "config": str(config_path),
-                "params": params,
-                "unit": f"vaultkeep@{instance}.timer",
-                "monitor": False,
-            }
-        )
+            if service_content is not None:
+                if rendered_service is None:
+                    raise ValueError(f"unexpected service override requires review: {service}")
+                require_generated(
+                    service_content, rendered_service, variable=("ExecStart",), path=service
+                )
+            change(timer, rendered_timer, timer_snapshot)
+            change(service, rendered_service, service_snapshot)
+            jobs.append(
+                {
+                    "config": str(config_path),
+                    "params": params,
+                    "unit": f"vaultkeep@{instance}.timer",
+                    "monitor": False,
+                }
+            )
     for path in sorted(monitors):
         snapshot = read_file(path)
         if snapshot is None:
             raise ValueError(f"managed monitor disappeared: {path}")
         content = base64.b64decode(snapshot["content"]).decode()
         config_path, params = command_selection(content, monitor=True, user=True)
-        with configuration_context(config_path):
+        configurations.discard(config_path)
+        with configuration_context(config_path, errors=errors):
+            config, application = prepare_job(
+                load_config(config_path),
+                user_mode=user,
+                config_path=config_path,
+                runtime_params=params,
+            )
             validate_execution_identity(user=user)
-            load_validated_config(config_path, runtime_params=params)
-            trigger = load_trigger(config_path, runtime_params=params)
+            trigger = from_prepared_job(
+                config, application, source=config_path.resolve(), params=params
+            )
             if path.name in document.get("active", []):
                 require_automation_enabled(bool(trigger.enabled_instances()), "trigger")
-        if service_name(trigger) != path.name:
-            raise ValueError(f"job identity changed: {path}")
-        rendered = render_service(trigger)
-        require_generated(content, rendered, variable=("ExecStart",), path=path)
-        change(path, rendered, snapshot)
-        jobs.append(
-            {"config": str(config_path), "params": params, "unit": path.name, "monitor": True}
-        )
+            if service_name(trigger) != path.name:
+                raise ValueError(f"job identity changed: {path}")
+            rendered = render_service(trigger)
+            require_generated(content, rendered, variable=("ExecStart",), path=path)
+            change(path, rendered, snapshot)
+            jobs.append(
+                {"config": str(config_path), "params": params, "unit": path.name, "monitor": True}
+            )
+    for config_path in sorted(configurations):
+        with configuration_context(config_path, errors=errors):
+            config = load_config(config_path)
+            params = dict(config.trigger.params) if config.trigger.enabled else {}
+            try:
+                prepare_job(config, user_mode=user, config_path=config_path, runtime_params=params)
+            except ConfigurationError as error:
+                if any(issue.code != "param_missing" for issue in error.issues):
+                    raise
+                # Uninstalled templates may await values, but their independent
+                # semantic and identity checks still apply.
+                validate_template_semantics(config, config_path=config_path, runtime_params=params)
+            validate_execution_identity(user=user)
     return {"changes": changes, "jobs": jobs}
 
 
@@ -534,26 +547,42 @@ def apply(document: dict[str, Any], *, restore: bool = False) -> None:
 
 def validate(document: dict[str, Any]) -> None:
     """Validate all jobs and runtime readiness only for launchers being resumed."""
-    from vaultkeep.backup.workflow import load_validated_config, validate_job
-    from vaultkeep.trigger.config import load_config as load_trigger
+    from vaultkeep.application import runtime_owner
+    from vaultkeep.backup.workflow import validate_prepared_job
+    from vaultkeep.config import load_config
+    from vaultkeep.trigger.config import from_prepared_job
+    from vaultkeep.validation import prepare_job
+
+    user = document["user"]
+    runtime_owner(user)
 
     for job in document["jobs"]:
         config_path = Path(job["config"])
         params = job["params"]
         with configuration_context(config_path):
-            load_validated_config(config_path, runtime_params=params)
+            config, application = prepare_job(
+                load_config(config_path),
+                user_mode=user,
+                config_path=config_path,
+                runtime_params=params,
+            )
             if job["unit"] not in document["active"]:
                 continue
-            validate_job(config_path, runtime_params=params)
+            validate_prepared_job(config, application, config_path=config_path)
             if job["monitor"]:
                 from vaultkeep.trigger.paths import state_root
                 from vaultkeep.trigger.preflight import runtime_preflight
                 from vaultkeep.trigger.systemd import RealSystemdController
 
-                config = load_trigger(config_path, runtime_params=params)
-                require_automation_enabled(bool(config.enabled_instances()), "trigger")
+                trigger = from_prepared_job(
+                    config, application, source=config_path.resolve(), params=params
+                )
+                require_automation_enabled(bool(trigger.enabled_instances()), "trigger")
                 runtime_preflight(
-                    config, RealSystemdController(), state_root(config.scope), validate_backup=False
+                    trigger,
+                    RealSystemdController(),
+                    state_root(trigger.scope),
+                    validate_backup=False,
                 )
 
 
@@ -563,9 +592,15 @@ def main() -> None:
     if action == "restore":
         apply(document, restore=True)
         return
-    from vaultkeep.errors import VaultkeepError
+    from vaultkeep.errors import ApplicationIdentityError, VaultkeepError
 
     try:
+        # Only these requests select job execution scope. Snapshot apply/restore
+        # requests are account-local file operations, with no scope in their payload.
+        if action in {"check-launchers", "plan", "check-configurations", "validate"}:
+            from vaultkeep.application import runtime_owner
+
+            runtime_owner(document["user"])
         if action == "check-launchers":
             from vaultkeep.schedule import TimerManager, TimerPaths
 
@@ -581,6 +616,12 @@ def main() -> None:
             validate(document)
         else:
             raise ValueError(f"unknown maintenance action: {action}")
+    except ApplicationIdentityError as error:
+        if error.issue.code != "execution_scope":
+            raise
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({"failure": error.issue.message}))
+        raise SystemExit(1) from None
     except VaultkeepError as error:
         if error.config_path is None:
             raise

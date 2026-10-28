@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from vaultkeep.application import Observation
 from vaultkeep.diagnostics import duration, elapsed_seconds
 from vaultkeep.trigger.errors import StateError
-from vaultkeep.trigger.models import InstanceState, Observation, parse_utc
+from vaultkeep.trigger.models import InstanceState, parse_utc
 from vaultkeep.trigger.state import StateStore
 
 

@@ -8,16 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from vaultkeep.application import DetectionResult, Observation
 from vaultkeep.trigger.config import InstanceConfig
-from vaultkeep.trigger.detection import DetectionResult
-from vaultkeep.trigger.models import (
-    InstanceState,
-    Observation,
-    ObservationRecord,
-    Request,
-    new_uuid,
-    utc_now,
-)
+from vaultkeep.trigger.models import InstanceState, ObservationRecord, Request, new_uuid, utc_now
 
 
 @dataclass(frozen=True, slots=True)

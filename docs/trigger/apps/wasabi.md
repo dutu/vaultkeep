@@ -57,7 +57,6 @@ Add every verified GUI or daemon entrypoint for this installation to
 ```yaml
 application:
   name: wasabi
-  user: alice
   data_dir: /home/alice/.walletwasabi/client
   matcher:
     entrypoints:

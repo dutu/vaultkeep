@@ -5,7 +5,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import pwd
 import shlex
 import shutil
 import subprocess
@@ -48,7 +47,6 @@ def test_installed_layout_without_installer_environment(layout, valid_config, tm
         "name": "electrum",
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
     valid_config["trigger"] = {"enabled": True}
     config.write_text(json.dumps(valid_config))
@@ -176,7 +174,6 @@ def test_custom_executable_survives_systemd_parsing(
             "name": "electrum",
             "data_dir": "/home/user/.electrum",
             "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
-            "user": pwd.getpwuid(os.geteuid()).pw_name,
         }
         valid_config["trigger"] = {"enabled": True}
         job.write_text(json.dumps(valid_config))

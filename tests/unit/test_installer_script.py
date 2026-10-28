@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("system_execution")
+
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "install.sh"
 CANDIDATE_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
@@ -176,6 +178,15 @@ def frozen_source(tmp_path_factory: pytest.TempPathFactory):
     )
     global CANDIDATE_SOURCE
     CANDIDATE_SOURCE = source
+    # The disposable installer harness fakes root ownership but runs without root.
+    # Simulate system execution credentials only in its private candidate copy;
+    # production scope rejection is exercised by the application tests.
+    application = source / "src/vaultkeep/application.py"
+    application.write_text(
+        application.read_text().replace(
+            "    uid = os.geteuid()\n", "    uid = os.geteuid() if user_mode else 0\n", 1
+        )
+    )
     # Offline account discovery must not inspect or refresh the developer's jobs.
     helper = source / "scripts/install_maintenance.py"
     helper.write_text(
@@ -1283,7 +1294,8 @@ os.execvp(args[0], args)
         for output in (result.stderr, diagnostic_log(result).read_text()):
             assert f"Issue: {config}" in output
             if user_count == 2 and config.stem == "job0":
-                assert "application.user" in output and "vaultkeep-test-missing-user" in output
+                assert "application.user" in output and "Unsupported property" in output
+                assert "does not exist" not in output
             else:
                 assert "trigger.notifications" in output
         assert (config.read_bytes(), config.stat().st_mtime_ns) == original
@@ -1952,7 +1964,6 @@ def test_incomplete_rollback_is_reported_without_claiming_preservation(
 
 def restarting_user_monitor(host, source, tmp_path, valid_config, monkeypatch, *, enabled):
     """Seed a previous per-job monitor; all account and systemd access is disposable."""
-    import pwd
 
     from vaultkeep.trigger.config import load_config
     from vaultkeep.trigger.service import render_service, service_name
@@ -1971,7 +1982,6 @@ def restarting_user_monitor(host, source, tmp_path, valid_config, monkeypatch, *
     valid_config["job"]["id"] = "Bisq_sd0-srv_backups"
     valid_config["application"] = {
         "name": "bisq",
-        "user": pwd.getpwuid(os.getuid()).pw_name,
         "data_dir": str(wallet),
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq/bin/Bisq"}]},
     }
@@ -2070,7 +2080,8 @@ def test_restarting_monitor_reaches_yaml_validation_then_updates_after_correctio
     assert_configuration_refusal(installed, result, before)
     assert result.stderr.startswith(
         f"Issue: {config}\n"
-        "       User 'vaultkeep-test-nonexistent-dutu' does not exist (field: application.user).\n"
+        "       Unsupported property for user execution; remove application.user. "
+        "The application owner is the job's execution account (field: application.user).\n"
     )
     assert (fragment.read_bytes(), fragment.stat().st_mtime_ns) == original
     assert (
@@ -2078,9 +2089,7 @@ def test_restarting_monitor_reaches_yaml_validation_then_updates_after_correctio
         == "activating"
     )
     # Correcting the owner reaches the real refresh/runtime checks and activation.
-    import pwd
-
-    valid_config["application"]["user"] = pwd.getpwuid(os.getuid()).pw_name
+    valid_config["application"].pop("user")
     config.write_text(json.dumps(valid_config))
     config_before = config.read_bytes(), config.stat().st_mtime_ns
     success = run_installer(installed, "update", source=source)

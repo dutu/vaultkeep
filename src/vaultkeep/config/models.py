@@ -9,7 +9,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    PrivateAttr,
     StringConstraints,
     field_validator,
     model_validator,
@@ -205,12 +204,10 @@ class ConsistencyConfig(StrictConfigModel):
 
 
 class ApplicationConfig(StrictConfigModel):
-    """One logical application and its process owner."""
-
-    _owner_uid: int | None = PrivateAttr(default=None)
+    """Raw application settings, with an optional system-scope owner override."""
 
     name: Literal["electrum", "bisq", "wasabi"]
-    user: NonEmptyString
+    user: NonEmptyString | None = None
     data_dir: NonEmptyString
     matcher: TriggerMatcherConfig
 

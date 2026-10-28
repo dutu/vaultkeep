@@ -17,6 +17,8 @@ from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import DestinationError, HookError
 from vaultkeep.state.models import BackupStateRecord, HookOutcomeState, LocalState
 
+pytestmark = pytest.mark.usefixtures("system_execution")
+
 
 def _config(valid_config: dict[str, Any]) -> JobConfig:
     return JobConfig.model_validate(valid_config)
@@ -116,7 +118,7 @@ def test_hook_preflight_validates_shell_for_execution_identity(
 
     workflow._validate_configured_hooks(_config(valid_config), user_mode=user_mode)
 
-    owner_uid, owner_gid = workflow._runtime_owner(user_mode)
+    owner_uid, owner_gid = workflow.runtime_owner(user_mode)
     assert calls == [
         {"owner_uid": owner_uid, "owner_gid": owner_gid, "allow_root_owned": user_mode}
     ]
@@ -129,7 +131,7 @@ def _patch_creation_workflow(
     from contextlib import nullcontext
 
     monkeypatch.setattr(workflow, "destination_lock", lambda root: nullcontext())
-    monkeypatch.setattr(workflow, "_active_history", lambda history, config: history)
+    monkeypatch.setattr(workflow, "_active_history", lambda history, config, **kwargs: history)
     monkeypatch.setattr(workflow, "verify_backup_checksum", lambda *args, **kwargs: None)
     record = _record()
     backup = SimpleNamespace(
@@ -152,7 +154,7 @@ def _patch_creation_workflow(
     )
     monkeypatch.setattr(workflow, "load_config", lambda *args, **kwargs: config)
     monkeypatch.setattr(workflow, "_validate_runtime", lambda *args, **kwargs: None)
-    monkeypatch.setattr(workflow, "_validate_configured_hooks", lambda value: None)
+    monkeypatch.setattr(workflow, "_validate_configured_hooks", lambda value, **kwargs: None)
     monkeypatch.setattr(workflow, "job_identity_hash", lambda *args, **kwargs: "a" * 16)
     monkeypatch.setattr(workflow, "job_state_path", lambda *args, **kwargs: tmp_path / "state.json")
     monkeypatch.setattr(workflow, "discover_sources", lambda value: object())
@@ -222,12 +224,12 @@ def test_workflow_executes_terminal_shell_hook_with_context(
     if fail_before_check:
         valid_config["hooks"]["before_check"] = {"command": "exit 4"}
     _patch_creation_workflow(monkeypatch, _config(valid_config), tmp_path)
-    monkeypatch.setattr(hooks, "validate_hook_shell", lambda: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
     paths = workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks")
 
     if fail_before_check:
         with pytest.raises(HookError, match="before_check hook exited with status 4"):
-            workflow.run_backup(tmp_path / "app.yaml", paths=paths)
+            workflow.run_backup(tmp_path / "app.yaml", paths=paths, user_mode=True)
         assert output.read_text(encoding="utf-8").splitlines() == [
             "app",
             "tar.zst",
@@ -236,7 +238,7 @@ def test_workflow_executes_terminal_shell_hook_with_context(
             "before_check hook exited with status 4",
         ]
     else:
-        result = workflow.run_backup(tmp_path / "app.yaml", paths=paths)
+        result = workflow.run_backup(tmp_path / "app.yaml", paths=paths, user_mode=True)
         assert result.result == "created"
         assert output.read_text(encoding="utf-8").splitlines() == [
             "app",
@@ -255,7 +257,7 @@ def test_failure_hook_has_source_hash_when_destination_discovery_fails(
         "command": f'printf "%s" "{{source_hash:.12}}" > {shlex.quote(str(output))}'
     }
     _patch_creation_workflow(monkeypatch, _config(valid_config), tmp_path)
-    monkeypatch.setattr(hooks, "validate_hook_shell", lambda: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
 
     def discover(*args: Any, **kwargs: Any) -> None:
         raise DestinationError("destination discovery failed")
@@ -266,6 +268,7 @@ def test_failure_hook_has_source_hash_when_destination_discovery_fails(
         workflow.run_backup(
             tmp_path / "app.yaml",
             paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks"),
+            user_mode=True,
         )
 
     assert output.read_text(encoding="utf-8") == "a" * 12
@@ -286,7 +289,7 @@ def test_terminal_template_has_current_run_time_and_builtin_values(
     valid_config["hooks"]["on_success"] = {"command": command}
     valid_config["hooks"]["on_unchanged"] = {"command": command}
     states = _patch_creation_workflow(monkeypatch, _config(valid_config), tmp_path)
-    monkeypatch.setattr(hooks, "validate_hook_shell", lambda: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
     monkeypatch.setattr(workflow.socket, "gethostname", lambda: "backup-host")
     previous = workflow.state_after_created(
         job_id="app",
@@ -303,7 +306,9 @@ def test_terminal_template_has_current_run_time_and_builtin_values(
     )
 
     result = workflow.run_backup(
-        tmp_path / "app.yaml", paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks")
+        tmp_path / "app.yaml",
+        paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks"),
+        user_mode=True,
     )
 
     assert result.result == ("unchanged" if unchanged else "created")
@@ -344,7 +349,9 @@ def test_created_run_orders_hooks_and_persists_outcomes(
     monkeypatch.setattr(workflow, "_run_configured_hook", run_phase)
 
     result = workflow.run_backup(
-        tmp_path / "app.yaml", paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks")
+        tmp_path / "app.yaml",
+        paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks"),
+        user_mode=True,
     )
 
     assert result.result == "created"
@@ -394,6 +401,7 @@ def test_archive_failure_keeps_primary_error_and_runs_cleanup_then_failure_hook(
         workflow.run_backup(
             tmp_path / "app.yaml",
             paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks"),
+            user_mode=True,
         )
 
     assert phases == ["before_check", "before_archive", "after_archive", "on_failure"]
@@ -435,6 +443,7 @@ def test_before_archive_failure_runs_cleanup_then_failure_hook(
         workflow.run_backup(
             tmp_path / "app.yaml",
             paths=workflow.WorkflowPaths(tmp_path, tmp_path, tmp_path / "locks"),
+            user_mode=True,
         )
 
     assert phases == ["before_check", "before_archive", "after_archive", "on_failure"]

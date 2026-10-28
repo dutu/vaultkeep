@@ -22,6 +22,8 @@ from vaultkeep.schedule import TimerManager, TimerPaths
 from vaultkeep.trigger.config import load_config
 from vaultkeep.trigger.service import render_service, service_name
 
+pytestmark = pytest.mark.usefixtures("system_execution")
+
 
 def document(tmp_path: Path, *, user: bool) -> dict:
     return {
@@ -221,8 +223,14 @@ def test_account_process_reports_failures_as_json_and_retains_traceback(
     else:
         spec = {}
         expected = "Internal managed-job failure; see diagnostics log for technical details."
+    # This disposable system-manager fixture represents authorized root execution.
+    script = (
+        "import os, runpy, sys; os.geteuid = lambda: 0; "
+        "sys.argv = ['vaultkeep.maintenance', 'plan']; "
+        "runpy.run_module('vaultkeep.maintenance', run_name='__main__')"
+    )
     result = subprocess.run(
-        [sys.executable, "-I", "-m", "vaultkeep.maintenance", "plan"],
+        [sys.executable, "-I", "-c", script],
         input=json.dumps(spec),
         capture_output=True,
         text=True,
@@ -275,7 +283,6 @@ def monitor_job(tmp_path, valid_config):
         "name": "electrum",
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
     valid_config["trigger"] = {"enabled": True}
     config = tmp_path / "directory with spaces/app.yaml"
@@ -381,16 +388,16 @@ def test_concurrent_edit_is_never_overwritten(tmp_path, valid_config, restore):
 def test_edit_during_rendering_is_never_adopted_as_an_original_snapshot(
     tmp_path, valid_config, monkeypatch
 ):
-    from vaultkeep.backup.workflow import load_validated_config
+    from vaultkeep.validation import prepare_job
 
     spec, path, _ = monitor_job(tmp_path, valid_config)
 
     def validate_and_edit(*args, **kwargs):
-        config = load_validated_config(*args, **kwargs)
+        config = prepare_job(*args, **kwargs)
         path.write_text("concurrent operator edit\n")
         return config
 
-    monkeypatch.setattr("vaultkeep.backup.workflow.load_validated_config", validate_and_edit)
+    monkeypatch.setattr("vaultkeep.validation.prepare_job", validate_and_edit)
     plan = maintenance.plan(spec)
     with pytest.raises(ValueError, match="changed during maintenance"):
         maintenance.apply(plan)
@@ -410,15 +417,17 @@ def test_unit_symlink_is_not_followed(tmp_path, valid_config):
 
 def test_validation_checks_runtime_only_for_previously_active_jobs(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr("vaultkeep.backup.workflow.load_validated_config", lambda *a, **kw: None)
+    monkeypatch.setattr("vaultkeep.config.load_config", lambda *a, **kw: None)
+    monkeypatch.setattr("vaultkeep.validation.prepare_job", lambda *a, **kw: (None, None))
     monkeypatch.setattr(
-        "vaultkeep.backup.workflow.validate_job", lambda path, **kw: calls.append(path)
+        "vaultkeep.backup.workflow.validate_prepared_job",
+        lambda *a, **kw: calls.append(kw["config_path"]),
     )
     jobs = [
         {"config": str(tmp_path / name), "params": {}, "unit": unit, "monitor": False}
         for name, unit in (("a.yaml", "a.timer"), ("b.yaml", "b.timer"))
     ]
-    maintenance.validate({"jobs": jobs, "active": ["a.timer"]})
+    maintenance.validate({"user": True, "jobs": jobs, "active": ["a.timer"]})
     assert calls == [tmp_path / "a.yaml"]
 
 
@@ -498,10 +507,10 @@ def test_missing_lock_allows_development_but_symlink_lock_is_refused(tmp_path, m
         pass
 
 
-def application_identity(user):
+def application_identity(user=None):
     return {
         "name": "bisq",
-        "user": user,
+        **({"user": user} if user is not None else {}),
         "data_dir": "/data/bisq/instance",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/bisq/bin/Bisq"}]},
     }
@@ -538,7 +547,12 @@ def test_configuration_check_resolves_disabled_job_identities_without_mutation(
             "issues": [
                 {
                     "path": "application.user",
-                    "message": "User 'vaultkeep-missing-application-user' does not exist.",
+                    "message": (
+                        "Unsupported property for user execution; remove application.user. "
+                        "The application owner is the job's execution account."
+                        if user
+                        else "User 'vaultkeep-missing-application-user' does not exist."
+                    ),
                 }
             ],
         }
@@ -591,7 +605,7 @@ def test_application_path_failure_retains_actual_field(
     jobs = Path(spec["paths"]["jobs_root"])
     jobs.mkdir()
     config = jobs / "app.yaml"
-    identity = application_identity(pwd.getpwuid(os.geteuid()).pw_name)
+    identity = application_identity()
     broken = str(tmp_path / "loop")
     original_resolve = Path.resolve
 
@@ -622,13 +636,13 @@ def test_configuration_check_does_not_disguise_programming_errors(
     tmp_path, valid_config, monkeypatch
 ):
     spec, _, config = scheduled_job(tmp_path, valid_config, monkeypatch, user=False)
-    valid_config["application"] = application_identity(pwd.getpwuid(os.geteuid()).pw_name)
+    valid_config["application"] = application_identity()
     config.write_text(json.dumps(valid_config))
 
     def broken(*args, **kwargs):
         raise RuntimeError("identity implementation bug")
 
-    monkeypatch.setattr("vaultkeep.application.resolve_application", broken)
+    monkeypatch.setattr("vaultkeep.validation.resolve_application", broken)
     with pytest.raises(RuntimeError, match="identity implementation bug"):
         maintenance.check_configurations(spec)
 
@@ -650,12 +664,13 @@ def test_runtime_validation_retains_job_path_and_actionable_failure(tmp_path, mo
     from vaultkeep.errors import DestinationError
 
     config = tmp_path / "app.yaml"
-    monkeypatch.setattr("vaultkeep.backup.workflow.load_validated_config", lambda *a, **kw: None)
+    monkeypatch.setattr("vaultkeep.config.load_config", lambda *a, **kw: None)
+    monkeypatch.setattr("vaultkeep.validation.prepare_job", lambda *a, **kw: (None, None))
 
     def unavailable(*args, **kwargs):
         raise DestinationError("Configured source does not exist: /data/app")
 
-    monkeypatch.setattr("vaultkeep.backup.workflow.validate_job", unavailable)
+    monkeypatch.setattr("vaultkeep.backup.workflow.validate_prepared_job", unavailable)
     with pytest.raises(DestinationError) as caught:
         maintenance.validate(
             {
@@ -663,6 +678,7 @@ def test_runtime_validation_retains_job_path_and_actionable_failure(tmp_path, mo
                     {"config": str(config), "params": {}, "unit": "app.timer", "monitor": False}
                 ],
                 "active": ["app.timer"],
+                "user": True,
             }
         )
     assert maintenance.configuration_details(caught.value) == {
@@ -705,8 +721,14 @@ def test_launcher_identification_does_not_validate_yaml(tmp_path, valid_config, 
         spec, paths, config = scheduled_job(tmp_path, valid_config, setup, user=user)
     config.write_text("job: [\n")
     before = {path: path.read_bytes() for path in paths.units_root.rglob("*") if path.is_file()}
+    script = (
+        "import os, runpy, sys; "
+        + ("os.geteuid = lambda: 0; " if not user else "")
+        + "sys.argv = ['vaultkeep.maintenance', 'check-launchers']; "
+        "runpy.run_module('vaultkeep.maintenance', run_name='__main__')"
+    )
     result = subprocess.run(
-        [sys.executable, "-I", "-m", "vaultkeep.maintenance", "check-launchers"],
+        [sys.executable, "-I", "-c", script],
         input=json.dumps(spec),
         capture_output=True,
         text=True,
@@ -735,3 +757,209 @@ def test_offline_monitor_command_refusal_identifies_unit_before_loading_yaml(
     assert str(unit) in json.loads(result.stdout)["failure"]
     assert "custom managed service arguments require manual review" in result.stdout
     assert "YAML" not in result.stdout
+
+
+@pytest.mark.parametrize("user", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("deferred", [False, True])
+def test_uninstalled_jobs_receive_independent_semantic_validation(
+    tmp_path, valid_config, monkeypatch, user, enabled, deferred
+):
+    from vaultkeep.validation import resolve_application
+
+    spec = document(tmp_path, user=user)
+    jobs = Path(spec["paths"]["jobs_root"])
+    jobs.mkdir()
+    path = jobs / "app.yaml"
+    valid_config["schedule"]["enabled"] = enabled
+    valid_config["sources"][0]["path"] = "relative-source"
+    valid_config["application"] = application_identity()
+    if deferred:
+        valid_config["destination"]["root"] = "/backups/{repo}"
+    path.write_text(json.dumps(valid_config))
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    identities = []
+
+    def resolve(*args, **kwargs):
+        app = resolve_application(*args, **kwargs)
+        identities.append(app)
+        return app
+
+    monkeypatch.setattr("vaultkeep.validation.resolve_application", resolve)
+    result = maintenance.check_configurations(spec)
+
+    assert len(identities) == 1
+    assert result["errors"] == [
+        {
+            "file": str(path),
+            "job": "app",
+            "issues": [{"path": "sources[0].path", "message": "Source path must be absolute."}],
+        }
+    ]
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert sorted(jobs.iterdir()) == [path]
+    assert not Path(spec["paths"]["units_root"]).exists()
+    assert not Path(spec["paths"]["registry_path"]).exists()
+
+
+def test_uninstalled_job_rejects_source_destination_overlap(tmp_path, valid_config):
+    spec = document(tmp_path, user=True)
+    jobs = Path(spec["paths"]["jobs_root"])
+    jobs.mkdir()
+    valid_config["destination"]["root"] = valid_config["sources"][0]["path"]
+    path = jobs / "app.yaml"
+    path.write_text(json.dumps(valid_config))
+
+    issue = maintenance.check_configurations(spec)["errors"][0]
+
+    assert issue["file"] == str(path)
+    assert issue["issues"] == [
+        {"path": "destination.root", "message": "Destination and sources[0].path overlap."}
+    ]
+
+
+@pytest.mark.parametrize("user", [False, True])
+@pytest.mark.parametrize("template", ["plain", "deferred", "trigger_params"])
+def test_uninstalled_preflight_needs_no_runtime_directories(tmp_path, valid_config, user, template):
+    spec = document(tmp_path, user=user)
+    jobs = Path(spec["paths"]["jobs_root"])
+    jobs.mkdir()
+    valid_config["application"] = application_identity()
+    valid_config["sources"][0]["path"] = str(tmp_path / "absent-source")
+    valid_config["destination"]["root"] = str(tmp_path / "absent-destination")
+    if template != "plain":
+        valid_config["destination"]["root"] += "/{repo}"
+        valid_config["destination"]["name_template"] = "{job}-{repo}-{timestamp_utc:%Y%m%d}"
+    if template == "trigger_params":
+        valid_config["trigger"] = {"enabled": True, "params": {"repo": "nas"}}
+    (jobs / "app.yaml").write_text(json.dumps(valid_config))
+
+    assert maintenance.check_configurations(spec) == {"errors": []}
+    assert not (tmp_path / "absent-source").exists()
+    assert not (tmp_path / "absent-destination").exists()
+    assert not Path(spec["paths"]["units_root"]).exists()
+
+
+@pytest.mark.parametrize("user", [False, True])
+def test_uninstalled_deferred_template_still_checks_identity(tmp_path, valid_config, user):
+    spec = document(tmp_path, user=user)
+    jobs = Path(spec["paths"]["jobs_root"])
+    jobs.mkdir()
+    path = jobs / "app.yaml"
+    valid_config["application"] = application_identity("vaultkeep-preflight-missing-account")
+    valid_config["destination"]["root"] = "/backups/{repo}"
+    path.write_text(json.dumps(valid_config))
+
+    issue = maintenance.check_configurations(spec)["errors"][0]
+
+    assert issue["file"] == str(path)
+    assert issue["issues"][0]["path"] == "application.user"
+    assert ("Unsupported property" if user else "does not exist") in issue["issues"][0]["message"]
+
+
+def test_preflight_collects_installed_and_uninstalled_semantic_errors(
+    tmp_path, valid_config, monkeypatch
+):
+    spec, paths, installed = scheduled_job(tmp_path, valid_config, monkeypatch, user=True)
+    originals = {path: path.read_bytes() for path in paths.units_root.rglob("*") if path.is_file()}
+    valid_config["sources"][0]["path"] = "relative-source"
+    installed.write_text(json.dumps(valid_config))
+    other = copy.deepcopy(valid_config)
+    other["job"]["id"] = "other"
+    other["sources"][0]["path"] = "/srv/other"
+    other["destination"]["root"] = "relative-destination"
+    uninstalled = paths.jobs_root / "other.yaml"
+    uninstalled.write_text(json.dumps(other))
+    malformed = paths.jobs_root / "malformed.yaml"
+    malformed.write_text("job: [\n")
+
+    errors = maintenance.check_configurations(spec)["errors"]
+
+    assert {error["file"]: error["issues"][0]["path"] for error in errors} == {
+        str(installed): "sources[0].path",
+        str(uninstalled): "destination.root",
+        str(malformed): "job",
+    }
+    assert all(path.read_bytes() == before for path, before in originals.items())
+
+
+@pytest.mark.parametrize("kind", ["timer", "monitor"])
+def test_preflight_resolves_once_and_refresh_and_resume_prepare_afresh(
+    tmp_path, valid_config, monkeypatch, kind
+):
+    from vaultkeep.validation import resolve_application
+
+    if kind == "timer":
+        spec, _, path = scheduled_job(
+            tmp_path, valid_config, monkeypatch, user=True, params={"repo": "nas"}
+        )
+        valid_config["application"] = application_identity()
+        path.write_text(json.dumps(valid_config))
+    else:
+        spec, _, _ = monitor_job(tmp_path, valid_config)
+    identities = []
+
+    def resolve(*args, **kwargs):
+        app = resolve_application(*args, **kwargs)
+        identities.append(app)
+        return app
+
+    monkeypatch.setattr("vaultkeep.validation.resolve_application", resolve)
+
+    assert maintenance.check_configurations(spec) == {"errors": []}
+    assert len(identities) == 1
+    planned = maintenance.plan(spec)
+    assert len(identities) == 2
+    maintenance.validate({**planned, "active": [], "user": True})
+    assert len(identities) == 3
+    assert identities[0] == identities[1] == identities[2]
+
+
+def test_preflight_prepares_each_saved_parameter_selection_once(
+    tmp_path, valid_config, monkeypatch
+):
+    from vaultkeep.validation import resolve_application
+
+    spec, paths, path = scheduled_job(
+        tmp_path, valid_config, monkeypatch, user=True, params={"repo": "one"}
+    )
+    valid_config["application"] = application_identity()
+    path.write_text(json.dumps(valid_config))
+    manager = TimerManager(paths, user_mode=True)
+    with monkeypatch.context() as installation:
+        installation.setattr(manager, "_systemctl", lambda *a, **kw: "")
+        installation.setattr(manager, "_validate_change", lambda *a: None)
+        manager.install(path, runtime_params={"repo": "two"})
+    identities = []
+
+    def resolve(*args, **kwargs):
+        app = resolve_application(*args, **kwargs)
+        identities.append(app)
+        return app
+
+    monkeypatch.setattr("vaultkeep.validation.resolve_application", resolve)
+
+    assert maintenance.check_configurations(spec) == {"errors": []}
+    assert len(identities) == 2
+
+
+@pytest.mark.parametrize("phase", ["refresh", "resume"])
+def test_later_installer_phase_rejects_unavailable_identity(
+    tmp_path, valid_config, monkeypatch, phase
+):
+    from vaultkeep.errors import ConfigurationError
+
+    spec, _, _ = monitor_job(tmp_path, valid_config)
+    assert maintenance.check_configurations(spec) == {"errors": []}
+    planned = maintenance.plan(spec)
+
+    def unavailable(_uid):
+        raise OSError("account service unavailable")
+
+    monkeypatch.setattr("vaultkeep.application.pwd.getpwuid", unavailable)
+    with pytest.raises(ConfigurationError, match=r"application\.user") as caught:
+        if phase == "refresh":
+            maintenance.plan(spec)
+        else:
+            maintenance.validate({**planned, "active": [], "user": True})
+    assert caught.value.config_path == tmp_path / "directory with spaces/app.yaml"

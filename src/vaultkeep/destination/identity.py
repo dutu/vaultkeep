@@ -8,7 +8,9 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from vaultkeep.application import ResolvedApplication
 from vaultkeep.config.models import JobConfig, JobIdentityConfig, SourceConfig, SourceOptionsConfig
+from vaultkeep.errors import SourceDiscoveryError
 
 
 class ReplacementIdentity(BaseModel):
@@ -65,7 +67,9 @@ class ReplacementIdentity(BaseModel):
         return self
 
 
-def replacement_identity(config: JobConfig) -> ReplacementIdentity:
+def replacement_identity(
+    config: JobConfig, *, application: ResolvedApplication | None = None
+) -> ReplacementIdentity:
     """Store canonical source coverage so histories can be compared without YAML."""
     scope = {
         "job": config.job.id,
@@ -77,7 +81,11 @@ def replacement_identity(config: JobConfig) -> ReplacementIdentity:
         "exclude": config.exclude,
         "source_options": config.source_options.model_dump(),
     }
-    app = config.application if config.consistency.mode == "application_offline" else None
+    app = application if config.consistency.mode == "application_offline" else None
+    if config.consistency.mode == "application_offline" and app is None:
+        raise SourceDiscoveryError(
+            "Current-history identity requires a resolved application identity"
+        )
     return ReplacementIdentity(
         identity_version=1,
         source_scope=json.dumps(scope, sort_keys=True, separators=(",", ":")),

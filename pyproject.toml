@@ -63,7 +63,6 @@ select = [
 # Keep the existing Trigger style exceptions during integration.
 [tool.ruff.lint.per-file-ignores]
 "src/vaultkeep/trigger/childproc.py" = ["SIM105"]
-"src/vaultkeep/trigger/matcher.py" = ["SIM110"]
 "src/vaultkeep/trigger/models.py" = ["UP042"]
 "src/vaultkeep/trigger/systemd.py" = ["UP042"]
 "src/vaultkeep/trigger/monitor.py" = ["B023"]
@@ -83,10 +82,8 @@ files = ["src"]
 [[tool.mypy.overrides]]
 module = [
     "vaultkeep.trigger.childproc",
-    "vaultkeep.trigger.detection",
     "vaultkeep.trigger.models",
     "vaultkeep.trigger.monitor",
-    "vaultkeep.trigger.process",
     "vaultkeep.trigger.state",
     "vaultkeep.trigger.systemd",
 ]

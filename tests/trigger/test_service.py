@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import pwd
 from dataclasses import replace
 from pathlib import Path
 
@@ -46,7 +44,6 @@ def config(tmp_path: Path, valid_config: dict):
         "name": "electrum",
         "data_dir": "/home/user/.electrum",
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
     valid_config["trigger"] = {"enabled": True}
     path = tmp_path / "app.yaml"
@@ -148,6 +145,7 @@ def test_legacy_recovery_evidence_blocks_new_monitors(tmp_path: Path, monkeypatc
     assert not (tmp_path / "new").exists()
 
 
+@pytest.mark.usefixtures("system_execution")
 def test_root_schedule_and_user_trigger_coexist(
     tmp_path: Path, valid_config: dict, monkeypatch
 ) -> None:

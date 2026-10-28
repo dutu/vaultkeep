@@ -137,6 +137,7 @@ quoting, environments, timeouts, and failure/cleanup behavior.
 User mode cannot install packages, elevate access to files/secrets/destinations,
 mount filesystems without operating-system authorization, or manage root jobs/system timers.
 Use root scope when protected system resources require administrator privileges.
-Trigger monitoring runs in non-root user mode. Inspection follows the configured
-`application.user` and remains limited by operating-system permissions. Optional [notifications](notifications.md) target a desktop
+Trigger monitoring runs in non-root user mode. Inspection is restricted to the
+job execution account. Omit `application.user` in user mode.
+Optional [notifications](notifications.md) target a desktop
 owned by this account in the same host/container.

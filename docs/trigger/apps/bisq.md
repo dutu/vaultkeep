@@ -111,7 +111,6 @@ processes:
 ```yaml
 application:
   name: bisq
-  user: bisquser
   data_dir: /data/bisq/Bisq_Alice
   matcher:
     entrypoints:

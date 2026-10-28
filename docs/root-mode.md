@@ -70,7 +70,8 @@ vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate --schema-only
 
 For routine list/prune commands and restoration, use the
 [README operations](../README.md#check-health-and-perform-everyday-operations) and
-[restore procedure](../README.md#restore-a-backup), with `sudo` where access requires it.
+[restore procedure](../README.md#restore-a-backup). Root-mode list/prune commands
+require `sudo`; restoration needs the permissions required to read and extract the archive.
 
 ## Configure root-mode automatic backups
 

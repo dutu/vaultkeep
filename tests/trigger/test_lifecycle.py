@@ -5,9 +5,9 @@ from dataclasses import replace
 import pytest
 
 from tests.trigger.conftest import make_instance, make_request
-from vaultkeep.trigger.detection import DetectionResult
+from vaultkeep.application import DetectionResult, Observation
 from vaultkeep.trigger.lifecycle import ExecutionContext, progress
-from vaultkeep.trigger.models import InstanceState, Observation
+from vaultkeep.trigger.models import InstanceState
 
 CONTEXT = ExecutionContext(vaultkeep="/usr/local/bin/vaultkeep", environment={"HOME": "/home/user"})
 

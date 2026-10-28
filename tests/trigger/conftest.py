@@ -9,16 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from vaultkeep.application import Entrypoint, MatcherSpec, ProcessInfo
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.trigger.childproc import ChildResult
-from vaultkeep.trigger.config import (
-    Entrypoint,
-    InstanceConfig,
-    JobSpec,
-    MatcherSpec,
-    TriggerConfig,
-)
-from vaultkeep.trigger.matcher import ProcessInfo
+from vaultkeep.trigger.config import InstanceConfig, JobSpec, TriggerConfig
 from vaultkeep.trigger.models import Request, new_uuid, utc_now
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import SubmissionClass, SubmissionResult, UnitState

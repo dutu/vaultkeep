@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import pwd
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,7 +41,6 @@ def resources(tmp_path, monkeypatch, valid_config):
         "name": "electrum",
         "data_dir": str(tmp_path / "wallet"),
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
     valid_config["trigger"] = {"enabled": True}
     path.write_text(json.dumps(valid_config))
@@ -478,7 +475,7 @@ def test_bad_trigger_settings_do_not_hide_other_status_sections(resources, capsy
 @pytest.mark.parametrize("user_mode", [False, True])
 @pytest.mark.parametrize("parameters", [{}, {"repo": "one"}])
 def test_schedule_recovery_uses_existing_scope_and_parameter_unit_identity(
-    tmp_path, valid_config, monkeypatch, user_mode, parameters
+    tmp_path, valid_config, monkeypatch, user_mode, parameters, system_execution
 ):
     from vaultkeep.config import JobConfig
     from vaultkeep.schedule import TIMER_TEMPLATE, TimerPaths, render_schedule

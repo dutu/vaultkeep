@@ -246,15 +246,15 @@ def test_common_workflow_uses_only_backup_notification_setting(
         "trigger": {"enabled": trigger},
     }
     valid_config["destination"]["root"] = str(tmp_path)
-    path = tmp_path / "job.yaml"
+    path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))
-    monkeypatch.setattr("vaultkeep.backup.workflow.validate_semantics", lambda *_a, **_k: None)
+    monkeypatch.setattr("vaultkeep.validation.validate_semantics", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "vaultkeep.backup.workflow._run_single_backup",
         lambda *_a, **_k: CommandResult("run", "created"),
     )
     paths = WorkflowPaths(tmp_path / "state", tmp_path / "cache", tmp_path / "locks")
-    assert run_backup(path, paths=paths).result == "created"
+    assert run_backup(path, paths=paths, user_mode=True).result == "created"
     assert bool(recorder.calls) is backup
     assert recorder.configs == [NotificationConfig(backup, "/custom/notify", 250)]
     assert trigger_config(path).notifications == NotificationConfig(trigger, "/custom/notify", 250)

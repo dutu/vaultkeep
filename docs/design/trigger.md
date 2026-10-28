@@ -103,6 +103,22 @@ The command shape is already supported:
 
 Construct an argument array without a shell. Keep backup execution behind this CLI boundary so worker lifetimes and result receipts remain independent of monitor state. JSON output is optional, not a prerequisite.
 
+## Shared application identity
+
+`ApplicationConfig` contains raw YAML input. Shared job preparation validates scope
+and resolves it once into `ResolvedApplication`, with canonical account/UID, paths,
+and a detached matcher snapshot. Both Backup and Trigger consume this value;
+configuration never stores runtime provenance. Execution policy and configuration
+fingerprints retain their established canonical application fields and UID inputs.
+Replacement-history identity remains username-based.
+
+`vaultkeep.application` owns account resolution and the shared UID-restricted process
+provider, matcher, and detector. Trigger adapts its instances to that detector and
+keeps its request, attempt, receipt, persisted-state, monitor, and lifecycle models.
+Offline backup checks independently revalidate account and directory ownership;
+Trigger children independently compare their prepared identity with the frozen
+execution policy before backup work.
+
 ## Process-model validation
 
 The detailed wallet-specific source findings and enablement gates are maintained in

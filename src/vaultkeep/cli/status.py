@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from vaultkeep.application import resolve_application
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
 from vaultkeep.backup.status import backup_status
 from vaultkeep.cli.output import Console
@@ -18,7 +19,7 @@ from vaultkeep.diagnostics import concise, duration, timestamp
 from vaultkeep.errors import ConfigurationError, TimerError
 from vaultkeep.schedule.status import schedule_status
 from vaultkeep.state.identity import job_identity_hash
-from vaultkeep.trigger.config import load_config as load_trigger_config
+from vaultkeep.trigger.config import from_prepared_job
 from vaultkeep.trigger.status import recovery_status, trigger_status
 
 
@@ -85,7 +86,7 @@ def _collect_valid_status(
     }
     result["destination"] = destination
     try:
-        inventory = list_backups(config_path, runtime_params=parameters)
+        inventory = list_backups(config_path, runtime_params=parameters, user_mode=user_mode)
         discovery = DiscoveryResult(inventory.backups, inventory.malformed)
         for backup in inventory.backups:
             if backup.suspect_reason is not None:
@@ -107,8 +108,16 @@ def _collect_valid_status(
             from vaultkeep.trigger.errors import TriggerError
 
             try:
+                application = (
+                    resolve_application(config.application, user_mode=True, config_path=config_path)
+                    if config.application is not None
+                    else None
+                )
                 trigger = trigger_status(
-                    load_trigger_config(config_path, runtime_params=parameters), verbose=verbose
+                    from_prepared_job(
+                        config, application, source=config_path.resolve(), params=parameters
+                    ),
+                    verbose=verbose,
                 )
             except (VaultkeepError, TriggerError, OSError) as error:
                 trigger = {

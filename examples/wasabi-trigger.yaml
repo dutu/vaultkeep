@@ -70,8 +70,7 @@ consistency:
   mode: application_offline              # Require stopped observations during source processing
 
 application:
-  user: user                              # Account that owns the application
-  name: wasabi                            # Application matcher
+  name: wasabi                            # Data-directory detection rules
   data_dir: /home/user/.walletwasabi/client # Must match Wasabi data directory
   matcher:
     entrypoints:                         # Accepted process entrypoints

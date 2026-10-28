@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
-import pwd
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from tests.trigger.conftest import make_request
+from vaultkeep.application import Observation
 from vaultkeep.cli import main
 from vaultkeep.cli.status import collect_status
 from vaultkeep.trigger.config import load_config
@@ -18,7 +17,6 @@ from vaultkeep.trigger.models import (
     AttemptOutcome,
     InstanceState,
     LaunchRecord,
-    Observation,
     ObservationRecord,
     Receipt,
     utc_now,
@@ -33,11 +31,10 @@ def selected_job(tmp_path, valid_config, store, monkeypatch):
         "name": "electrum",
         "data_dir": str(tmp_path / "wallet"),
         "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum/run"}]},
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
     }
     valid_config["trigger"] = {"enabled": True}
     valid_config["schedule"] = {"enabled": False}
-    path = tmp_path / "job.yaml"
+    path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "backup-state"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))

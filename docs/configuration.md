@@ -122,7 +122,6 @@ consistency:
   mode: application_offline
 application:
   name: bisq
-  user: alice
   data_dir: /home/alice/.local/share/Bisq
   matcher:
     entrypoints:
@@ -131,10 +130,25 @@ application:
 ```
 
 `application` is required for offline policy or an enabled Trigger, and optional
-otherwise. A present identity requires all four fields. Supported application names
-are `bisq`, `electrum`, and `wasabi`. The account must exist; its canonical data
-directory must be owned by that account. Home paths expand against that account,
-including when root executes the backup. The engine and Trigger share the same
+otherwise. A present identity requires `name`, `data_dir`, and `matcher`. Supported
+names are `bisq`, `electrum`, and `wasabi`: `name` selects the application's
+process-data-directory rules; `matcher` identifies its processes. The name cannot
+be inferred reliably from arbitrary script paths, JARs, or Java main classes.
+
+Omit `application.user` for user-mode jobs. Vaultkeep resolves the effective
+execution UID through the operating-system account database, as it does for the
+owning systemd user manager and installer refresh. YAML ownership, configuration
+location, `HOME`, `USER`, and `SUDO_USER` do not select the account. An explicit
+`application.user` is unsupported in user mode. Full validation reports the
+property and absolute configuration path before looking up the supplied account.
+Schema-only validation checks structure without resolving execution accounts.
+
+Root mode requires root privileges and defaults to root ownership. To inspect another user's
+application in a root-mode manual or scheduled offline backup, set
+`application.user: alice` explicitly. Trigger remains non-root user mode only.
+The account must exist; its canonical data directory must be owned by that account.
+Home paths expand against the resolved account, including root backups targeting
+another user. The engine and Trigger share the same
 matcher and process provider. See [matcher options](trigger/configuration.md#matcher).
 
 Trigger settings contain only enablement, dispatch parameters, and monitoring timing.

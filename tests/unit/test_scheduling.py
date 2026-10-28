@@ -22,6 +22,8 @@ from vaultkeep.schedule import (
     render_schedule,
 )
 
+pytestmark = pytest.mark.usefixtures("system_execution")
+
 
 def _install_templates(paths: TimerPaths) -> None:
     paths.units_root.mkdir(parents=True, exist_ok=True)

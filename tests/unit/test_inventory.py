@@ -149,7 +149,7 @@ def test_inventory_uses_stored_utc_encryption_sizes_and_relative_paths(job, caps
     unrelated = job.create(4, job_id="other-job")
     newest.archive.write_bytes(b"x" * 1536)
 
-    inventory = workflow.list_backups(job.path)
+    inventory = workflow.list_backups(job.path, user_mode=True)
     assert [backup.archive_path for backup in inventory.backups] == [
         newest.archive,
         encrypted.archive,
@@ -352,7 +352,7 @@ def test_narrow_terminals_keep_long_paths_using_verify_table_conventions(job, mo
         output_module.os, "get_terminal_size", lambda fd: os.terminal_size((columns, 24))
     )
     monkeypatch.setattr("sys.stdout", stream)
-    inventory = workflow.list_backups(job.path)
+    inventory = workflow.list_backups(job.path, user_mode=True)
     print_inventory(inventory, output=Console())
     out = stream.getvalue()
     relative = str(good.directory.relative_to(job.root))
@@ -457,7 +457,7 @@ def test_retention_tiers_and_prune_decisions_agree_with_existing_planner(job, ca
     assert "Backups: 3 · Keep: 2 · Prune: 1" in out
     assert "PRUNE indicates eligibility" not in out
     assert "No backups are deleted." not in out and err == ""
-    assert workflow.prune_backups(job.path, dry_run=True).result == "planned"
+    assert workflow.prune_backups(job.path, dry_run=True, user_mode=True).result == "planned"
     assert snapshot(job.path.parent) == before
 
 
@@ -529,7 +529,7 @@ def test_disabled_retention_is_display_only_and_does_not_relax_other_validation(
     assert snapshot(job.path.parent) == before
     with pytest.raises(ConfigurationError, match="At least one retention tier"):
         workflow.load_validated_config(job.path)
-    assert commands.main(["--config", str(job.path), "prune", "--dry-run"]) == 3
+    assert commands.main(["--user", "--config", str(job.path), "prune", "--dry-run"]) == 3
     job.data["destination"]["root"] = "relative"
     job.path.write_text(json.dumps(job.data))
     assert cli(job) == 3

@@ -103,7 +103,10 @@ def _dispatch(
                     no_color=namespace.no_color,
                 )
             result = validate_job(
-                namespace.config, schema_only=namespace.schema_only, runtime_params=runtime_params
+                namespace.config,
+                schema_only=namespace.schema_only,
+                runtime_params=runtime_params,
+                user_mode=namespace.user_mode,
             )
         elif namespace.command == "run":
             started = monotonic()
@@ -122,7 +125,9 @@ def _dispatch(
                     )
             elapsed = monotonic() - started
         elif namespace.command == "list":
-            inventory = list_backups(namespace.config, runtime_params=runtime_params)
+            inventory = list_backups(
+                namespace.config, runtime_params=runtime_params, user_mode=namespace.user_mode
+            )
             print_inventory(inventory, output=output)
             return 0
         elif namespace.command == "verify":
@@ -150,7 +155,10 @@ def _dispatch(
             return 7 if result.result == "failed" else 0
         elif namespace.command == "prune":
             result = prune_backups(
-                namespace.config, dry_run=namespace.dry_run, runtime_params=runtime_params
+                namespace.config,
+                dry_run=namespace.dry_run,
+                runtime_params=runtime_params,
+                user_mode=namespace.user_mode,
             )
         else:
             manager = TimerManager(user_mode=namespace.user_mode)

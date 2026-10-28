@@ -359,7 +359,10 @@ def validate(path: Path) -> None:
     document = json.loads(path.read_text())
     for spec in document["accounts"]:
         account_operation(
-            spec, document["python"], "validate", {**spec["plan"], "active": spec["active"]}
+            spec,
+            document["python"],
+            "validate",
+            {**spec["plan"], "active": spec["active"], "user": spec["account"] is not None},
         )
         if spec["command"]:
             for unit, enabled in spec["states"].items():

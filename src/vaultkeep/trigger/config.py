@@ -12,15 +12,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from vaultkeep.application import resolve_application
+from vaultkeep.application import (
+    MatcherSpec,
+    ResolvedApplication,
+    execution_policy,
+    matcher_from_canonical,
+)
+from vaultkeep.config import JobConfig
 from vaultkeep.config import load_config as load_job_config
-from vaultkeep.config.models import TriggerMatcherConfig
+from vaultkeep.errors import ApplicationIdentityError
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.errors import ConfigurationError
+from vaultkeep.validation import prepare_job
 
-SUPPORTED_APPS = ("electrum", "bisq", "wasabi")
 INSTANCE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
@@ -40,36 +46,6 @@ class JobSpec:
 
     def canonical(self) -> dict[str, Any]:
         return {"config": str(self.config), "params": dict(sorted(self.params.items()))}
-
-
-@dataclass(frozen=True, slots=True)
-class Entrypoint:
-    kind: str
-    value: str
-
-
-@dataclass(frozen=True, slots=True)
-class MatcherSpec:
-    """Strong process identity plus optional supporting predicates."""
-
-    exe_realpath: str | None = None
-    entrypoints: tuple[Entrypoint, ...] = ()
-    argv_tokens: tuple[str, ...] = ()
-    cmdline_regex: str | None = None
-    env_eq: dict[str, str] = field(default_factory=dict)
-
-    def canonical(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "exe_realpath": self.exe_realpath,
-            "entrypoints": [
-                {"kind": entrypoint.kind, "value": entrypoint.value}
-                for entrypoint in self.entrypoints
-            ],
-            "argv_tokens": list(self.argv_tokens),
-            "cmdline_regex": self.cmdline_regex,
-            "env_eq": dict(sorted(self.env_eq.items())),
-        }
-        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,19 +103,6 @@ class TriggerConfig:
         return None
 
 
-def matcher_from_canonical(data: dict[str, Any]) -> MatcherSpec:
-    """Validate and rebuild a matcher from a frozen request snapshot."""
-    raw = TriggerMatcherConfig.model_validate(data)
-    entrypoints = tuple(Entrypoint(kind=item.kind, value=item.value) for item in raw.entrypoints)
-    return MatcherSpec(
-        exe_realpath=raw.exe_realpath,
-        entrypoints=entrypoints,
-        argv_tokens=tuple(raw.argv_tokens),
-        cmdline_regex=raw.cmdline_regex,
-        env_eq=dict(raw.env_eq),
-    )
-
-
 def load_config(
     path: str | os.PathLike[str], *, runtime_params: Mapping[str, str] | None = None
 ) -> TriggerConfig:
@@ -152,13 +115,28 @@ def load_config(
     trigger = job.trigger
     params = dict(trigger.params)
     params.update(runtime_params or {})
+    try:
+        job, application = prepare_job(
+            job, user_mode=True, config_path=source, runtime_params=params
+        )
+    except (ApplicationIdentityError, JobConfigurationError) as error:
+        raise ConfigurationError(str(error)) from error
+    return from_prepared_job(job, application, source=source, params=params)
+
+
+def from_prepared_job(
+    job: JobConfig,
+    application: ResolvedApplication | None,
+    *,
+    source: Path,
+    params: Mapping[str, str],
+) -> TriggerConfig:
+    """Adapt prepared facts without reloading configuration or resolving identity."""
+    trigger = job.trigger
+    params = dict(params)
     scope = job_identity_hash(source, job.job.id, runtime_params=params)
     instances: tuple[InstanceConfig, ...] = ()
-    if job.application is not None:
-        from vaultkeep.backup.workflow import execution_policy
-
-        application, owner_uid = resolve_application(job.application, validate_directory=False)
-        snapshot = job.model_copy(update={"application": application})
+    if application is not None:
         instances = (
             InstanceConfig(
                 id=job.job.id,
@@ -170,8 +148,8 @@ def load_config(
                 poll_seconds=trigger.poll_seconds,
                 confirm_seconds=trigger.confirm_seconds,
                 deadline_seconds=trigger.deadline_seconds,
-                owner_uid=owner_uid,
-                execution_policy=execution_policy(snapshot, owner_uid),
+                owner_uid=application.owner_uid,
+                execution_policy=execution_policy(job, application),
             ),
         )
     # Invoke this installation's own CLI, not an independently configured core binary.

@@ -10,11 +10,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from vaultkeep.application import Observation
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
-from vaultkeep.backup.workflow import validate_job
+from vaultkeep.backup.workflow import validate_prepared_job
 from vaultkeep.cli.output import Console, configure_logging
-from vaultkeep.config import JobConfig, load_config, resolve_runtime_config
+from vaultkeep.config import JobConfig, load_config
 from vaultkeep.errors import (
+    ApplicationIdentityError,
     ConfigurationError,
     DestinationError,
     StateError,
@@ -26,17 +28,16 @@ from vaultkeep.schedule import TimerManager
 from vaultkeep.schedule.status import unit_properties as _unit_properties
 from vaultkeep.state.identity import job_identity_hash, job_state_path
 from vaultkeep.state.local_state import StateLoadStatus, load_local_state
-from vaultkeep.trigger.config import TriggerConfig
-from vaultkeep.trigger.config import load_config as load_trigger_config
+from vaultkeep.trigger.config import TriggerConfig, from_prepared_job
 from vaultkeep.trigger.errors import StateError as TriggerStateError
 from vaultkeep.trigger.errors import TriggerError
-from vaultkeep.trigger.models import AttemptOutcome, Observation, parse_utc, utc_now
+from vaultkeep.trigger.models import AttemptOutcome, parse_utc, utc_now
 from vaultkeep.trigger.paths import state_root
 from vaultkeep.trigger.preflight import runtime_preflight
 from vaultkeep.trigger.service import service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController
-from vaultkeep.validation import validate_semantics
+from vaultkeep.validation import prepare_job
 
 _LOG = logging.getLogger("vaultkeep.cli.validation")
 
@@ -218,8 +219,7 @@ def _trigger_state_health(
             report.row("Last dispatch", str(outcome))
 
 
-def _trigger_health(report: _Report, config_path: Path, params: dict[str, str]) -> None:
-    config = load_trigger_config(config_path, runtime_params=params)
+def _trigger_health(report: _Report, config: TriggerConfig) -> None:
     report.check(
         "Trigger runtime prerequisites",
         lambda: runtime_preflight(
@@ -240,17 +240,24 @@ def _trigger_health(report: _Report, config_path: Path, params: dict[str, str]) 
 
 
 def _schedule_health(
-    report: _Report, config_path: Path, params: dict[str, str], *, user_mode: bool
+    report: _Report,
+    config_path: Path,
+    config: JobConfig,
+    params: dict[str, str],
+    *,
+    user_mode: bool,
 ) -> None:
     manager = TimerManager(user_mode=user_mode)
 
     def prerequisites() -> None:
         manager.require_environment()
-        manager.validate(config_path, runtime_params=params)
+        manager.validate_calendar(config)
 
     report.check("Schedule runtime prerequisites", prerequisites, "passed (systemd and calendar)")
     try:
-        unit, installed = manager.installation_status(config_path, runtime_params=params)
+        unit, installed = manager.installation_status(
+            config_path, job_id=config.job.id, runtime_params=params
+        )
     except TimerError as error:
         report.problem("Timer installation", str(error))
         return
@@ -339,9 +346,10 @@ def validate_command(
         params = dict(config.trigger.params) if config.trigger.enabled else {}
         params.update(runtime_params)
         if not schema_only:
-            config = resolve_runtime_config(config, params)
-            validate_semantics(config, config_path=config_path, runtime_params=params)
-    except ConfigurationError as error:
+            config, application = prepare_job(
+                config, user_mode=user_mode, config_path=config_path, runtime_params=params
+            )
+    except (ConfigurationError, ApplicationIdentityError) as error:
         report.problem("Configuration", "FAILED", issue=str(error), diagnostic=True)
         return report.render(None, user_mode)
     configure_logging(config.logging.level, no_color=no_color)
@@ -362,7 +370,7 @@ def validate_command(
         return report.render(config.job.id, user_mode, schema_only=True)
     report.check(
         "Backup paths",
-        lambda: validate_job(config_path, runtime_params=params),
+        lambda: validate_prepared_job(config, application, config_path=config_path),
         "valid",
     )
     report.section = "Backup"
@@ -379,13 +387,21 @@ def validate_command(
                 "unsupported — run as the application owner with --user, without sudo",
             )
         else:
-            report.check("Trigger checks", lambda: _trigger_health(report, config_path, params))
+            report.check(
+                "Trigger checks",
+                lambda: _trigger_health(
+                    report,
+                    from_prepared_job(
+                        config, application, source=config_path.resolve(), params=params
+                    ),
+                ),
+            )
     elif config.schedule.enabled:
         report.section = "Scheduling"
         report.row("Schedule", "ENABLED")
         report.check(
             "Schedule checks",
-            lambda: _schedule_health(report, config_path, params, user_mode=user_mode),
+            lambda: _schedule_health(report, config_path, config, params, user_mode=user_mode),
         )
     else:
         report.section = "Automation"

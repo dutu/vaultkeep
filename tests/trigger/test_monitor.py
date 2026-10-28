@@ -15,15 +15,14 @@ from tests.trigger.conftest import (
     make_instance,
     make_request,
 )
+from vaultkeep.application import Observation, ProcessInfo
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.errors import BlockedError
-from vaultkeep.trigger.matcher import ProcessInfo
 from vaultkeep.trigger.models import (
     AttemptOutcome,
     InstanceState,
     LaunchRecord,
-    Observation,
     ObservationRecord,
     Receipt,
     RejectionState,
@@ -405,7 +404,7 @@ def test_application_notifications_follow_status_states_without_repeating_polls(
 
 @pytest.mark.parametrize("uncertain", [Observation.AMBIGUOUS, Observation.INSPECTION_UNAVAILABLE])
 def test_application_notification_reports_unknown_and_recovery(store, monkeypatch, uncertain):
-    from vaultkeep.trigger.detection import DetectionResult
+    from vaultkeep.application import DetectionResult
 
     provider = FakeProvider([_running_proc()])
     monitor, controller, notifier = _make(store, provider)

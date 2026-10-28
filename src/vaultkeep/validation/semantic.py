@@ -46,6 +46,21 @@ def validate_semantics(
         raise ConfigurationError(tuple(issues))
 
 
+def validate_template_semantics(
+    config: JobConfig,
+    *,
+    config_path: Path | None = None,
+    runtime_params: Mapping[str, str] | None = None,
+) -> None:
+    """Check an uninstalled template while deferring only missing parameter values."""
+    try:
+        validate_semantics(config, config_path=config_path, runtime_params=runtime_params)
+    except ConfigurationError as error:
+        issues = tuple(issue for issue in error.issues if issue.code != "param_missing")
+        if issues:
+            raise ConfigurationError(issues) from error
+
+
 def _issue(
     issues: list[ValidationIssue],
     path: tuple[IssuePathPart, ...],

@@ -218,7 +218,7 @@ def test_damaged_backup_is_preserved_by_retention_but_does_not_fill_healthy_slot
     assert not archives[-1].exists()
     assert not any(archive.exists() for archive in archives[:-1])
     assert len(list((job.parent / "backups").rglob("*.tar.zst"))) == 1
-    assert workflow.prune_backups(job, dry_run=False).removed == 0
+    assert workflow.prune_backups(job, dry_run=False, user_mode=True).removed == 0
 
 
 def test_verify_reports_marked_damage_without_reading_the_damaged_archive(
@@ -228,7 +228,7 @@ def test_verify_reports_marked_damage_without_reading_the_damaged_archive(
     mark_backup_suspect(archives[-1].parent, "checksum mismatch")
     monkeypatch.setattr(workflow, "verify_tar_zstd", lambda *args, **kwargs: None)
     with pytest.raises(DestinationError, match="SUSPECT"):
-        workflow.verify_backups(job)
+        workflow.verify_backups(job, user_mode=True)
 
 
 def test_archive_read_failure_does_not_mark_damage_or_create_replacement(

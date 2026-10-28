@@ -15,17 +15,17 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from vaultkeep.application import runtime_owner
 from vaultkeep.config import (
     JobConfig,
     load_config,
     parse_runtime_parameters,
-    resolve_runtime_config,
 )
 from vaultkeep.config.identity import load_job_identity
 from vaultkeep.errors import ConfigurationError, TimerError
 from vaultkeep.installation import installation_path, systemd_argument
 from vaultkeep.maintenance import command_selection, require_generated
-from vaultkeep.validation import validate_semantics
+from vaultkeep.validation import prepare_job, validate_template_semantics
 
 _WEEKDAYS = {
     "monday": "Mon",
@@ -253,6 +253,7 @@ class TimerManager:
     ) -> None:
         parameters = dict(runtime_params or {})
         resolved = self._managed_path(config_path)
+        runtime_owner(self.user_mode, config_path=resolved)
         identity = load_job_identity(resolved, runtime_params=parameters)
         if identity.job_id != resolved.stem:
             raise TimerError("Timer configuration filename must match job.id")
@@ -368,23 +369,21 @@ class TimerManager:
         ).strip()
 
     def installation_status(
-        self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
+        self, config_path: Path, *, job_id: str, runtime_params: Mapping[str, str] | None = None
     ) -> tuple[str, bool]:
-        """Return the selected timer name and whether its managed files exist."""
+        """Inspect managed files for a prepared job without resolving identity again."""
+        runtime_owner(self.user_mode, config_path=config_path)
+        config_path = self._managed_path(config_path)
         parameters = dict(runtime_params or {})
-        config = self._load_managed(config_path, require_enabled=False, runtime_params=parameters)
-        instance = self._instance_id(config_path, config.job.id, parameters)
+        instance = self._instance_id(config_path, job_id, parameters)
         installed = self._timer_drop_in_path(instance).is_file()
         if self.user_mode or parameters:
             installed = installed and self._service_drop_in_path(instance).is_file()
         return self._unit(instance), installed
 
-    def validate(
-        self, config_path: Path, *, runtime_params: Mapping[str, str] | None = None
-    ) -> RenderedSchedule:
-        config = self._load_managed(
-            config_path, require_enabled=False, runtime_params=runtime_params
-        )
+    def validate_calendar(self, config: JobConfig) -> RenderedSchedule:
+        """Check a prepared job's calendar without repeating job validation."""
+        runtime_owner(self.user_mode)
         rendered = render_schedule(config)
         self._run(("systemd-analyze", "calendar", rendered.on_calendar))
         return rendered
@@ -624,6 +623,7 @@ class TimerManager:
         self, *, deleted: builtins.list[str] | None = None
     ) -> builtins.list[tuple[Path, JobConfig, dict[str, str] | None]]:
         """Resolve all saved selections before any bulk operation changes timers."""
+        runtime_owner(self.user_mode)
         registry = self._registry()
         templates = {
             path.resolve(): self._load_template(path)
@@ -679,8 +679,12 @@ class TimerManager:
         for config_path, template in templates.items():
             for parameters in selections.get(config_path, [{}]):
                 try:
-                    config = resolve_runtime_config(template, parameters)
-                    validate_semantics(config, config_path=config_path, runtime_params=parameters)
+                    config, _application = prepare_job(
+                        template,
+                        user_mode=self.user_mode,
+                        config_path=config_path,
+                        runtime_params=parameters,
+                    )
                 except ConfigurationError as error:
                     if config_path in selections or any(
                         issue.code != "param_missing" for issue in error.issues
@@ -688,16 +692,7 @@ class TimerManager:
                         raise
                     # Missing values defer runtime validation, but other detectable
                     # template errors must still fail preflight.
-                    try:
-                        validate_semantics(template, config_path=config_path)
-                    except ConfigurationError as validation_error:
-                        issues = tuple(
-                            issue
-                            for issue in validation_error.issues
-                            if issue.code != "param_missing"
-                        )
-                        if issues:
-                            raise ConfigurationError(issues) from validation_error
+                    validate_template_semantics(template, config_path=config_path)
                     jobs.append((config_path, template, None))
                 else:
                     jobs.append((config_path, config, parameters))
@@ -705,6 +700,7 @@ class TimerManager:
 
     def _load_template(self, config_path: Path) -> JobConfig:
         resolved = self._managed_path(config_path)
+        runtime_owner(self.user_mode, config_path=resolved)
         config = load_config(resolved)
         if config.job.id != resolved.stem:
             raise TimerError("Timer configuration filename must match job.id")
@@ -725,8 +721,12 @@ class TimerManager:
         runtime_params: Mapping[str, str] | None = None,
     ) -> JobConfig:
         parameters = dict(runtime_params or {})
-        config = resolve_runtime_config(self._load_template(config_path), parameters)
-        validate_semantics(config, config_path=config_path.resolve(), runtime_params=parameters)
+        config, _application = prepare_job(
+            self._load_template(config_path),
+            user_mode=self.user_mode,
+            config_path=config_path.resolve(),
+            runtime_params=parameters,
+        )
         if require_enabled and not config.schedule.enabled:
             raise TimerError("Timer installation requires schedule.enabled: true")
         return config

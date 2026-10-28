@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from vaultkeep.application import Observation
 from vaultkeep.trigger.errors import StateError
 from vaultkeep.trigger.models import (
     AttemptOutcome,
     InstanceState,
     LaunchRecord,
-    Observation,
     ObservationRecord,
     Receipt,
     Request,

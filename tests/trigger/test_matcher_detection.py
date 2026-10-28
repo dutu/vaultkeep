@@ -7,12 +7,16 @@ import psutil
 import pytest
 
 from tests.trigger.conftest import FakeProvider, make_matcher
-from vaultkeep.trigger import process as process_module
-from vaultkeep.trigger.config import Entrypoint, MatcherSpec
-from vaultkeep.trigger.detection import detect_spec
-from vaultkeep.trigger.matcher import ProcessInfo, match_identity
-from vaultkeep.trigger.models import Observation
-from vaultkeep.trigger.process import PsutilProcessProvider
+from vaultkeep import application as process_module
+from vaultkeep.application import (
+    Entrypoint,
+    MatcherSpec,
+    Observation,
+    ProcessInfo,
+    PsutilProcessProvider,
+    detect_spec,
+    match_identity,
+)
 
 
 @pytest.mark.parametrize("value", ["~/.electrum", ".electrum"])

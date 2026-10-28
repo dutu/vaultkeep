@@ -58,7 +58,6 @@ add it as another entry in `entrypoints`:
 ```yaml
 application:
   name: electrum
-  user: alice
   data_dir: /home/alice/.electrum
   matcher:
     entrypoints:
@@ -136,7 +135,6 @@ Use a separate job and monitor for each instance:
 # electrum-main.yaml
 application:
   name: electrum
-  user: alice
   data_dir: /home/alice/.electrum-mainnet
   matcher:
     entrypoints:
@@ -151,7 +149,6 @@ trigger:
 # electrum-test.yaml
 application:
   name: electrum
-  user: alice
   data_dir: /home/alice/.electrum-testnet
   matcher:
     entrypoints:

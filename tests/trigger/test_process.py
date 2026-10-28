@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import psutil
 
-from vaultkeep.trigger.process import PsutilProcessProvider
+from vaultkeep.application import PsutilProcessProvider
 
 
 class _Process:
@@ -36,9 +36,7 @@ def test_snapshot_excludes_other_users_before_metadata_reads(monkeypatch) -> Non
         raise AssertionError("other user's metadata inspected")
 
     monkeypatch.setattr(other, "cmdline", unexpected_read)
-    monkeypatch.setattr(
-        "vaultkeep.trigger.process.psutil.process_iter", lambda _attrs: [mine, other]
-    )
+    monkeypatch.setattr("vaultkeep.application.psutil.process_iter", lambda _attrs: [mine, other])
     monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
     snapshot = PsutilProcessProvider().snapshot()
     assert [proc.pid for proc in snapshot] == [42]
@@ -46,7 +44,7 @@ def test_snapshot_excludes_other_users_before_metadata_reads(monkeypatch) -> Non
 
 def test_unreadable_command_line_is_retained_as_uncertainty(monkeypatch) -> None:
     mine = _Process(42, os.geteuid(), cmdline_readable=False)
-    monkeypatch.setattr("vaultkeep.trigger.process.psutil.process_iter", lambda _attrs: [mine])
+    monkeypatch.setattr("vaultkeep.application.psutil.process_iter", lambda _attrs: [mine])
     monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
     snapshot = PsutilProcessProvider().snapshot()
     assert len(snapshot) == 1 and not snapshot[0].cmdline_available
@@ -55,7 +53,7 @@ def test_unreadable_command_line_is_retained_as_uncertainty(monkeypatch) -> None
 def test_unknown_process_ownership_blocks_snapshot(monkeypatch) -> None:
     mine = _Process(42, os.geteuid())
     mine.info["uids"] = None
-    monkeypatch.setattr("vaultkeep.trigger.process.psutil.process_iter", lambda _attrs: [mine])
+    monkeypatch.setattr("vaultkeep.application.psutil.process_iter", lambda _attrs: [mine])
     import pytest
 
     with pytest.raises(psutil.AccessDenied):
@@ -65,9 +63,9 @@ def test_unknown_process_ownership_blocks_snapshot(monkeypatch) -> None:
 def test_root_provider_inspects_configured_owner_instead_of_executor(monkeypatch):
     target = _Process(42, 4242)
     executor = _Process(99, 0)
-    monkeypatch.setattr("vaultkeep.trigger.process.os.geteuid", lambda: 0)
+    monkeypatch.setattr("vaultkeep.application.os.geteuid", lambda: 0)
     monkeypatch.setattr(
-        "vaultkeep.trigger.process.psutil.process_iter", lambda _attrs: [executor, target]
+        "vaultkeep.application.psutil.process_iter", lambda _attrs: [executor, target]
     )
     monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
     snapshot = PsutilProcessProvider(owner_uid=4242).snapshot()

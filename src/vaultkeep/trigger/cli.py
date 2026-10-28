@@ -8,6 +8,7 @@ import os
 import signal
 from types import FrameType
 
+from vaultkeep.application import PsutilProcessProvider
 from vaultkeep.cli.output import Console, configure_logging
 from vaultkeep.config import parse_runtime_parameters
 from vaultkeep.config.identity import JobIdentity, load_job_identity
@@ -31,7 +32,6 @@ from vaultkeep.trigger.paths import (
     validate_scope,
 )
 from vaultkeep.trigger.preflight import runtime_preflight
-from vaultkeep.trigger.process import PsutilProcessProvider
 from vaultkeep.trigger.service import manage_service, service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController

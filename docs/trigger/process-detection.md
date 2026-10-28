@@ -10,7 +10,6 @@ cannot arm a backup.
 ```yaml
 application:
   name: electrum
-  user: alice
   data_dir: /home/user/.electrum
   matcher:
     exe_realpath: /usr/bin/python3                # optional additional check
@@ -125,7 +124,7 @@ No automatic process-model validation command is provided. Keep the shipped
 [User guide](../../README.md)
 
 The same detector also enforces `application_offline` in the backup engine. It
-inspects the UID resolved from `application.user`, including a different owner under
-root execution. Unreadable process ownership or identity is unavailable evidence,
+inspects the execution UID by default. Only root execution can select a different
+owner through `application.user`. Unreadable process ownership or identity is unavailable evidence,
 never proof of absence. Metadata and environment reads revalidate PID/create-time
 identity to reject reuse races. `files` mode does no engine process inspection.

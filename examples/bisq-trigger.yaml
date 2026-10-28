@@ -69,8 +69,7 @@ consistency:
   mode: application_offline              # Require stopped observations during source processing
 
 application:
-  user: user                              # Account that owns the application
-  name: bisq                              # Application matcher
+  name: bisq                              # Data-directory detection rules
   data_dir: /home/user/.local/share/Bisq # Must match Bisq --appDataDir
   matcher:
     entrypoints:                         # Accepted process entrypoints

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import subprocess
 import sys
 from pathlib import Path
@@ -55,7 +54,6 @@ def test_installed_worker_core_contract(
     }
     config["application"] = {
         "name": "electrum",
-        "user": pwd.getpwuid(os.geteuid()).pw_name,
         "data_dir": str(source),
         "matcher": {"entrypoints": [{"kind": "script", "value": "/disposable/wallet"}]},
     }
@@ -146,7 +144,7 @@ class NoProcesses:
 store = StateStore(base / 'trigger-state')
 store.ensure()
 now = utc_now()
-instance = load_config(job).instances[0]
+instance = load_config(job, runtime_params=params).instances[0]
 request = Request(request_id=new_uuid(), attempt_id=new_uuid(), instance_id='test-instance',
     created_at=now, confirmed_at=now, boot_id=None, config_fingerprint='disposable',
     app=instance.app, data_dir=str(instance.data_dir),

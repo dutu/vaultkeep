@@ -81,7 +81,7 @@ def test_network_backup_verify_replacement_and_prune(
         return result.archive_path if backup_mode == "combined" else result.files[0].archive_path
 
     # Validation acquires the same share lock for its rename probe.
-    assert workflow.validate_job(config).result == "valid"
+    assert workflow.validate_job(config, user_mode=True).result == "valid"
     first = run()
     assert first.result == "created" and run().result == "unchanged"
     assert workflow.verify_backups(config, user_mode=True).backups == 1
@@ -97,8 +97,8 @@ def test_network_backup_verify_replacement_and_prune(
         patch.setattr(workflow, "execute_prune_plan", lambda *args: ())
         latest = run()
     assert latest.result == "created"
-    assert workflow.prune_backups(config, dry_run=True).result == "planned"
-    assert workflow.prune_backups(config, dry_run=False).removed == 1
+    assert workflow.prune_backups(config, dry_run=True, user_mode=True).result == "planned"
+    assert workflow.prune_backups(config, dry_run=False, user_mode=True).removed == 1
     assert archive(latest).is_file() and not archive(replacement).exists()
     assert workflow.verify_backups(config, user_mode=True).backups == 1
 
@@ -106,12 +106,12 @@ def test_network_backup_verify_replacement_and_prune(
         for mutate in (
             run,
             lambda: workflow.verify_backups(config, user_mode=True),
-            lambda: workflow.prune_backups(config, dry_run=False),
+            lambda: workflow.prune_backups(config, dry_run=False, user_mode=True),
         ):
             with pytest.raises(LockError):
                 mutate()
-        assert workflow.prune_backups(config, dry_run=True).result == "planned"
-        assert len(workflow.list_backups(config).backups) == 1
+        assert workflow.prune_backups(config, dry_run=True, user_mode=True).result == "planned"
+        assert len(workflow.list_backups(config, user_mode=True).backups) == 1
     assert (share.root / NETWORK_LOCK_NAME).is_file()
 
 
@@ -150,7 +150,7 @@ except LockError:
         (tmp_path / "source/data").write_bytes(b"changed")
         second = workflow.run_backup(config, paths=paths, user_mode=True)
         assert second.result == "created" and not first.archive_path.exists()
-        assert workflow.prune_backups(config, dry_run=False).removed == 0
+        assert workflow.prune_backups(config, dry_run=False, user_mode=True).removed == 0
 
 
 def test_share_root_destination_ignores_persistent_lock_in_inventory(
@@ -160,10 +160,10 @@ def test_share_root_destination_ignores_persistent_lock_in_inventory(
     result = workflow.run_backup(config, paths=paths, user_mode=True)
     lock = share.root / NETWORK_LOCK_NAME
     assert result.result == "created" and lock.is_file()
-    inventory = workflow.list_backups(config)
+    inventory = workflow.list_backups(config, user_mode=True)
     assert len(inventory.backups) == 1 and inventory.malformed == ()
     assert workflow.verify_backups(config, user_mode=True).backups == 1
-    assert workflow.prune_backups(config, dry_run=False).removed == 0
+    assert workflow.prune_backups(config, dry_run=False, user_mode=True).removed == 0
     assert lock.is_file() and result.archive_path.is_file()
 
 
@@ -183,8 +183,8 @@ def test_network_destination_guards_precede_lock_file_creation(
     operations = {
         "run": lambda: workflow.run_backup(config, paths=paths, user_mode=True),
         "verify": lambda: workflow.verify_backups(config, user_mode=True),
-        "prune": lambda: workflow.prune_backups(config, dry_run=False),
-        "validate": lambda: workflow.validate_job(config),
+        "prune": lambda: workflow.prune_backups(config, dry_run=False, user_mode=True),
+        "validate": lambda: workflow.validate_job(config, user_mode=True),
     }
     with pytest.raises(DestinationError, match=expected):
         operations[operation]()

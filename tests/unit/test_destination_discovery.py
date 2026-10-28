@@ -217,7 +217,7 @@ def test_verify_checks_all_archives_and_reports_all_failures(
     monkeypatch.setattr(workflow, "verify_tar_zstd", inspect)
 
     with pytest.raises(ArchiveVerificationError) as caught:
-        verify_backups(config_path, on_verified=verified.append)
+        verify_backups(config_path, on_verified=verified.append, user_mode=True)
 
     assert set(inspected) == {*archives, good}
     assert verified == [good]
@@ -250,7 +250,7 @@ def test_verify_loads_one_password_for_all_backups_and_always_clears_it(
     fingerprint = CredentialFingerprint(device=1, inode=2, size=6, mtime_ns=3, ctime_ns=4)
     loaded = []
     inspected = []
-    monkeypatch.setattr(workflow.os, "geteuid", lambda: 1234)
+    monkeypatch.setattr(workflow.os, "geteuid", lambda: 1234 if user_mode else 0)
 
     def load(path: Path, *, owner_uid: int, owner_gid: int | None) -> LoadedPassword:
         loaded.append((path, owner_uid, owner_gid))
@@ -313,7 +313,7 @@ def test_list_never_reads_archive_contents_but_verify_and_prune_still_check_them
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", guarded_open)
-        inventory = list_backups(config_path, progress=stages.append)
+        inventory = list_backups(config_path, progress=stages.append, user_mode=True)
 
     assert len(inventory.backups) == 1
     assert inventory.backups[0].archive_path == archive
@@ -323,9 +323,9 @@ def test_list_never_reads_archive_contents_but_verify_and_prune_still_check_them
         "Listing backup metadata",
     ]
     with pytest.raises(ArchiveVerificationError, match="checksum"):
-        verify_backups(config_path)
+        verify_backups(config_path, user_mode=True)
     assert (directory / SUSPECT_MARKER_NAME).is_file()
-    assert prune_backups(config_path, dry_run=False).removed == 0
+    assert prune_backups(config_path, dry_run=False, user_mode=True).removed == 0
     assert archive.read_bytes() == b"corrupted archive"
 
 
@@ -694,9 +694,9 @@ def test_verification_phase_totals_and_operation_failures(
     if failure:
         error_type = ArchiveVerificationError if failure in ("stream", "tar") else DestinationError
         with pytest.raises(error_type):
-            verify_backups(config_path, on_progress=events.append)
+            verify_backups(config_path, on_progress=events.append, user_mode=True)
     else:
-        assert verify_backups(config_path, on_progress=events.append).backups == 2
+        assert verify_backups(config_path, on_progress=events.append, user_mode=True).backups == 2
     discovery_done = next(
         i for i, e in enumerate(events) if e.phase == "discovery" and e.status == "complete"
     )
@@ -751,11 +751,13 @@ def test_progress_callback_errors_preserve_verification_result(
     )
     if corrupt:
         with pytest.raises(ArchiveVerificationError, match="does not match archive content"):
-            verify_backups(config_path, progress=broken, on_progress=broken, on_verified=broken)
+            verify_backups(
+                config_path, progress=broken, on_progress=broken, on_verified=broken, user_mode=True
+            )
     else:
         assert (
             verify_backups(
-                config_path, progress=broken, on_progress=broken, on_verified=broken
+                config_path, progress=broken, on_progress=broken, on_verified=broken, user_mode=True
             ).backups
             == 1
         )

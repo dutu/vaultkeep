@@ -10,6 +10,7 @@ import stat
 from collections.abc import Mapping
 from typing import BinaryIO, Protocol
 
+from vaultkeep.application import ResolvedApplication
 from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import SourceChangedError, SourceHashError
 from vaultkeep.sources.entries import SourceEntry, SourceEntryType, SourceSnapshot
@@ -71,17 +72,20 @@ def calculate_config_fingerprint(
     *,
     runtime_params: Mapping[str, str] | None = None,
     format_version: int = CONFIG_FINGERPRINT_FORMAT_VERSION,
+    application: ResolvedApplication | None = None,
 ) -> str:
     """Hash only configuration that changes backup identity or content."""
     if format_version < 1:
         raise ValueError("Configuration fingerprint format version must be positive")
 
+    if config.application is not None and application is None:
+        raise SourceHashError("Configuration fingerprint requires a resolved application identity")
     document: Mapping[str, object] = {
         "fingerprint_version": format_version,
         "config_version": config.config_version,
         "consistency": config.consistency.model_dump(),
-        "application": config.application.model_dump() if config.application else None,
-        "application_owner_uid": config.application._owner_uid if config.application else None,
+        "application": application.canonical() if application else None,
+        "application_owner_uid": application.owner_uid if application else None,
         "job": config.job.id,
         "sources": [
             {

@@ -14,7 +14,7 @@ on 0.1.0 and use their installed uninstall script until the OS is upgraded.
 The installer:
 
 - stages the checkout and virtual environment as one versioned release;
-- checks existing system and user job YAML against the candidate release's schema before pausing schedules or activating the release;
+- checks existing system and user job YAML against the candidate release's schema, semantic rules, and account requirements before pausing schedules or activating the release;
 - atomically activates that release through `/opt/vaultkeep/current`;
 - creates `/usr/local/bin/vaultkeep`;
 - creates configuration, secrets, state, and temporary directories;
@@ -72,13 +72,16 @@ The installer copies every `examples/*.yaml` file from the release into the root
 `install.sh install` and `install.sh update` handle maintenance automatically:
 
 1. Prepare the candidate release in staging and identify managed launchers. Validate
-   existing job configurations with its schema, resolve application users and
-   service accounts/groups, and render existing managed jobs without applying
-   changes. Check `.yaml` files in
+   existing job configurations against its schema and semantic rules, resolve
+   application users and service accounts/groups, and render existing managed jobs
+   without applying changes. Check `.yaml` files in
    managed job directories and the original paths and saved parameters referenced
    by installed timers and monitors, including offline accounts. An exact
-   version/source match uses the verified installed release. These checks do not
-   run hooks, modify job state, or contact application processes.
+   version/source match uses the verified installed release. Uninstalled templates
+   may await runtime parameter values; their identity and other detectable
+   configuration errors must still be corrected. These checks do not require
+   source or application directories to be available, run hooks, modify job state,
+   or contact application processes.
 2. Record existing root and user timers and Trigger monitors that need pausing and
    their enablement, including runtime enablement. Identification uses unit
    definitions and managed-job ownership independently of runtime state. Previous
@@ -234,7 +237,9 @@ job YAML is missing, unreadable, malformed, or incompatible with the selected
 release's schema, or references a nonexistent application user or required service
 account/group. Installed job generation is also checked before schedules pause, including
 conflicts between disabled configuration and installed schedules or active monitors.
-Disabled jobs are included; `application.user` must exist even with Trigger disabled.
+Disabled jobs are included. Application owners are resolved from each job's execution
+account. Explicit `application.user` is supported only for root execution and must
+name an existing account; remove it from user-mode jobs before updating.
 The report shows the absolute configuration path and a concise explanation with
 its YAML property when available:
 

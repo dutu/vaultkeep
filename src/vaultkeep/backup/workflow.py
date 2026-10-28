@@ -17,7 +17,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
 
-from vaultkeep.application import require_application_offline, resolve_application
+from vaultkeep.application import (
+    ResolvedApplication,
+    execution_policy,
+    require_application_offline,
+    resolve_application,
+    runtime_owner,
+    validate_application_directory,
+)
 from vaultkeep.archive import (
     ArchiveBuildRequest,
     ArchiveTools,
@@ -31,7 +38,7 @@ from vaultkeep.archive.checksums import verify_checksum_sidecar
 from vaultkeep.backup.execution import Execution
 from vaultkeep.backup.paths import WorkflowPaths, user_workflow_paths
 from vaultkeep.backup.results import failure_reason
-from vaultkeep.config import JobConfig, RetentionConfig, load_config, resolve_runtime_config
+from vaultkeep.config import JobConfig, RetentionConfig, load_config
 from vaultkeep.destination import (
     allocate_job_backup_paths,
     build_prune_plan,
@@ -50,10 +57,10 @@ from vaultkeep.destination.identity import replacement_identity
 from vaultkeep.destination.pruning import valid_replacement, verify_backup_checksum
 from vaultkeep.destination.suspect import mark_backup_suspect, record_suspect_replacement
 from vaultkeep.errors import (
+    ApplicationIdentityError,
     ArchiveChecksumMismatchError,
     ArchiveCorruptionError,
     ArchiveVerificationError,
-    ConfigurationError,
     DestinationError,
     PruneError,
     RetentionError,
@@ -87,7 +94,7 @@ from vaultkeep.state.transitions import (
     state_after_unchanged,
 )
 from vaultkeep.state.unchanged import evaluate_unchanged
-from vaultkeep.validation import validate_semantics
+from vaultkeep.validation import prepare_config, prepare_job
 from vaultkeep.version import installed_version
 
 
@@ -142,28 +149,20 @@ def load_validated_config(
     runtime_params: Mapping[str, str] | None = None,
     allow_disabled_retention: bool = False,
 ) -> JobConfig:
-    """Load one configuration and run all non-environment validation."""
-    parameters = dict(runtime_params or {})
-    config = resolve_runtime_config(load_config(config_path), parameters)
-    try:
-        validate_semantics(config, config_path=config_path, runtime_params=parameters)
-    except ConfigurationError as error:
-        if not allow_disabled_retention:
-            raise
-        # Listing an all-zero policy is safe; other commands still reject it.
-        issues = tuple(issue for issue in error.issues if issue.code != "retention_empty")
-        if issues:
-            raise ConfigurationError(issues) from error
-    if config.application is not None:
-        application, _uid = resolve_application(config.application, validate_directory=False)
-        config = config.model_copy(update={"application": application})
-    return config
+    """Prepare archive-inspection configuration without resolving application identity."""
+    return prepare_config(
+        load_config(config_path),
+        config_path=config_path,
+        runtime_params=runtime_params,
+        allow_disabled_retention=allow_disabled_retention,
+    )
 
 
 def validate_job(
     config_path: Path,
     *,
     schema_only: bool = False,
+    user_mode: bool = False,
     runtime_params: Mapping[str, str] | None = None,
 ) -> CommandResult:
     """Validate configuration, optionally including the runtime destination/source checks."""
@@ -171,22 +170,36 @@ def validate_job(
         load_config(config_path)
         return CommandResult("validate", "valid")
 
-    config = load_validated_config(config_path, runtime_params=runtime_params)
+    config, application = prepare_job(
+        load_config(config_path),
+        user_mode=user_mode,
+        config_path=config_path,
+        runtime_params=runtime_params,
+    )
+    validate_prepared_job(config, application, config_path=config_path)
+    return CommandResult("validate", "valid")
+
+
+def validate_prepared_job(
+    config: JobConfig, application: ResolvedApplication | None, *, config_path: Path
+) -> None:
+    """Check readiness using a prepared identity without another account resolution."""
     _validate_runtime(config, require_sources=True, require_writable_destination=True)
-    if config.application is not None:
-        resolve_application(config.application)
+    if application is not None:
+        validate_application_directory(application, config_path=config_path)
     if config.backup_mode == "per_file":
         select_files(config)
-    return CommandResult("validate", "valid")
 
 
 def list_backups(
     config_path: Path,
     *,
+    user_mode: bool = False,
     runtime_params: Mapping[str, str] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> BackupInventory:
     """List backup metadata without reading archive contents or requiring sources."""
+    runtime_owner(user_mode, config_path=config_path)
     report = progress if progress is not None else lambda message: None
     parameters = dict(runtime_params or {})
     report("Loading and validating configuration")
@@ -209,13 +222,29 @@ def list_backups(
                     (), (MalformedDestinationEntry(Path(destination.destination.root), str(error)),)
                 )
             )
+    application = None
+    if config.application is not None and config.consistency.mode == "application_offline":
+        try:
+            application = resolve_application(
+                config.application, user_mode=user_mode, config_path=config_path
+            )
+        except ApplicationIdentityError as error:
+            if error.issue.code == "user_unsupported":
+                raise
+            # Archive inventory does not require current-history authorization.
+
     discovered = tuple(histories)
     retained_by: dict[Path, tuple[RetentionTier, ...] | None] = {}
     decisions: dict[Path, str] = {}
     retention_warnings: list[tuple[Path, str]] = []
     for destination, history in zip(destinations, discovered, strict=True):
         decisions.update((backup.directory, "—") for backup in history.backups)
-        history = _active_history(history, destination)
+        try:
+            history = _active_history(history, destination, application=application)
+        except SourceDiscoveryError as error:
+            decisions.update((backup.directory, "UNKNOWN") for backup in history.backups)
+            retention_warnings.append((Path(destination.destination.root), str(error)))
+            continue
         if not any(config.retention.model_dump().values()):
             for backup in history.backups:
                 if backup.suspect_reason and valid_replacement(backup, history) is None:
@@ -273,11 +302,20 @@ def list_backups(
 
 
 def prune_backups(
-    config_path: Path, *, dry_run: bool, runtime_params: Mapping[str, str] | None = None
+    config_path: Path,
+    *,
+    dry_run: bool,
+    runtime_params: Mapping[str, str] | None = None,
+    user_mode: bool = False,
 ) -> CommandResult:
     """Calculate or execute retention without touching configured sources."""
     parameters = dict(runtime_params or {})
-    config = load_validated_config(config_path, runtime_params=parameters)
+    config, application = prepare_job(
+        load_config(config_path),
+        user_mode=user_mode,
+        config_path=config_path,
+        runtime_params=parameters,
+    )
     _validate_runtime(config, require_sources=False, require_writable_destination=not dry_run)
     removed: list[Path] = []
     failures: list[str] = []
@@ -288,6 +326,7 @@ def prune_backups(
                 discovered = _active_history(
                     discover_backups(destination, runtime_params=parameters, metadata_only=True),
                     destination,
+                    application=application,
                 )
                 plan = build_prune_plan(discovered, config.retention)
                 if not dry_run:
@@ -321,6 +360,7 @@ def verify_backups(
             with suppress(Exception):
                 progress(message)
 
+    runtime_owner(user_mode, config_path=config_path)
     parameters = dict(runtime_params or {})
     report("Loading and validating configuration")
     config = load_validated_config(config_path, runtime_params=parameters)
@@ -355,7 +395,7 @@ def _verify_backups(
         ),
     )
     destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
-    owner_uid, owner_gid = _runtime_owner(user_mode)
+    owner_uid, owner_gid = runtime_owner(user_mode)
     loaded_password = (
         load_password_file(
             Path(config.encryption.password_file), owner_uid=owner_uid, owner_gid=owner_gid
@@ -527,6 +567,7 @@ def run_backup(
 ) -> CommandResult:
     """Execute change detection, archival, commit, state persistence, and retention."""
     parameters = dict(runtime_params or {})
+    runtime_owner(user_mode, config_path=config_path)
     # Establish job ownership before any runtime checks or progress publication.
     config = load_config(config_path)
     paths = paths or (user_workflow_paths() if user_mode else WorkflowPaths())
@@ -544,15 +585,17 @@ def run_backup(
         per_file=config.backup_mode == "per_file",
     ) as execution:
         execution.report("Loading and validating configuration")
-        config = resolve_runtime_config(config, parameters)
-        validate_semantics(config, config_path=config_path, runtime_params=parameters)
-        application_uid = None
-        if config.application is not None:
-            application, application_uid = resolve_application(config.application)
-            config = config.model_copy(update={"application": application})
+        config, application = prepare_job(
+            config,
+            user_mode=user_mode,
+            config_path=config_path,
+            runtime_params=parameters,
+        )
+        if application is not None:
+            validate_application_directory(application, config_path=config_path)
         expected_policy = os.environ.get("VAULTKEEP_EXPECTED_POLICY")
         if expected_policy is not None and json.loads(expected_policy) != execution_policy(
-            config, application_uid
+            config, application
         ):
             raise SourceDiscoveryError(
                 "Execution policy or application identity changed after Trigger dispatch"
@@ -572,7 +615,7 @@ def run_backup(
                 paths=paths,
                 user_mode=user_mode,
                 progress=execution.report,
-                application_uid=application_uid,
+                application=application,
             )
         execution.complete(
             result.result,
@@ -590,7 +633,7 @@ def _run_file_backups(
     paths: WorkflowPaths,
     user_mode: bool,
     progress: Callable[[str], None] | None,
-    application_uid: int | None = None,
+    application: ResolvedApplication | None = None,
 ) -> CommandResult:
     report = progress if progress is not None else lambda message: None
     _validate_runtime(config, require_sources=False, require_writable_destination=True)
@@ -599,7 +642,7 @@ def _run_file_backups(
     removed = 0
     cleanup_errors: list[str] = []
     archive_size = 0
-    require_application_offline(config, owner_uid=application_uid)
+    require_application_offline(config, application=application)
     report("Discovering files for independent backups")
     for source in select_files(config):
         report(f"Backing up {source.name!r}")
@@ -616,7 +659,7 @@ def _run_file_backups(
                 user_mode=user_mode,
                 progress=progress,
                 source_file_key=file_key(source.name),
-                application_uid=application_uid,
+                application=application,
             )
             outcomes.append(FileBackupResult(source, result.result, result.archive_path))
             cleanup_errors.extend(f"{source}: {error}" for error in result.cleanup_errors)
@@ -654,12 +697,12 @@ def _run_single_backup(
     user_mode: bool = False,
     progress: Callable[[str], None] | None = None,
     source_file_key: str | None = None,
-    application_uid: int | None = None,
+    application: ResolvedApplication | None = None,
 ) -> CommandResult:
     """Execute the same verified archive workflow for one backup unit."""
     report = progress if progress is not None else lambda message: None
     report("Preparing backup")
-    owner_uid, owner_gid = _runtime_owner(user_mode)
+    owner_uid, owner_gid = runtime_owner(user_mode)
     hook_kwargs: _HookRunKwargs = (
         {"owner_uid": owner_uid, "owner_gid": owner_gid, "allow_root_owned": True}
         if user_mode
@@ -709,7 +752,7 @@ def _run_single_backup(
             hook_outcomes,
             **hook_kwargs,
         )
-        require_application_offline(config, owner_uid=application_uid)
+        require_application_offline(config, application=application)
         report("Discovering source files")
         if source_file_key is not None:
             source = Path(config.sources[0].path)
@@ -723,10 +766,14 @@ def _run_single_backup(
         report("Hashing source files")
         source_digest = calculate_source_digest(snapshot)
         failure_context = replace(failure_context, source_digest=source_digest)
-        config_fingerprint = calculate_config_fingerprint(config, runtime_params=parameters)
+        config_fingerprint = calculate_config_fingerprint(
+            config, application=application, runtime_params=parameters
+        )
         report("Checking existing backups")
         discovered = _active_history(
-            discover_backups(config, runtime_params=parameters, metadata_only=True), config
+            discover_backups(config, runtime_params=parameters, metadata_only=True),
+            config,
+            application=application,
         )
         if any(entry.unsupported_format for entry in discovered.malformed):
             raise DestinationError(
@@ -785,6 +832,7 @@ def _run_single_backup(
                         discovered = _active_history(
                             discover_backups(config, runtime_params=parameters, metadata_only=True),
                             config,
+                            application=application,
                         )
                         break
         loaded_password = (
@@ -885,7 +933,7 @@ def _run_single_backup(
                 hook_outcomes,
                 **hook_kwargs,
             )
-            require_application_offline(config, owner_uid=application_uid)
+            require_application_offline(config, application=application)
             snapshot = discover_sources(config)
             if source_file_key is not None and (
                 len(snapshot.entries) != 1
@@ -928,7 +976,7 @@ def _run_single_backup(
                 password=loaded_password.secret if loaded_password else None,
                 progress=report,
             )
-            require_application_offline(config, owner_uid=application_uid)
+            require_application_offline(config, application=application)
         except BaseException:
             raise
         release_attempted = True
@@ -967,12 +1015,14 @@ def _run_single_backup(
             hostname=base_hook_context.hostname,
             created_at=now,
             config_fingerprint=config_fingerprint,
-            replacement_identity=replacement_identity(config),
+            replacement_identity=replacement_identity(config, application=application),
         )
         staging_path = None
         report("Checking finalized backup")
         committed = _active_history(
-            discover_backups(config, runtime_params=parameters, metadata_only=True), config
+            discover_backups(config, runtime_params=parameters, metadata_only=True),
+            config,
+            application=application,
         )
         candidates = tuple(
             backup
@@ -1026,7 +1076,9 @@ def _run_single_backup(
         report("Saving backup state")
         write_local_state(state_path, latest_state)
         committed = _active_history(
-            discover_backups(config, runtime_params=parameters, metadata_only=True), config
+            discover_backups(config, runtime_params=parameters, metadata_only=True),
+            config,
+            application=application,
         )
         candidates = tuple(
             backup for backup in committed.backups if backup.manifest.backup_id == record.backup_id
@@ -1053,7 +1105,9 @@ def _run_single_backup(
                 ):
                     record_suspect_replacement(backup.directory, record.backup_id)
             committed = _active_history(
-                discover_backups(config, runtime_params=parameters, metadata_only=True), config
+                discover_backups(config, runtime_params=parameters, metadata_only=True),
+                config,
+                application=application,
             )
             report("Applying retention")
             plan = build_prune_plan(committed, config.retention)
@@ -1204,14 +1258,6 @@ def _mounted_filesystem_type(path: Path) -> str:
     return filesystem_types[0]
 
 
-def _runtime_owner(user_mode: bool) -> tuple[int, int | None]:
-    if user_mode:
-        geteuid = getattr(os, "geteuid", None)
-        if callable(geteuid):
-            return int(geteuid()), None
-    return 0, 0
-
-
 def _prepare_user_paths(paths: WorkflowPaths) -> None:
     for path in (paths.state_root, paths.local_temp_root, paths.lock_root):
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1220,7 +1266,7 @@ def _prepare_user_paths(paths: WorkflowPaths) -> None:
 
 
 def _validate_configured_hooks(config: JobConfig, *, user_mode: bool = False) -> None:
-    owner_uid, owner_gid = _runtime_owner(user_mode)
+    owner_uid, owner_gid = runtime_owner(user_mode)
     for phase in (
         "before_check",
         "before_archive",
@@ -1267,17 +1313,10 @@ def _run_configured_hook(
         require_success(execution)
 
 
-def execution_policy(config: JobConfig, owner_uid: int | None) -> dict[str, object]:
-    """Canonical policy used to bind a frozen Trigger request to the child snapshot."""
-    return {
-        "consistency": config.consistency.mode,
-        "application": config.application.model_dump() if config.application else None,
-        "owner_uid": owner_uid,
-    }
-
-
-def _active_history(discovered: DiscoveryResult, config: JobConfig) -> DiscoveryResult:
-    identity = replacement_identity(config)
+def _active_history(
+    discovered: DiscoveryResult, config: JobConfig, *, application: ResolvedApplication | None
+) -> DiscoveryResult:
+    identity = replacement_identity(config, application=application)
     seen: set[str] = set()
     duplicate_entries: list[MalformedDestinationEntry] = []
     for backup in discovered.backups:
@@ -1310,7 +1349,7 @@ def _active_history(discovered: DiscoveryResult, config: JobConfig) -> Discovery
             ):
                 return False
             return backup.manifest.replacement_identity == replacement_identity(
-                file_config(config, source_path)
+                file_config(config, source_path), application=application
             )
         except (ValueError, KeyError, IndexError, TypeError):
             return False
