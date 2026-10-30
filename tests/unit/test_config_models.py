@@ -21,10 +21,10 @@ def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> Non
     assert config.config_version == 2
     assert config.job.id == "app"
     assert config.archive.compression_level == 6
-    assert not config.notifications.backup.enabled
-    assert not config.notifications.trigger.enabled
-    assert config.notifications.command == "notify-send"
-    assert config.notifications.timeout_ms == 5000
+    assert not config.desktop_notifications.backup.enabled
+    assert not config.desktop_notifications.trigger.enabled
+    assert config.desktop_notifications.command == "notify-send"
+    assert config.desktop_notifications.timeout_ms == 5000
 
 
 @pytest.mark.parametrize(
@@ -41,7 +41,7 @@ def test_complete_configuration_is_accepted(valid_config: dict[str, Any]) -> Non
     ],
 )
 def test_invalid_notification_settings_are_rejected(valid_config, settings):
-    valid_config["notifications"] = settings
+    valid_config["desktop_notifications"] = settings
     with pytest.raises(ValidationError):
         JobConfig.model_validate(valid_config)
 

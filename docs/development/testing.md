@@ -59,6 +59,11 @@ Trigger worker initiation, plus handled SIGTERM and unavailable SIGKILL completi
 evidence. Trigger tests verify receipt recovery and orchestration deduplication
 without ordinary backup result alerts or backup-progress polling.
 
+External notifier helper tests use fake executables without network access. They check CLI
+errors, failure warnings, process-group termination, system-log failures, and a
+failed delivery inside a successful backup hook. Package checks exercise the helper
+through the wheel-installed CLI.
+
 Root pytest runs backup, unified status, Trigger, Schedule, installer, and installed-worker contract tests in
 one process. Trigger fixtures live under `tests/trigger/` with explicit package
 imports, so test modules do not collide.

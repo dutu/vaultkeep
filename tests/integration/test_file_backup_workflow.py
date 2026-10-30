@@ -94,7 +94,7 @@ def test_per_file_notifications_report_one_job_result_with_partial_failure(file_
     from tests.trigger.conftest import RecordingNotifier
 
     document = json.loads(file_job.read_text())
-    document["notifications"] = {"backup": {"enabled": True}}
+    document["desktop_notifications"] = {"backup": {"enabled": True}}
     file_job.write_text(json.dumps(document))
     notifier = RecordingNotifier()
     monkeypatch.setattr("vaultkeep.backup.notifications.build_notifier", lambda _config: notifier)

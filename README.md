@@ -491,11 +491,22 @@ See [configuration changes](docs/configuration.md#apply-configuration-changes).
 <a id="desktop-notifications"></a>
 ### Optional desktop notifications
 
-Backup alerts and Trigger alerts are independently disabled by default. Follow
+Automatic desktop alerts use `desktop_notifications`; Backup and Trigger alerts
+are independently disabled by default. Follow
 [notification setup](docs/notifications.md#enable-notifications) to install/test
 `notify-send` and enable the desired category. Delivery requires a desktop session
 for the backup owner in the same host/container and is best-effort; failure never
 fails the backup. An installed monitor needs `trigger update` after settings change.
+
+For existing jobs, rename the old `notifications` key to `desktop_notifications`;
+the old key is rejected.
+
+### Optional external notifications
+
+For external delivery through lifecycle hooks, the included
+`vaultkeep notify` helper bounds delivery time and logs failures without
+failing the hook. Configure `external_notifier`, install/configure its executable
+(such as `telegram-notify`) separately, and follow the [external notification setup](docs/configuration.md#external-notifications).
 
 ## Restore a backup
 

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from vaultkeep.config.hook_commands import external_notifier_issues
 from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import ConfigurationError, IssuePathPart, ValidationIssue
 
@@ -29,7 +30,8 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
         "trigger",
         "application",
         "consistency",
-        "notifications",
+        "desktop_notifications",
+        "external_notifier",
         "hooks",
         "logging",
     ),
@@ -58,9 +60,10 @@ _FIELD_NAMES: dict[tuple[str, ...], tuple[str, ...]] = {
         "env_eq",
     ),
     ("application", "matcher", "entrypoints"): ("kind", "value"),
-    ("notifications",): ("command", "timeout_ms", "backup", "trigger"),
-    ("notifications", "backup"): ("enabled",),
-    ("notifications", "trigger"): ("enabled",),
+    ("desktop_notifications",): ("command", "timeout_ms", "backup", "trigger"),
+    ("desktop_notifications", "backup"): ("enabled",),
+    ("desktop_notifications", "trigger"): ("enabled",),
+    ("external_notifier",): ("command", "timeout_seconds"),
     ("hooks",): (
         "before_check",
         "before_archive",
@@ -100,9 +103,13 @@ def load_document(path: Path) -> dict[str, Any]:
 def validate_document(document: dict[str, Any]) -> JobConfig:
     """Apply the complete installed schema to an already parsed document."""
     try:
-        return JobConfig.model_validate(document)
+        config = JobConfig.model_validate(document)
     except ValidationError as error:
         raise ConfigurationError(_schema_issues(error)) from error
+    issues = external_notifier_issues(config)
+    if issues:
+        raise ConfigurationError(issues)
+    return config
 
 
 def _parse_yaml(path: Path) -> Any:
@@ -150,6 +157,8 @@ def _schema_issues(error: ValidationError) -> tuple[ValidationIssue, ...]:
             if suggestion is not None:
                 message += f" Did you mean: {suggestion}?"
                 suggested_paths.add(suggestion)
+            if location == ("notifications",):
+                message = "Unknown property. Rename notifications to desktop_notifications."
         issues.append(ValidationIssue(location, message, code))
     return tuple(
         issue

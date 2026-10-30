@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import configparser
 import email
+import json
 import os
 import subprocess
 import sys
@@ -41,6 +42,7 @@ def check_wheel(wheel: Path, version: str) -> None:
         assert "vaultkeep/py.typed" in names
         assert "vaultkeep/notifications/notifier.py" in names
         assert "vaultkeep/notifications/desktop.py" in names
+        assert "vaultkeep/notifications/external.py" in names
         assert "vaultkeep/backup/notifications.py" in names
         assert "vaultkeep/trigger/notify.py" not in names
         assert "vaultkeep/trigger/desktop.py" not in names
@@ -93,6 +95,7 @@ def check() -> None:
             "src/vaultkeep/trigger/cli.py",
             "src/vaultkeep/notifications/notifier.py",
             "src/vaultkeep/notifications/desktop.py",
+            "src/vaultkeep/notifications/external.py",
             "src/vaultkeep/backup/notifications.py",
             "docs/notifications.md",
             "requirements.lock",
@@ -150,6 +153,30 @@ def check() -> None:
         )
         command = str(venv / "bin/vaultkeep")
         assert run(command, "--version").strip() == version
+        tools = base / "tools"
+        tools.mkdir()
+        notifier = tools / "telegram-notify"
+        notifier.write_text("#!/bin/sh\nprintf 'delivery unavailable' >&2\nexit 4\n")
+        notifier.chmod(0o700)
+        from ruamel.yaml import YAML
+
+        job = YAML(typ="safe").load((extracted / "examples/vaultkeep-schedule.yaml").read_text())
+        job["job"]["id"] = "notification-smoke"
+        job["external_notifier"] = {"command": str(notifier)}
+        config_path = base / "notification-smoke.yaml"
+        config_path.write_text(json.dumps(job))
+        delivered = run(
+            command,
+            "--user",
+            "--config",
+            str(config_path),
+            "notify",
+            "--level",
+            "info",
+            "package smoke test",
+            env=dict(environment, PATH=f"{tools}:/usr/bin:/bin"),
+        )
+        assert "External notification delivery failed" in delivered and "status 4" in delivered
         examples = tuple(sorted((extracted / "examples").glob("*.yaml")))
         assert examples, "Source archive must ship job examples"
         for example in examples:

@@ -628,9 +628,9 @@ def run_backup(
         identity,
         progress=progress,
         notifications=NotificationConfig(
-            enabled=config.notifications.backup.enabled,
-            command=config.notifications.command,
-            timeout_ms=config.notifications.timeout_ms,
+            enabled=config.desktop_notifications.backup.enabled,
+            command=config.desktop_notifications.command,
+            timeout_ms=config.desktop_notifications.timeout_ms,
         ),
         per_file=config.backup_mode == "per_file",
     ) as execution:

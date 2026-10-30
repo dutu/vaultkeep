@@ -143,7 +143,7 @@ def notification_log(job):
     )
     command.chmod(0o700)
     document = json.loads(job.read_text())
-    document["notifications"] = {
+    document["desktop_notifications"] = {
         "command": str(command),
         "timeout_ms": 500,
         "backup": {"enabled": True},
@@ -157,8 +157,8 @@ def notification_log(job):
 @pytest.mark.parametrize("trigger", [False, True])
 def test_triggered_backup_categories_are_independent(job, notification_log, backup, trigger):
     document = json.loads(job.read_text())
-    document["notifications"]["backup"]["enabled"] = backup
-    document["notifications"]["trigger"]["enabled"] = trigger
+    document["desktop_notifications"]["backup"]["enabled"] = backup
+    document["desktop_notifications"]["trigger"]["enabled"] = trigger
     document["application"] = {
         "name": "electrum",
         "data_dir": "/home/user/.electrum",

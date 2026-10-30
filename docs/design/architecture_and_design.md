@@ -1598,7 +1598,7 @@ cover application monitoring, dispatch, and recovery; it does not poll backup pr
 or duplicate execution result alerts. Backup generates execution notifications directly
 from the common lock-owning lifecycle, including heartbeat phase updates and authoritative
 results. Shared desktop discovery and asynchronous delivery live in `vaultkeep.notifications`.
-Job YAML `notifications.backup.enabled` and `notifications.trigger.enabled` independently
+Job YAML `desktop_notifications.backup.enabled` and `desktop_notifications.trigger.enabled` independently
 control the categories, with shared command and timeout settings. Notification delivery
 never changes operational state. Schedule owns timer rendering and health, without
 execution state or result classification; scheduled jobs use the same Backup notifications.

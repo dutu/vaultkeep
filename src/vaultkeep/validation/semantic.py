@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+from vaultkeep.config.hook_commands import external_notifier_issues
 from vaultkeep.config.models import JobConfig
 from vaultkeep.config.runtime import PARAMETER_NAME
 from vaultkeep.errors import ConfigurationError, HookError, IssuePathPart, ValidationIssue
@@ -509,6 +510,7 @@ def _minutes(value: str) -> int | None:
 
 
 def _validate_hooks(config: JobConfig, issues: list[ValidationIssue]) -> None:
+    issues.extend(external_notifier_issues(config))
     for phase in (
         "before_check",
         "before_archive",

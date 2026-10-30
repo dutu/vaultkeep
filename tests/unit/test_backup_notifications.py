@@ -239,7 +239,7 @@ def test_common_workflow_uses_only_backup_notification_setting(
 
     from vaultkeep.trigger.config import load_config as trigger_config
 
-    valid_config["notifications"] = {
+    valid_config["desktop_notifications"] = {
         "command": "/custom/notify",
         "timeout_ms": 250,
         "backup": {"enabled": backup},

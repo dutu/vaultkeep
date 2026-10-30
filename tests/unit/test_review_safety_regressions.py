@@ -230,7 +230,7 @@ def test_status_distinguishes_cleanup_pending_from_unresolved_without_writes(job
 def test_cleanup_warning_reaches_notification_and_execution_status(job, monkeypatch):
     notifier = RecordingNotifier()
     monkeypatch.setattr("vaultkeep.backup.notifications.build_notifier", lambda config: notifier)
-    safety.configure(job, notifications={"backup": {"enabled": True}})
+    safety.configure(job, desktop_notifications={"backup": {"enabled": True}})
 
     def fail_cleanup(*args):
         raise PruneError("delete denied")

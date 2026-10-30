@@ -93,30 +93,37 @@ trigger:
   # deadline_seconds: 3600               # Advisory; never stops a backup
   # params: {}                           # Runtime strings (e.g. NETWORK)
 
+## External executable for explicit vaultkeep notify calls (optional)
+# external_notifier:
+#   command: telegram-notify
+#   timeout_seconds: 15
+
 ## Lifecycle hooks (optional; commands run via /bin/sh -c)
-## Requires telegram-notify to be installed and configured.
+## Best-effort delivery through external_notifier (uncomment its settings above).
+## Delivery timeout: 15s; failures are logged without failing the hook.
+## See docs/configuration.md#external-notifications for setup and diagnostics.
 # hooks:
 #   before_check:
-#     command: 'telegram-notify --level info "Checking backup sources for {job} on {hostname}"'
+#     command: 'vaultkeep notify --level info "Checking backup sources for {job} on {hostname}"'
 #     timeout_seconds: 60                # Allowed: 1–3600 (default 300)
 #   before_archive:
-#     command: 'telegram-notify --level info "Creating backup for {job} on {hostname}"'
+#     command: 'vaultkeep notify --level info "Creating backup for {job} on {hostname}"'
 #     timeout_seconds: 60
 #   after_archive:
-#     command: 'telegram-notify --level info "Finished reading backup sources for {job} on {hostname}"'
+#     command: 'vaultkeep notify --level info "Finished reading backup sources for {job} on {hostname}"'
 #     timeout_seconds: 60
 #   on_success:
-#     command: 'telegram-notify --level info "Backup completed for {job} on {hostname}"'
+#     command: 'vaultkeep notify --level info "Backup completed for {job} on {hostname}"'
 #     timeout_seconds: 60
 #   on_failure:
-#     command: 'telegram-notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
+#     command: 'vaultkeep notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
 #     timeout_seconds: 60
 #   on_unchanged:
-#     command: 'telegram-notify --level info "Backup sources unchanged for {job} on {hostname}"'
+#     command: 'vaultkeep notify --level info "Backup sources unchanged for {job} on {hostname}"'
 #     timeout_seconds: 60
 
 ## Desktop notifications (independent for backup and trigger)
-notifications:
+desktop_notifications:
   command: notify-send                   # Notification command
   timeout_ms: 5000                       # Timeout in milliseconds
   backup:

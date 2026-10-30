@@ -238,13 +238,17 @@ def configuration_details(error: Any) -> dict[str, Any]:
                     in (
                         "encryption",
                         "hooks",
+                        "desktop_notifications",
                         "notifications",
+                        "external_notifier",
                         "application.matcher",
                     )
                     or field.startswith(
                         (
                             "encryption.password_file",
+                            "desktop_notifications.command",
                             "notifications.command",
+                            "external_notifier.command",
                             "application.matcher.env_eq",
                             "application.matcher.argv_tokens",
                             "application.matcher.cmdline_regex",

@@ -161,9 +161,9 @@ def from_prepared_job(
         log_level=job.logging.level.upper(),
         vaultkeep=executable,
         notifications=NotificationConfig(
-            enabled=job.notifications.trigger.enabled,
-            command=job.notifications.command,
-            timeout_ms=job.notifications.timeout_ms,
+            enabled=job.desktop_notifications.trigger.enabled,
+            command=job.desktop_notifications.command,
+            timeout_ms=job.desktop_notifications.timeout_ms,
         ),
         instances=instances,
         source_path=source,

@@ -167,13 +167,37 @@ class NotificationCategoryConfig(StrictConfigModel):
     enabled: bool = False
 
 
-class NotificationsConfig(StrictConfigModel):
+class DesktopNotificationsConfig(StrictConfigModel):
     """Shared delivery settings and component-specific notification switches."""
 
     command: NonEmptyString = "notify-send"
     timeout_ms: Annotated[int, Field(gt=0)] = 5000
     backup: NotificationCategoryConfig = Field(default_factory=NotificationCategoryConfig)
     trigger: NotificationCategoryConfig = Field(default_factory=NotificationCategoryConfig)
+
+
+class ExternalNotifierConfig(StrictConfigModel):
+    """One external executable; arguments are supplied by the notify invocation."""
+
+    command: NonEmptyString
+    timeout_seconds: Annotated[float, Field(gt=0, le=3600, allow_inf_nan=False)] = 15.0
+
+    @field_validator("command")
+    @classmethod
+    def _single_executable(cls, value: str) -> str:
+        # Whitespace and shell syntax are rejected rather than split into argv.
+        # Bare names use the supported execution PATH.
+        if (
+            not value.strip()
+            or any(c.isspace() or c in "\0|;&<>`$'\"\\(){}[]*?!#~" for c in value)
+            or (not value.startswith("/") and ("/" in value or " " in value))
+            or value.endswith("/")
+            or value.startswith("-")
+        ):
+            raise ValueError(
+                "Must be one executable name or absolute path, without shell syntax or arguments."
+            )
+        return value
 
 
 class TriggerConfig(StrictConfigModel):
@@ -272,7 +296,10 @@ class JobConfig(StrictConfigModel):
     consistency: ConsistencyConfig = Field(default_factory=ConsistencyConfig)
     application: ApplicationConfig | None = None
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)
-    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    desktop_notifications: DesktopNotificationsConfig = Field(
+        default_factory=DesktopNotificationsConfig
+    )
+    external_notifier: ExternalNotifierConfig | None = None
     hooks: HooksConfig = Field(default_factory=HooksConfig)
     logging: LoggingConfig
 

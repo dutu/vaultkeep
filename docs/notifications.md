@@ -1,16 +1,47 @@
-# Desktop notifications
+# Notifications
 
-Notifications are optional and configured per job in a top-level YAML section:
+There are three separate responsibilities:
+
+- `desktop_notifications`: automatic desktop alerts for backup and Trigger events.
+- `external_notifier`: configuration for one independently installed executable.
+- `vaultkeep notify`: explicit, synchronous, best-effort external delivery. It does
+  not generate alerts automatically.
+
+A job can enable either notification mechanism, both, or neither. For example:
 
 ```yaml
-notifications:
+desktop_notifications:
   command: notify-send
   timeout_ms: 5000
   backup:
     enabled: true
   trigger:
     enabled: true
+
+external_notifier:
+  command: telegram-notify
+  timeout_seconds: 15
+
+hooks:
+  on_success:
+    command: 'vaultkeep notify --level info "Backup completed for {job} on {hostname}"'
+    timeout_seconds: 60
+  on_failure:
+    command: 'vaultkeep notify --level error "Backup failed for {job}: $VAULTKEEP_ERROR"'
+    timeout_seconds: 60
+  on_unchanged:
+    command: 'vaultkeep notify --level info "Backup unchanged for {job}"'
+    timeout_seconds: 60
 ```
+
+The external executable is installed/configured independently. `external_notifier`
+may be omitted unless a supported direct `vaultkeep notify` invocation appears in a
+configured hook. Indirect or dynamic invocations may escape static detection but
+still require the section at runtime. See [external setup and detection limits](configuration.md#external-notifications).
+
+The old top-level `notifications` key is rejected; rename it to
+`desktop_notifications` without changing its fields. The following settings and
+setup procedures describe automatic desktop alerts only:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -46,7 +77,7 @@ is optional and defaults to disabled.
    must run as the backup owner in the same host or container. Session discovery
    uses `busctl`, supplied by systemd, and also supports NoMachine sessions in LXC.
 
-2. Add the top-level YAML section shown above to the job, enabling the categories
+2. Add the `desktop_notifications` section shown above to the job, enabling the categories
    you want. Both categories default to disabled.
 
    `backup.enabled` works with manual-only jobs and scheduled jobs as well as Trigger.
@@ -208,8 +239,8 @@ including root, does not gain access to the backup owner's desktop automatically
 
 ## Troubleshooting
 
-Check `notifications.backup.enabled` for execution alerts or
-`notifications.trigger.enabled` for monitoring/dispatch alerts, plus `notify-send` and
+Check `desktop_notifications.backup.enabled` for execution alerts or
+`desktop_notifications.trigger.enabled` for monitoring/dispatch alerts, plus `notify-send` and
 systemd's `busctl`.
 The desktop must run as the backup owner, in the same host/container as the backup or monitor.
 For NoMachine, test from a terminal opened inside that desktop:

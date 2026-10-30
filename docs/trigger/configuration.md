@@ -120,7 +120,7 @@ rename or migration.
 
 ## Notifications
 
-The job's top-level `notifications` section independently enables `backup.enabled`
+The job's top-level `desktop_notifications` section independently enables `backup.enabled`
 and `trigger.enabled` (both default `false`). Shared `command` (default `notify-send`)
 and positive integer `timeout_ms` (default `5000`) apply to both. Trigger alerts cover
 application-state changes, dispatch, and recovery. Backup owns execution start, phases,

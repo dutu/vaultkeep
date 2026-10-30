@@ -13,6 +13,7 @@ Action-specific options, such as `status --json`, follow the action.
 ```text
 vaultkeep [-h|--help]
 vaultkeep --version
+vaultkeep [--user] [--config <job.yaml>] notify [external arguments ...]
 
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] validate [--schema-only]
 vaultkeep [--user] --config <job.yaml> [--param KEY=VALUE ...] run
@@ -38,7 +39,7 @@ vaultkeep [--user] schedules validate
 vaultkeep [--user] schedules sync [--dry-run]
 ```
 
-Every command and action supports `-h` or `--help` in its own position, for example
+Job management commands and actions support `-h` or `--help` in their own position, for example
 `vaultkeep schedule --help`, `vaultkeep schedule install --help`, or
 `vaultkeep status --help`. Version inspection uses `vaultkeep --version`.
 
@@ -58,8 +59,59 @@ verification, pruning, and timer management require root privileges; use `sudo`.
 - [All job timers](#manage-all-job-timers)
 - [Trigger commands](#trigger-commands)
 - [Job status](#check-job-status)
+- [External notifications](#external-notifications)
 - [Core exit codes](#exit-codes)
 - [Trigger exit codes](#trigger-exit-codes)
+
+## External notifications
+
+```sh
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml notify --level info "Backup completed"
+```
+
+`notify` synchronously invokes the executable in the selected job's
+`external_notifier.command`. It does not generate notifications automatically.
+Everything after `notify` is passed unchanged, in order, as subprocess arguments;
+Vaultkeep interprets no provider options, positional arguments, or `--` separators.
+For example, `--level`, `--timeout`, and `--help` after `notify` belong to the provider.
+Use `vaultkeep --help` for Vaultkeep help. `notify-telegram` is no longer a command.
+
+Put Vaultkeep options before `notify`. An explicit `--config` overrides
+`VAULTKEEP_CONFIG`; otherwise the helper uses that environment variable, supplied
+by lifecycle hooks. Manual user-mode calls use `--user`. A hook running as a
+non-root account automatically uses that account's scope when `VAULTKEEP_CONFIG`
+is present. The helper never changes execution identity. Root-mode manual calls
+require root as usual.
+
+Use an absolute job-config path when starting a backup whose hooks use `notify`;
+hooks execute from `/` and preserve the supplied `VAULTKEEP_CONFIG` path.
+
+The existing YAML loader and template validation check the job without resolving
+application accounts, reading sources or archive passwords, checking destination
+mounts, acquiring destination locks, or writing backup state. Missing runtime
+parameter values do not prevent notification-only use. `--param KEY=VALUE` retains
+normal validation when supplied before `notify`.
+
+| Result | Exit code |
+| --- | --- |
+| External command succeeds or has an expected delivery failure | `0` |
+| Invalid Vaultkeep CLI arguments | `2` |
+| Invalid/missing configuration or missing `external_notifier` | `3` |
+
+Exit code 0 does not guarantee remote delivery. The helper invokes the provider
+once without a shell, using its independent configured timeout (15 seconds by
+default). It terminates the process group on timeout, with bounded escalation.
+Provider argument errors are provider nonzero exits and therefore best-effort
+delivery failures; Vaultkeep cannot validate an arbitrary executable's arguments.
+Unexpected programming errors are not converted to success.
+
+Warnings contain bounded execution errors, exit statuses, or timeout diagnostics,
+plus hook context when available. Notification arguments and provider stdout/stderr
+are not logged because they may contain credentials. Direct calls warn on stderr;
+hooks also attempt a bounded system-log warning through `logger`, since hook output
+is normally hidden. There are no retries, background workers, or delivery records.
+See [external notification setup](configuration.md#external-notifications) for
+configuration, hook dependencies, timeout budgets, and logging.
 
 ## Terminal output
 

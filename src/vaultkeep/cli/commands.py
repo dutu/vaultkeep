@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from contextlib import suppress
+from pathlib import Path
 from time import monotonic
 
 from vaultkeep.backup.results import BackupInterrupted, failure_exit_code
@@ -18,13 +20,15 @@ from vaultkeep.backup.workflow import (
     verify_backups,
 )
 from vaultkeep.cli.inventory import print_inventory
-from vaultkeep.cli.output import Console, command_logging, format_size
+from vaultkeep.cli.output import Console, command_logging, configure_logging, format_size
 from vaultkeep.cli.parser import create_parser
 from vaultkeep.cli.progress import CliProgress, VerificationDisplay
-from vaultkeep.config import parse_runtime_parameters
+from vaultkeep.config import load_config, parse_runtime_parameters
 from vaultkeep.errors import (
+    ApplicationIdentityError,
     ConfigurationError,
     LockError,
+    ValidationIssue,
     VaultkeepError,
 )
 from vaultkeep.locking import deployment_lock, requires_deployment_lock
@@ -62,6 +66,46 @@ def _main(argv: Sequence[str] | None) -> int:
 def _dispatch(
     namespace: argparse.Namespace, parser: argparse.ArgumentParser, output: Console
 ) -> int:
+
+    if namespace.command == "notify":
+        from vaultkeep.application import runtime_owner
+        from vaultkeep.notifications.external import notify
+        from vaultkeep.validation import validate_template_semantics
+
+        configure_logging("warning", no_color=namespace.no_color)
+        try:
+            inherited_path = os.environ.get("VAULTKEEP_CONFIG")
+            config_path = namespace.config or (Path(inherited_path) if inherited_path else None)
+            if config_path is None:
+                raise ConfigurationError(
+                    (
+                        ValidationIssue(
+                            (), "notify requires --config or VAULTKEEP_CONFIG.", "config_required"
+                        ),
+                    )
+                )
+            runtime_owner(
+                namespace.user_mode or (bool(inherited_path) and os.geteuid() != 0),
+                config_path=config_path,
+            )
+            parameters = parse_runtime_parameters(namespace.param)
+            config = load_config(config_path)
+            validate_template_semantics(config, config_path=config_path, runtime_params=parameters)
+            if config.external_notifier is None:
+                raise ConfigurationError(
+                    (
+                        ValidationIssue(
+                            ("external_notifier",),
+                            "external_notifier is required by vaultkeep notify.",
+                            "external_notifier_required",
+                        ),
+                    )
+                )
+            notify(config.external_notifier, namespace.arguments)
+        except (ConfigurationError, ApplicationIdentityError) as error:
+            output.issue(error)
+            return 3
+        return 0
 
     if namespace.command == "trigger":
         from vaultkeep.trigger.cli import run

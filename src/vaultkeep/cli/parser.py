@@ -3,14 +3,54 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from pathlib import Path
+from typing import cast, overload
 
 from vaultkeep.trigger.parser import configure_parser
 
 
+class _CommandParser(argparse.ArgumentParser):
+    @overload
+    def parse_args(
+        self, args: Sequence[str] | None = None, namespace: None = None
+    ) -> argparse.Namespace: ...
+
+    @overload
+    def parse_args[N](self, args: Sequence[str] | None, namespace: N) -> N: ...
+
+    @overload
+    def parse_args[N](self, *, namespace: N) -> N: ...
+
+    def parse_args(self, args: Sequence[str] | None = None, namespace: object = None) -> object:
+        import sys
+
+        arguments = list(sys.argv[1:] if args is None else args)
+        # Parse recognized global options first. Only the first command word can
+        # select notify; a config filename or an argument containing notify cannot.
+        index = 0
+        while index < len(arguments):
+            word = arguments[index]
+            if word in ("--config", "--param"):
+                index += 2
+            elif word in ("--user", "--no-color", "--version") or word.startswith(
+                ("--config=", "--param=")
+            ):
+                index += 1
+            else:
+                break
+        if index < len(arguments) and arguments[index] == "notify":
+            parsed = super().parse_args(arguments[: index + 1], namespace)
+            cast(argparse.Namespace, parsed).arguments = arguments[index + 1 :]
+            if any("\0" in value for value in arguments[index + 1 :]):
+                self.error("notification arguments must contain no NUL characters")
+            return parsed
+        return super().parse_args(arguments, namespace)
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create the top-level Vaultkeep argument parser."""
-    parser = argparse.ArgumentParser(
+    parser = _CommandParser(
         prog="vaultkeep",
         description="Run backups manually, on a schedule, or after application shutdown.",
         epilog="Put job options (--user, --config, --param) before the command.",
@@ -37,6 +77,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="runtime template parameter for shared configurations; repeatable",
     )
     commands = parser.add_subparsers(dest="command")
+    notify = commands.add_parser(
+        "notify", help="invoke the job's configured external notifier", add_help=False
+    )
+    notify.add_argument("arguments", nargs=argparse.REMAINDER, help="arguments passed unchanged")
     configure_parser(
         commands.add_parser("trigger", help="manage this job's shutdown-triggered backups")
     )

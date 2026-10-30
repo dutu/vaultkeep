@@ -41,7 +41,8 @@ IDs contain 1–128 ASCII letters, digits, underscores, or hyphens.
 | `consistency` | No | `files` (default) or `application_offline`. |
 | `application` | Conditional | Shared application name, owner, directory, and matcher. |
 | `trigger` | No | Disabled by default; [complete Trigger settings](trigger/configuration.md). |
-| `notifications` | No | Disabled by default; [settings and setup](notifications.md). |
+| `desktop_notifications` | No | Automatic desktop alerts, disabled by default; [settings and setup](notifications.md). |
+| `external_notifier` | Conditional | Executable for explicit `vaultkeep notify` calls; [settings](#external-notifications). |
 | `hooks` | No | Six optional phases; each defaults to `null`. |
 | `logging` | Yes | Required `level`, optional `include_command_output`. |
 
@@ -646,6 +647,10 @@ parameterized instances, enablement, persistent timestamps, and rollback behavio
 Hooks run under the job's execution identity: root in root mode, or the calling user in user mode. Each hook phase accepts one hook object. Its `command` is a shell command string executed with `/bin/sh -c`.
 
 ```yaml
+external_notifier:
+  command: telegram-notify
+  timeout_seconds: 15
+
 hooks:
   before_check:
     command: '/usr/local/sbin/prepare-app-backup --job "{job}"'
@@ -654,10 +659,10 @@ hooks:
   before_archive: null
   after_archive: null
   on_success:
-    command: 'telegram-notify --level info "Backup completed for {job} on {hostname}"'
+    command: 'vaultkeep notify --level info "Backup completed for {job} on {hostname}"'
     timeout_seconds: 60
   on_failure:
-    command: 'telegram-notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
+    command: 'vaultkeep notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
     timeout_seconds: 60
   on_unchanged: null
 ```
@@ -695,7 +700,7 @@ Available phases:
 
 Hook failures stop the current workflow phase. If `before_check` fails, source discovery does not start. If `before_archive` fails, archive creation does not start; Vaultkeep still attempts `after_archive` so partially applied quiescing can be released, then runs `on_failure`. If archive creation fails after `before_archive` succeeds, Vaultkeep also attempts `after_archive` and then runs `on_failure`.
 
-The notification example requires `telegram-notify` to be installed and configured. Other hooks can use any installed command. Commands without an absolute path are found using the fixed `PATH` of `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`.
+The external notification examples use [best-effort delivery](#external-notifications). Other hooks can use any installed command. Commands without an absolute path are found using the fixed `PATH` of `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`.
 
 Hooks start in `/` with no standard input. They receive `LANG=C.UTF-8` and Vaultkeep's context variables, including `VAULTKEEP_JOB`, `VAULTKEEP_RESULT`, `VAULTKEEP_STAGE`, `VAULTKEEP_FAILED_STAGE`, and `VAULTKEEP_ERROR`. Other environment variables and shell startup files are not inherited. Quote variable expansions as in the example above.
 
@@ -721,7 +726,7 @@ on_failure:
   command: >-
     HOSTNAME=$(hostname) &&
     export HOSTNAME &&
-    telegram-notify --level error
+    vaultkeep notify --level error
     "Backup failed for $VAULTKEEP_JOB on $HOSTNAME: $VAULTKEEP_ERROR"
   timeout_seconds: 60
 ```
@@ -751,12 +756,96 @@ on_failure:
     IP=$(ip -4 -o addr show scope global 2>/dev/null |
       awk '{split($4, address, "/"); print address[1]; exit}')
     IP=${IP:-unavailable}
-    telegram-notify --level error \
+    vaultkeep notify --level error \
       "Backup failed for {job} on $HOSTNAME (IPv4: $IP): $VAULTKEEP_ERROR"
   timeout_seconds: 60
 ```
 
 This reports a local interface address. If several interfaces have addresses, it uses the first one listed. If the lookup returns no address, the notification uses `unavailable`. The shell's `${IP:-unavailable}` expansion and the single-quoted `awk` program are preserved alongside Vaultkeep's `{job}` placeholder. Choose one command per phase when adapting these examples.
+
+### External notifications
+
+`desktop_notifications` controls automatic desktop alerts for Backup and Trigger.
+`external_notifier` only configures an external executable; it does not schedule or
+send anything automatically. `vaultkeep notify` explicitly invokes that executable,
+including when called from an ordinary lifecycle hook. See the
+[complete notification example](notifications.md) for all three together.
+
+```yaml
+external_notifier:
+  command: telegram-notify
+  timeout_seconds: 15
+```
+
+| Field | Requirement/default |
+| --- | --- |
+| `command` | Required executable name resolved through the execution `PATH`, or an absolute executable path. Whitespace, shell syntax, pipelines, embedded arguments, and relative paths containing `/` are rejected. |
+| `timeout_seconds` | Optional finite positive number, at most 3600; default `15`. |
+
+Unknown fields are rejected. The executable need not be installed for job
+validation to succeed. Install and configure the chosen executable independently;
+Vaultkeep provides no credentials, provider settings, or Telegram API integration.
+Put executable arguments after `notify`, for example `vaultkeep notify --level info
+"Backup completed for {job}"`. Arguments and their order are preserved exactly.
+
+The section may be omitted when no supported direct hook invocation uses
+`vaultkeep notify`. It may also be configured without any hooks. A recognizable
+direct invocation without `external_notifier` is a configuration error at
+`hooks.<phase>.command`, for every lifecycle phase. Validation recognizes literal
+`vaultkeep` and absolute paths ending in `/vaultkeep`, supported global options
+before `notify`, and simple sequences, pipelines, and shell groups. Quoted message
+text is not treated as a command. This check does not execute or expand shell code.
+
+Static detection is a safety check, not a security boundary or a complete shell
+parser. Scripts, aliases, wrappers such as `sh -c`, constructed commands, complex
+quoting, and commands after a here-document may not be recognized. Runtime
+`vaultkeep notify` always requires valid `external_notifier` configuration,
+including indirect calls. Validation never inserts settings or rewrites hooks.
+
+1. Install/update Vaultkeep and install/configure the selected executable separately.
+   From the job's execution account, verify access using the hook search path
+   (replace `telegram-notify` when using another provider):
+
+   ```sh
+   env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+     /bin/sh -c 'command -v vaultkeep telegram-notify logger'
+   ```
+
+   Expect a path for each command. Hooks have a fixed environment and do not inherit
+   interactive shell settings. `logger` provides system-log warnings from hooks.
+
+2. Configure `external_notifier` and copy the desired hooks from the examples.
+   Retain `timeout_seconds: 60` on those hooks. The helper uses its own configured
+   timeout, then allows up to 1 second for termination and up to 1 more second
+   after killing remaining process-group members. Failure logging also gets a
+   bounded 2-second `logger` attempt. Keep the hook timeout above these budgets.
+   Hook execution and nonzero-result handling remain unchanged. The helper returns
+   0 for expected delivery failures; CLI/configuration mistakes remain errors.
+
+3. Apply the [configuration update procedure](../README.md#update-a-job-configuration).
+   Hooks use `VAULTKEEP_CONFIG` automatically. Start backups with an absolute
+   `--config` path: hooks run from `/`, and the existing hook environment preserves
+   the supplied configuration path. Test manually without backup runtime
+   requirements, putting Vaultkeep options before the command:
+
+   ```sh
+   vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml notify --level info "Test notification"
+   ```
+
+   Use the real job path; omit `--user` and use `sudo` for root-mode manual calls.
+   An explicit `--config` overrides `VAULTKEEP_CONFIG`. Delivery failures warn on
+   stderr. Hook failures to deliver are also logged with the `vaultkeep` tag:
+
+   ```sh
+   journalctl -t vaultkeep -n 50 --no-pager
+   ```
+
+   Use `sudo` if required to read the journal. System logging is best-effort and
+   requires `logger` and a working system log service. Hook stderr follows normal
+   output-capture settings. Diagnostics exclude notification arguments and provider
+   output. There are no retries, queues, delivery histories, or extra configuration
+   files. Exit code 0 does not establish remote delivery. See the
+   [command reference](cli.md#external-notifications) for arguments and exit codes.
 
 ## Logging
 
