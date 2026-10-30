@@ -9,18 +9,19 @@ from typing import Any
 from vaultkeep.config.identity import JobIdentity
 from vaultkeep.diagnostics import concise, elapsed_seconds
 from vaultkeep.locking import job_lock_owner
+from vaultkeep.trigger import service
 from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.config import TriggerConfig
 from vaultkeep.trigger.errors import BlockedError, StateError, TriggerError
 from vaultkeep.trigger.models import Receipt, parse_utc
 from vaultkeep.trigger.monitor import unit_name_for
 from vaultkeep.trigger.paths import monitor_lock_path, state_root
-from vaultkeep.trigger.service import inspect_service, service_name
+from vaultkeep.trigger.service import find_service, path_scope, service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController, UnitState
 
 
-def recovery_status(identity: JobIdentity) -> dict[str, Any]:
+def recovery_status(identity: JobIdentity | Path) -> dict[str, Any]:
     """Inspect an existing monitor without trusting execution settings in the YAML."""
     result: dict[str, Any] = {
         "enabled": None,
@@ -31,10 +32,24 @@ def recovery_status(identity: JobIdentity) -> dict[str, Any]:
         "details": {"monitor_service": service_name(identity)},
     }
     try:
-        values = inspect_service(identity)
-        if values["LoadState"] == "not-found":
+        installed = find_service(identity if isinstance(identity, Path) else identity.source_path)
+        if installed is None:
             result.update(enabled=False, monitor="NOT INSTALLED")
+            if isinstance(identity, Path):
+                return result
         else:
+            identity = installed.identity
+            values = installed.values
+            result["details"].update(
+                installed_service=installed.unit,
+                installed_execution_identity=f"{identity.job_id}-{identity.scope}",
+                installed_params=identity.params,
+                state_directory=str(state_root(identity.scope)),
+            )
+            if installed.legacy:
+                result["diagnostics"].append(
+                    "Legacy Trigger service; run trigger update to migrate"
+                )
             result["enabled"] = values["UnitFileState"] in ("enabled", "enabled-runtime")
             result["monitor"] = (
                 "RESTARTING"
@@ -52,9 +67,18 @@ def recovery_status(identity: JobIdentity) -> dict[str, Any]:
             exit_status = values.get("ExecMainStatus", "")
             if exit_status.isdecimal():
                 result["last_exit"] = int(exit_status)
+        assert isinstance(identity, JobIdentity)
         store = StateStore(state_root(identity.scope))
         blocked = store.read_blocked(identity.job_id)
         state = store.read_instance(identity.job_id)
+        if result["monitor"] == "RUNNING":
+            # Recovery inspection cannot validate freshness against invalid YAML's
+            # poll interval. ActiveState alone is not a monitor health claim.
+            result["monitor"] = "UNKNOWN"
+            result["diagnostics"].append(
+                "Monitor process is active; validate YAML and monitor freshness "
+                "before trusting health"
+            )
         activity, attempt = store.dispatch_activity(identity.job_id, state, blocked)
         result["dispatch"] = "BLOCKED" if blocked else activity.upper()
         result["active_attempt_id"] = attempt
@@ -140,19 +164,43 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
     }
     blocked = None
     try:
+        # An unused disabled Trigger must not make manual status depend on a
+        # running user manager. Local units still reveal changed installations.
+        installed = (
+            find_service(config.source_path)
+            if configured or any(service.units_root().glob("vaultkeep-trigger@*.service"))
+            else None
+        )
+        configured = configured or installed is not None
+        if installed and (installed.legacy or installed.identity.scope != config.scope):
+            result = recovery_status(config.source_path)
+            result["details"]["desired_execution_identity"] = f"{config.job_id}-{config.scope}"
+            result["details"]["desired_params"] = config.params
+            result["monitor"] = "UPDATE REQUIRED"
+            result["diagnostics"].append(
+                "Installed execution identity differs or uses legacy naming; run trigger update"
+            )
+            return result
         store = StateStore(state_root(config.scope))
         if verbose or config.log_level == "DEBUG":
             result["details"] = {
                 "monitor_service": service_name(config),
                 "state_directory": str(store.root),
             }
+            if installed:
+                result["details"].update(
+                    installed_execution_identity=(
+                        f"{installed.identity.job_id}-{installed.identity.scope}"
+                    ),
+                    installed_params=installed.identity.params,
+                )
         blocked = store.read_blocked(config.job_id)
         if blocked:
             diagnostics.extend(
                 [concise(blocked), "Preserve records and follow recovery instructions"]
             )
         state = store.read_instance(config.job_id)
-        runtime = _monitor_status(config.scope).upper()
+        runtime = _monitor_status(path_scope(config.source_path)).upper()
         activity, attempt_id = store.dispatch_activity(config.job_id, state, blocked)
         configured = (
             configured
@@ -179,7 +227,9 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
                     if unit.active_state == "activating"
                     else "STOPPED"
                 )
-        started_at = _monitor_started_at(config.scope) if runtime == "RUNNING" else None
+        started_at = (
+            _monitor_started_at(path_scope(config.source_path)) if runtime == "RUNNING" else None
+        )
         age = elapsed_seconds(state.last_monitor_update) if state else None
         result["monitor_updated_seconds_ago"] = age
         if runtime == "RUNNING":
@@ -319,7 +369,7 @@ def trigger_status(config: TriggerConfig, *, verbose: bool = False) -> dict[str,
                         else None,
                     }
                 )
-    except (StateError, OSError, BlockedError, UnicodeError) as error:
+    except (TriggerError, OSError, UnicodeError) as error:
         configured = True
         diagnostics.append(str(error))
         result["dispatch"] = "BLOCKED" if blocked else "UNKNOWN"

@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -167,8 +168,15 @@ class Monitor:
 
     def run(self) -> None:
         from vaultkeep.trigger.preflight import runtime_preflight
+        from vaultkeep.trigger.service import path_scope, require_monitor_identity
 
-        with MonitorLock(monitor_lock_path(self.config.scope)):
+        with ExitStack() as locks:
+            scope = path_scope(self.config.source_path)
+            locks.enter_context(MonitorLock(monitor_lock_path(scope)))
+            # Bridge running pre-path-lock monitors during an in-place upgrade.
+            if self.config.scope is not None and self.config.scope != scope:
+                locks.enter_context(MonitorLock(monitor_lock_path(self.config.scope)))
+            require_monitor_identity(self.config)
             self._preflight_version = runtime_preflight(
                 self.config, self.controller, self.store.root
             )

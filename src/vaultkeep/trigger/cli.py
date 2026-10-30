@@ -6,12 +6,12 @@ import argparse
 import logging
 import os
 import signal
+from pathlib import Path
 from types import FrameType
 
 from vaultkeep.application import PsutilProcessProvider
 from vaultkeep.cli.output import Console, configure_logging
 from vaultkeep.config import parse_runtime_parameters
-from vaultkeep.config.identity import JobIdentity, load_job_identity
 from vaultkeep.errors import ConfigurationError as JobConfigurationError
 from vaultkeep.notifications.notifier import build_notifier
 from vaultkeep.trigger.config import (
@@ -52,9 +52,12 @@ def _load(args: argparse.Namespace) -> TriggerConfig:
 # -- monitor ------------------------------------------------------------------
 def cmd_monitor(args: argparse.Namespace) -> int:
     config = _load(args)
+    from vaultkeep.trigger.service import require_monitor_identity
+
     validate_vaultkeep_executable(config)
     if not config.enabled_instances():
         raise SelectionError("monitoring requires trigger.enabled: true")
+    require_monitor_identity(config, args.expected_identity)
     store = StateStore(state_root(config.scope))
     monitor = Monitor(
         config,
@@ -110,13 +113,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return cmd_monitor(args)
         if command == "exec-worker":
             return cmd_exec_worker(args)
-        config: TriggerConfig | JobIdentity
-        if command == "disable":
-            config = load_job_identity(
-                args.config,
-                runtime_params=parse_runtime_parameters(args.param),
-                trigger_defaults=True,
-            )
+        config: TriggerConfig | Path
+        if command in ("disable", "remove"):
+            config = Path(args.config)
         else:
             full_config = _load(args)
             config = full_config

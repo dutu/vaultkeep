@@ -362,7 +362,7 @@ Unreadable or uncertain process evidence blocks detection. Polling can miss shor
 lifecycles, and a stopped check cannot prevent a later restart. Process disappearance
 does not prove clean shutdown; review the [consistency limits](docs/trigger/consistency.md).
 For foreground monitoring, use `trigger monitor` instead of installing a service;
-run only one monitor for the job. Trigger never configures lingering.
+run only one monitor per canonical YAML path, including when parameters differ. Trigger never configures lingering.
 
 ### Change or stop automation safely
 
@@ -381,8 +381,28 @@ alone. Monitor stop is refused while a backup is active or Trigger recovery/safe
 state needs reconciliation; wait and review the reported state before retrying.
 Editing YAML does not stop existing automation. Before switching mechanisms,
 disable the previous timer/monitor and drain its workers and queued work. Moving a
-Trigger job or changing its ID/parameters creates a new identity; retire the old one
-separately and preserve [recovery evidence](docs/trigger/recovery.md).
+Trigger YAML changes its service identity; remove the old installation using its
+original canonical path before installing the new one.
+
+Each canonical YAML path has exactly one Trigger service:
+`vaultkeep-trigger@<yaml-filename>-<path-hash>.service`. The escaped filename omits
+`.yaml`/`.yml`; the hash comes only from the canonical absolute path. YAML edits and
+`trigger.params`/`--param` changes keep the same service. Parameters still render backup
+destinations. After execution settings change, validate and explicitly update:
+
+```bash
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" trigger update
+vaultkeep --user --config "$job_config" status --verbose
+```
+
+Update safely checks the installed execution identity before switching; restart alone
+does not adopt a different identity. A single legacy service is migrated by update
+(or install), preserving execution history. Multiple legacy services require explicit
+safe resolution. `trigger disable` and `trigger remove` use verified installed metadata
+and work with changed, invalid, unreadable, or deleted YAML at the original canonical
+path. They preserve [recovery evidence](docs/trigger/recovery.md). See
+[Trigger service management](docs/cli.md#service-management) for migration and failure recovery.
 
 <a id="check-job-status"></a>
 <a id="trigger-operation-and-health"></a>
@@ -573,8 +593,9 @@ diagnostics when job identity is recognizable. Stop the existing automation with
 `trigger disable` or `schedule disable` using the same options and YAML path. These
 commands tolerate unrelated configuration errors, including unsupported properties,
 while retaining identity, ownership, and runtime safety checks. They do not edit the
-YAML. Malformed/unreadable YAML or invalid identity fields must be repaired before
-disabling. See [Trigger recovery commands](docs/cli.md#service-management) and
+YAML. Trigger disable/remove also work with malformed, unreadable, or missing YAML
+using verified installed metadata at the original canonical path. Schedule disable
+still requires recognizable YAML job identity and parameters. See [Trigger recovery commands](docs/cli.md#service-management) and
 [schedule recovery](docs/cli.md#configure-a-job-timer).
 
 Read `Previous backup`, `Reason`, and the displayed `Log` path. Review logs before sharing.
@@ -583,7 +604,7 @@ root jobs use `sudo journalctl -u vaultkeep@app.service`. Parameterized unit nam
 can differ. For monitors, use the exact unit name shown in verbose status:
 
 ```bash
-journalctl --user -u 'vaultkeep-trigger@<job-id>-<identity>.service' -n 100 --no-pager
+journalctl --user -u 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service' -n 100 --no-pager
 systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
 systemctl --user list-jobs --no-pager
 ```

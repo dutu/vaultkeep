@@ -57,7 +57,8 @@ OS account home, independent of `XDG_STATE_HOME`. See
    in YAML. Mount and verify network destinations first instead of creating a directory
    over a missing mount. Keep both automation settings disabled for the first test.
 
-The filename stem must match `job.id`. Keep the complete example's other required
+Use a filename matching `job.id` for manual/Schedule jobs. Trigger-enabled jobs with
+Schedule disabled may use an independent filename; update the Trigger after changing `job.id`. Keep the complete example's other required
 sections; use the [configuration reference](configuration.md) for all settings.
 Examples under `/etc/vaultkeep/jobs` are administrator-owned; user jobs normally copy
 from `/opt/vaultkeep/current/src/examples`. For wallet Trigger jobs, use the complete

@@ -18,6 +18,13 @@ from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import SubmissionClass, SubmissionResult, UnitState
 
 
+@pytest.fixture(autouse=True)
+def isolated_monitor_discovery(tmp_path, monkeypatch):
+    """Trigger unit tests never inspect the account's real systemd services."""
+    monkeypatch.setattr("vaultkeep.trigger.service.units_root", lambda: tmp_path / "units")
+    monkeypatch.setattr("vaultkeep.trigger.service._systemctl", lambda *_: "")
+
+
 def child_result(
     *,
     exit_code: int | None = 0,

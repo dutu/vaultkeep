@@ -80,8 +80,9 @@ fi
 nano "$job_config"
 ```
 
-Use the complete example. Set `job.id` to the YAML filename stem (`bisq-main`
-in this example), and retain its other required settings.
+Use the complete example. Set `job.id: bisq-main` for this example and retain its
+other required settings. Trigger-enabled YAML may keep its filename when `job.id`
+changes; run `trigger update` after such edits.
 
 ### 4. Configure the sources, destination, and process matcher
 

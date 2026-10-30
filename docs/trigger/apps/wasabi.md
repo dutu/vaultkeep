@@ -36,7 +36,8 @@ fi
 nano "$job_config"
 ```
 
-Keep the complete example. The filename stem must match `job.id` (`wasabi-main` here).
+Keep the complete example. Use `job.id: wasabi-main` for this example. Trigger-enabled YAML may keep its
+filename when `job.id` changes; run `trigger update` after such edits.
 Replace every example path: `sources[].path` selects the files to back up,
 `destination.root` is an existing writable directory, and `application.data_dir`
 identifies the application instance. Prepare and verify a supported local filesystem or CIFS/NFS share first;

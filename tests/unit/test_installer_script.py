@@ -2015,7 +2015,7 @@ def restarting_user_monitor(host, source, tmp_path, valid_config, monkeypatch, *
     # Exercise the previous release's default executable and option ordering.
     old = content.replace(host["VAULTKEEP_BIN_LINK"], "/usr/local/bin/vaultkeep")
     old = old.replace("--user --config", "--user trigger --config")
-    old = old.replace(" trigger monitor\n", " monitor\n")
+    old = old.replace(" trigger monitor", " monitor")
     fragment = units / unit
     fragment.write_text(old)
     fragment.chmod(0o600)

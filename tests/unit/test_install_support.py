@@ -699,3 +699,31 @@ def test_unreadable_foreground_activity_is_a_safety_failure(tmp_path, monkeypatc
     )
     with pytest.raises(ValueError, match="Permission denied inspecting foreground backup activity"):
         support.activity(layout, True, False, ["core", "trigger"])
+
+
+@pytest.mark.parametrize(
+    "pin", ["0123456789abcdef", "not-a-hash", "../../bad", "0123456789abcdef extra"]
+)
+def test_effective_monitor_execution_pin_is_strict(pin):
+    argv = (
+        "/usr/local/bin/vaultkeep --user --config /jobs/app.yaml "
+        f"trigger monitor --expected-identity {pin}"
+    )
+    state = {
+        "ExecStart": f"{{ path=/usr/local/bin/vaultkeep ; argv[]={argv} ; ignore_errors=no ; }}"
+    }
+    if pin == "0123456789abcdef":
+        support.check_trigger_command(
+            state,
+            "vaultkeep-trigger@app-pathhash.service",
+            Path("/usr/local/bin/vaultkeep"),
+            "alice",
+        )
+    else:
+        with pytest.raises(ValueError, match="ExecStart"):
+            support.check_trigger_command(
+                state,
+                "vaultkeep-trigger@app-pathhash.service",
+                Path("/usr/local/bin/vaultkeep"),
+                "alice",
+            )

@@ -90,6 +90,10 @@ def command_selection(content: str, *, monitor: bool, user: bool) -> tuple[Path,
             raise ValueError("duplicate managed service parameter")
         params[key] = value
         del argv[:2]
+    if monitor and len(argv) == len(suffix) + 2 and argv[: len(suffix)] == suffix:
+        if argv[-2] != "--expected-identity" or re.fullmatch(r"[0-9a-f]{16}", argv[-1]) is None:
+            raise ValueError("invalid installed Trigger execution identity")
+        argv = argv[:-2]
     if argv != suffix:
         raise ValueError("custom managed service arguments require manual review")
     return config, params
@@ -388,7 +392,7 @@ def _plan(
     from vaultkeep.errors import ConfigurationError
     from vaultkeep.schedule import TimerManager, TimerPaths, render_schedule
     from vaultkeep.trigger.config import from_prepared_job
-    from vaultkeep.trigger.service import render_service, service_name
+    from vaultkeep.trigger.service import installed_identity, render_service
     from vaultkeep.validation import prepare_job, validate_template_semantics
 
     user = document["user"]
@@ -480,9 +484,10 @@ def _plan(
             )
             if path.name in document.get("active", []):
                 require_automation_enabled(bool(trigger.enabled_instances()), "trigger")
-            if service_name(trigger) != path.name:
-                raise ValueError(f"job identity changed: {path}")
-            rendered = render_service(trigger)
+            installed, legacy = installed_identity(content, path.name)
+            if installed.scope != trigger.scope:
+                raise ValueError(f"job identity changed; use trigger update: {path}")
+            rendered = render_service(trigger, legacy=legacy)
             require_generated(content, rendered, variable=("ExecStart",), path=path)
             change(path, rendered, snapshot)
             jobs.append(

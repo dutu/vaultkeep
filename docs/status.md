@@ -25,20 +25,25 @@ The `Configuration` section, shown when invalid or with verbose output, reports 
 as `VALID` or `INVALID`, with individual error paths and messages. It does not check
 runtime backup prerequisites; use `validate` for that.
 
-With invalid job settings, status still inspects resources when `job.id`, the original
-YAML path, and the parameter selection remain recognizable. It reports available
-backup evidence and checks existing monitor/timer ownership before trusting systemd
-state. Recovery reports include both automation sections so installed resources remain
-visible even if their YAML settings were removed. In these reports, automation
-`Status` is actual systemd enablement, with `UNKNOWN` for unverified ownership or
-unavailable systemd. Application observations remain `UNKNOWN`. A monitor waiting for
-automatic restart is `RESTARTING`; `Last exit` shows the service exit code when available.
+With invalid job settings, status inspects verified Trigger installation metadata using
+the canonical YAML path. The original job ID and parameters remain available even
+when YAML is malformed, unreadable, or missing. When current backup identity fields
+cannot be read, backup evidence is reported for that installed selection; Schedule
+identity is not inferred from Trigger metadata. Without a verifiable installation or
+recognizable current backup identity, status fails safely.
 
-Unknown properties, obsolete fields, and missing backup settings can be diagnosed
-without repairing the configuration first. Malformed YAML, missing/unreadable files,
-or invalid identity fields fail safely; filenames alone never select a resource.
-Use [recovery disable commands](cli.md#service-management) to stop verified automation,
-then fix and validate the job before enabling it again.
+Monitor diagnostics include the stable path-derived service name. When the desired
+execution identity differs, `UPDATE REQUIRED` includes installed and desired execution
+identities and parameters; run `trigger update` after validating the desired settings.
+Legacy service diagnostics request migration, and conflicting services require explicit
+safe resolution. Status never migrates services or changes recovery state.
+
+Recovery reports show actual systemd enablement, with `UNKNOWN` for unverified ownership
+or unavailable systemd. Application observations remain `UNKNOWN`. A monitor waiting for
+automatic restart is `RESTARTING`; `Last exit` shows its exit code when available.
+Use [Trigger disable/remove](cli.md#service-management) to stop verified automation,
+then fix and validate the job before enabling it again. Schedule recovery retains its
+existing requirement for recognizable YAML identity and parameters.
 
 ## Backup
 

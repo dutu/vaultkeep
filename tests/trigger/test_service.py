@@ -97,7 +97,10 @@ def test_service_install_disable_and_remove_preserve_state(
     content = (root / unit).read_text()
     assert f"vaultkeep --user --config {job.source_path} trigger monitor" in content
     assert "exec-worker" not in content and "PartOf=" not in content
-    assert calls == [("daemon-reload",), ("enable", "--now", unit)]
+    assert [call for call in calls if not call[0].startswith("list-")] == [
+        ("daemon-reload",),
+        ("enable", "--now", unit),
+    ]
     service.manage_service(job, "disable")
     assert (root / unit).exists()
     assert calls[-1] == ("disable", "--now", unit)
@@ -252,7 +255,16 @@ def test_monitor_config_path_survives_systemd_parsing(
     # The dump backslash-escapes dollar signs inside quotes (which shlex retains).
     # The doubled dollar is expanded later, when systemd executes the command.
     argv = [arg.replace(r"\$", "$").replace("$$", "$") for arg in shlex.split(commands[0])]
-    assert argv == ["/usr/bin/true", "--user", "--config", str(source), "trigger", "monitor"]
+    assert argv == [
+        "/usr/bin/true",
+        "--user",
+        "--config",
+        str(source),
+        "trigger",
+        "monitor",
+        "--expected-identity",
+        candidate.scope,
+    ]
 
 
 def test_rendered_monitor_command_uses_global_job_options(tmp_path, valid_config):

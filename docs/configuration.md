@@ -22,7 +22,9 @@ For execution identities, locations, permissions, and user-manager setup, see th
 
 Jobs use strict YAML 1.2 with `config_version: 2`. Unknown properties and duplicate
 mapping keys are rejected. Use booleans (`true`/`false`) and integers as their actual
-YAML types, and quote times and patterns. The YAML filename stem must match `job.id`.
+YAML types, and quote times and patterns. The YAML filename stem must match `job.id`, except when Trigger is enabled and
+Schedule is disabled. Trigger identifies its service by canonical YAML path; a changed
+`job.id` requires an explicit safety-checked `trigger update`.
 IDs contain 1–128 ASCII letters, digits, underscores, or hyphens.
 
 | Section | Required | Purpose |

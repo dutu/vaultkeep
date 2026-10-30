@@ -34,7 +34,7 @@ from vaultkeep.trigger.errors import TriggerError
 from vaultkeep.trigger.models import AttemptOutcome, parse_utc, utc_now
 from vaultkeep.trigger.paths import state_root
 from vaultkeep.trigger.preflight import runtime_preflight
-from vaultkeep.trigger.service import service_name
+from vaultkeep.trigger.service import find_service, service_name
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import RealSystemdController
 from vaultkeep.validation import prepare_job
@@ -220,6 +220,19 @@ def _trigger_state_health(
 
 
 def _trigger_health(report: _Report, config: TriggerConfig) -> None:
+    def installation() -> None:
+        installed = find_service(config.source_path)
+        if installed:
+            if installed.legacy:
+                raise TriggerError("Legacy Trigger service; run trigger update to migrate")
+            if installed.identity.scope != config.scope:
+                raise TriggerError(
+                    f"Installed execution identity {installed.identity.job_id}-"
+                    f"{installed.identity.scope} "
+                    f"differs from desired {config.job_id}-{config.scope}; run trigger update"
+                )
+
+    report.check("Trigger installation identity", installation)
     report.check(
         "Trigger runtime prerequisites",
         lambda: runtime_preflight(

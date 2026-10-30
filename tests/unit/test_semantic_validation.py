@@ -298,3 +298,30 @@ def test_job_id_must_match_filename(valid_config: dict[str, Any]) -> None:
         _config(valid_config),
         path=Path("/etc/vaultkeep/jobs/different.yaml"),
     )
+
+
+@pytest.mark.parametrize(
+    "trigger_enabled,schedule_enabled,filename_error",
+    [
+        (False, False, True),
+        (False, True, True),
+        (True, False, False),
+    ],
+)
+def test_only_trigger_jobs_allow_independent_yaml_filename(
+    valid_config, trigger_enabled, schedule_enabled, filename_error
+):
+    valid_config["trigger"] = {"enabled": trigger_enabled}
+    valid_config["schedule"]["enabled"] = schedule_enabled
+    valid_config["application"] = {
+        "name": "electrum",
+        "data_dir": "/home/user/.electrum",
+        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
+    }
+    try:
+        validate_semantics(_config(valid_config), config_path=Path("/jobs/different.yaml"))
+    except ConfigurationError as error:
+        codes = {issue.code for issue in error.issues}
+    else:
+        codes = set()
+    assert ("job_filename" in codes) is filename_error

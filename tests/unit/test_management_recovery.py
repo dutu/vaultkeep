@@ -52,6 +52,8 @@ def resources(tmp_path, monkeypatch, valid_config):
     states = {}
 
     def systemctl(*args, **kwargs):
+        if args[0].startswith("list-"):
+            return ""
         commands.append(args)
         if args[0] == "disable":
             states[args[-1]].update(
@@ -218,15 +220,24 @@ def test_status_reports_invalid_configuration_and_restart_with_backup_history(
     ],
 )
 @pytest.mark.parametrize("command", [("trigger", "disable"), ("schedule", "disable"), ("status",)])
-def test_unresolvable_identity_fails_without_mutating_units(resources, contents, command):
+def test_unresolvable_yaml_identity_uses_only_verified_trigger_metadata(
+    resources, contents, command
+):
     resources.path.write_text(contents)
-    assert cli(resources, *command) in (2, 3)
-    assert resources.commands == []
+    result = cli(resources, *command)
+    if command == ("trigger", "disable"):
+        assert result == 0
+        assert resources.commands == [("disable", "--now", resources.monitor)]
+    else:
+        assert result in (2, 3)
+        assert resources.commands == []
 
 
 @pytest.mark.parametrize("unreadable", [False, True])
 @pytest.mark.parametrize("command", [("trigger", "disable"), ("schedule", "disable"), ("status",)])
-def test_missing_or_unreadable_config_fails_safely(resources, monkeypatch, unreadable, command):
+def test_missing_or_unreadable_config_preserves_verified_trigger_recovery(
+    resources, monkeypatch, unreadable, command
+):
     if unreadable:
         original = Path.open
 
@@ -238,8 +249,13 @@ def test_missing_or_unreadable_config_fails_safely(resources, monkeypatch, unrea
         monkeypatch.setattr(Path, "open", open_config)
     else:
         resources.path.unlink()
-    assert cli(resources, *command) in (2, 3)
-    assert resources.commands == []
+    result = cli(resources, *command)
+    if command == ("trigger", "disable"):
+        assert result == 0
+        assert resources.commands == [("disable", "--now", resources.monitor)]
+    else:
+        assert result in (2, 3)
+        assert resources.commands == []
 
 
 @pytest.mark.parametrize(
@@ -417,7 +433,8 @@ def test_trigger_defaults_and_explicit_parameters_reuse_original_identity(resour
     resources.path.write_text(json.dumps(resources.document))
     config = load_trigger(resources.path, runtime_params={"repo": "two"})
     unit = service.service_name(config)
-    service.manage_service(config, "install")
+    service.manage_service(config, "update")
+    assert unit == resources.monitor
     resources.states[unit] = dict(
         resources.states[resources.monitor], FragmentPath=str(service.units_root() / unit)
     )
@@ -430,7 +447,7 @@ def test_trigger_defaults_and_explicit_parameters_reuse_original_identity(resour
         == 0
     )
     assert resources.commands == [("disable", "--now", unit)]
-    assert resources.states[resources.monitor]["ActiveState"] == "active"
+    assert resources.states[resources.monitor]["ActiveState"] == "inactive"
 
 
 @pytest.mark.parametrize(
@@ -453,17 +470,17 @@ def test_trigger_disable_only_requires_recognizable_identity(resources, document
 @pytest.mark.parametrize(
     "params", [None, [], {"repo": 123}, {"repo": "has spaces"}, {"timestamp": "reserved"}]
 )
-def test_trigger_identity_parameters_remain_strict(resources, params):
+def test_invalid_current_trigger_parameters_do_not_replace_installed_identity(resources, params):
     resources.document["trigger"]["params"] = params
     resources.path.write_text(json.dumps(resources.document))
-    assert cli(resources, "trigger", "disable") == 2
-    assert resources.commands == []
+    assert cli(resources, "trigger", "disable") == 0
+    assert resources.commands == [("disable", "--now", resources.monitor)]
 
 
 def test_bad_trigger_settings_do_not_hide_other_status_sections(resources, capsys):
     resources.document["trigger"] = "future-format"
     resources.path.write_text(json.dumps(resources.document))
-    assert cli(resources, "status", "--json") == 15
+    assert cli(resources, "status", "--json") == 3
     result = json.loads(capsys.readouterr().out)
     assert result["configuration"]["status"] == "INVALID"
     assert result["trigger"]["monitor"] == "UNKNOWN"
@@ -553,5 +570,18 @@ def test_schedule_path_and_job_id_conflict_is_never_ignored(resources):
     resources.document["job"]["id"] = "other"
     invalidate(resources)
     assert cli(resources, "schedule", "disable") == 14
-    assert cli(resources, "trigger", "disable") == 2
+    assert cli(resources, "trigger", "disable") == 0
+    assert resources.commands == [("disable", "--now", resources.monitor)]
+
+
+def test_invalid_yaml_settings_do_not_hide_orphan_trigger_recovery(resources):
+    invalidate(resources)
+    (service.units_root() / resources.monitor).unlink()
+    del resources.states[resources.monitor]
+    store = StateStore(state_root(resources.config.scope))
+    store.write_blocked("app", "retained recovery evidence without a unit")
+    report = collect_status(resources.path, user_mode=True, runtime_params={})
+    assert report["trigger"]["monitor"] == "NOT INSTALLED"
+    assert report["trigger"]["dispatch"] == "BLOCKED"
+    assert "retained recovery evidence" in report["trigger"]["diagnostics"][0]
     assert resources.commands == []

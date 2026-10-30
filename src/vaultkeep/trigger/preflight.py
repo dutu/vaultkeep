@@ -77,7 +77,9 @@ def runtime_preflight(
     runtime = runtime_dir(required=True)
     assert runtime is not None
     _check_writable_location(runtime)
-    subdir = trigger_runtime_dir(required=True, scope=config.scope)
+    from vaultkeep.trigger.service import path_scope
+
+    subdir = trigger_runtime_dir(required=True, scope=path_scope(config.source_path))
     assert subdir is not None
     _check_writable_location(subdir)
     for path in (

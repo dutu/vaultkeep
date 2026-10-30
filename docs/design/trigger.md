@@ -30,7 +30,7 @@ Bisq desktop/daemon, and Wasabi GUI/daemon instances and invokes their VaultKeep
 after confirmed process disappearance. Application-specific enablement still depends
 on installed process-model validation.
 
-Use `src/vaultkeep/trigger`, the root package metadata and dependency lock, standard-library facilities where practical, and `psutil` for process inspection. Each job has its own foreground monitor, lock and recovery namespace. The job YAML contains its optional trigger settings; scheduling and shutdown triggering cannot both be enabled. Independently supervised workers execute backups and write receipts. Keep the monitoring loop responsive while workers, systemctl commands, and notification deliveries are pending.
+Use `src/vaultkeep/trigger`, the root package metadata and dependency lock, standard-library facilities where practical, and `psutil` for process inspection. Each canonical YAML path has one foreground monitor and lifetime lock; execution identities retain their own recovery namespaces. The job YAML contains its optional trigger settings; scheduling and shutdown triggering cannot both be enabled. Independently supervised workers execute backups and write receipts. Keep the monitoring loop responsive while workers, systemctl commands, and notification deliveries are pending.
 
 **Platform and scope.** Linux with a systemd user manager; user-mode VaultKeep only (`--user`), with no root operation, sudo, or privilege elevation. Each job covers the selected instance's reviewed source scope, including all related writer processes; offline operation only. Independent instances can back up concurrently, bounded by the number of enabled instances, with no global concurrency setting. Each instance permits one active attempt and one pending request.
 
@@ -89,7 +89,7 @@ VaultKeep resolves user-mode paths from the XDG environment: locks below `$XDG_R
 
 Resolve Trigger's home from the operating system account record for its effective UID. Trigger's own fixed state root is `<account-home>/.local/state/vaultkeep-trigger/jobs/<identity>`; neither `HOME` nor `XDG_STATE_HOME` overrides it.
 
-For the VaultKeep child, validate and snapshot an explicit environment: `HOME` set to account home, the user's own `XDG_RUNTIME_DIR` passed unmodified so VaultKeep's `vaultkeep/locks` namespace matches manual and timer-driven runs, `XDG_STATE_HOME` and `XDG_CACHE_HOME` using absolute values from the monitor's environment or account-home defaults, and the fixed `PATH=/usr/local/bin:/usr/bin:/bin`. `LANG` is copied when present. Trigger's own `<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<identity>/` subdirectory holds only `monitor.lock` and is never passed as the child's `XDG_RUNTIME_DIR`. The runtime directory is required for `monitor.lock` and VaultKeep's preferred lock namespace. Fail closed if it cannot be resolved. Record these values in each request and pass the mapping explicitly to the VaultKeep subprocess, without inheriting arbitrary worker-unit variables. The absolute resolved VaultKeep executable is recorded in the request; do not resolve it through the worker's `PATH`.
+For the VaultKeep child, validate and snapshot an explicit environment: `HOME` set to account home, the user's own `XDG_RUNTIME_DIR` passed unmodified so VaultKeep's `vaultkeep/locks` namespace matches manual and timer-driven runs, `XDG_STATE_HOME` and `XDG_CACHE_HOME` using absolute values from the monitor's environment or account-home defaults, and the fixed `PATH=/usr/local/bin:/usr/bin:/bin`. `LANG` is copied when present. Trigger's own `<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<path-hash>/` subdirectory holds `monitor.lock` and lifecycle `service.lock` and is never passed as the child's `XDG_RUNTIME_DIR`. The runtime directory is required for `monitor.lock` and VaultKeep's preferred lock namespace. Fail closed if it cannot be resolved. Record these values in each request and pass the mapping explicitly to the VaultKeep subprocess, without inheriting arbitrary worker-unit variables. The absolute resolved VaultKeep executable is recorded in the request; do not resolve it through the worker's `PATH`.
 
 VaultKeep continues to honor the selected XDG paths even though Trigger's own state root is fixed. Manual and timer-driven VaultKeep runs must use the same HOME/runtime lock namespace to share its job lock. Trigger does not control those external runs.
 
@@ -159,7 +159,7 @@ Electrum, and Wasabi configuration.
 
 ### Fixed state and durable ownership
 
-Resolve account home from the effective UID's operating system account record. All commands and workers use `<account-home>/.local/state/vaultkeep-trigger/jobs/<identity>`; `HOME`, `XDG_STATE_HOME`, and configuration cannot relocate it. Runtime holds only `<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<identity>/monitor.lock`.
+Resolve account home from the effective UID's operating system account record. All commands and workers use `<account-home>/.local/state/vaultkeep-trigger/jobs/<identity>`; `HOME`, `XDG_STATE_HOME`, and configuration cannot relocate it. Runtime uses `<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<path-hash>/monitor.lock` for monitor exclusivity, independently of the execution-state namespace.
 
 ```text
 <state-root>/
@@ -247,8 +247,26 @@ VaultKeep exit 10 records a deferred attempt. Retain its logical request for ret
 
 Ship an installation-resolved absolute Trigger console-script path in both unit files:
 
-- `vaultkeep-trigger@<job-id>-<identity>.service`: foreground `vaultkeep --user --config JOB.yaml trigger monitor`, restart-on-failure, journald output, UMask 0077; explicit per-job service installation records the YAML path and parameters.
+- `vaultkeep-trigger@<yaml-filename>-<path-hash>.service`: foreground `vaultkeep --user --config JOB.yaml [--param ...] trigger monitor --expected-identity <execution-hash>`, restart-on-failure, journald output, UMask 0077. The unit records the installed job ID and effective selection, independently of current YAML. The path hash is the first 16 hex characters of SHA-256 of the canonical absolute path; the escaped filename omits `.yaml`/`.yml`.
 - `vaultkeep-trigger-exec@.service`: `Type=oneshot`, `Restart=no`, `TimeoutStartSec=infinity`, UMask 0077, and `ExecStart=/usr/local/bin/vaultkeep --user trigger exec-worker %i`. Keep it independent of the monitor's stop/restart lifecycle. No terminating execution runtime limit, socket activation, dynamically created units, or enablement of individual attempt instances.
+
+Lifecycle operations discover units by their verified installed canonical config path.
+They validate ownership, generated structure, effective fragment/overrides, and the
+installed execution namespace. Update/disable/remove hold the original backup job
+lock, check recovery evidence, stop/disable the old monitor, acquire its path lifetime
+lock (and legacy execution lifetime lock), and recheck state before replacing/removing
+its definition. Pending, active, blocked, corrupt, and unresolved uncertain work blocks
+retirement. Execution directories and worker identities are never renamed or deleted.
+
+Explicit update can switch the installed execution identity at the same service name.
+Monitor startup checks its pinned execution hash and any installed selection under
+the path lifetime lock. Foreground monitors with different parameters share that lock.
+A single verified legacy unit is migrated by install/update; conflicting units fail
+closed. Stop the old unit before starting the replacement. If activation fails, stop
+the replacement before restoring the previous unit; retain a verifiable definition if
+safe rollback cannot be established. Status/validation inspect without migration.
+Installer refresh preserves installed execution identity and legacy naming; only
+explicit Trigger lifecycle operations perform migration or identity transitions.
 
 Only the monitor submits worker starts. The worker reads and validates its request (including UUID and association checks), refuses to replay an existing terminal receipt, and performs the authoritative final process/identity recheck from the request snapshot. Reliable stopped evidence is required; running, ambiguous, or unavailable evidence yields a blocked receipt without invoking VaultKeep. The monitor then reconciles only the matching request.
 

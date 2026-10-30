@@ -681,6 +681,14 @@ def check_trigger_command(
                 expected.extend(argv[offset : offset + 2])
                 offset += 2
         expected.extend(suffix)
+        if (
+            not legacy
+            and unit.startswith("vaultkeep-trigger@")
+            and argv[len(expected) : len(expected) + 1] == ["--expected-identity"]
+            and len(argv) == len(expected) + 2
+            and re.fullmatch(r"[0-9a-f]{16}", argv[-1]) is not None
+        ):
+            expected.extend(argv[-2:])
     else:
         expected.extend(["exec-worker", "%i" if "@." in unit else unit.split("@", 1)[1][:-8]])
     if argv != expected:

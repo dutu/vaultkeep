@@ -292,7 +292,7 @@ def monitor_job(tmp_path, valid_config):
     path = root / service_name(trigger)
     new = render_service(trigger)
     old = new.replace("vaultkeep --user --config", "vaultkeep --user trigger --config")
-    old = old.replace(" trigger monitor\n", " monitor\n")
+    old = old.replace(" trigger monitor", " monitor")
     path.write_text(old)
     path.chmod(0o600)
     return spec, path, new
@@ -745,7 +745,7 @@ def test_offline_monitor_command_refusal_identifies_unit_before_loading_yaml(
     spec, unit, _ = monitor_job(tmp_path, valid_config)
     config = tmp_path / "directory with spaces/app.yaml"
     config.write_text("job: [\n")
-    unit.write_text(unit.read_text().replace(" monitor\n", " run\n"))
+    unit.write_text(unit.read_text().replace(" monitor", " run"))
     result = subprocess.run(
         [sys.executable, "-I", "-m", "vaultkeep.maintenance", "check-launchers"],
         input=json.dumps(spec),
@@ -963,3 +963,22 @@ def test_later_installer_phase_rejects_unavailable_identity(
         else:
             maintenance.validate({**planned, "active": [], "user": True})
     assert caught.value.config_path == tmp_path / "directory with spaces/app.yaml"
+
+
+def test_installer_refresh_preserves_legacy_monitor_identity(tmp_path, valid_config):
+    from vaultkeep.maintenance import command_selection
+    from vaultkeep.trigger.service import legacy_service_name
+
+    spec, path, rendered = monitor_job(tmp_path, valid_config)
+    source, params = command_selection(rendered, monitor=True, user=True)
+    trigger = load_config(source, runtime_params=params)
+    legacy = path.with_name(legacy_service_name(trigger))
+    path.unlink()
+    legacy.write_text(render_service(trigger, legacy=True))
+    before = legacy.read_bytes()
+    plan = maintenance.plan(spec)
+    assert plan["jobs"][0]["unit"] == legacy.name
+    assert len(plan["changes"]) == 1
+    assert plan["changes"][0]["path"] == str(legacy)
+    assert legacy.read_bytes() == before
+    assert not path.exists()

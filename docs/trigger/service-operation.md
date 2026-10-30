@@ -2,10 +2,10 @@
 
 ## Units
 
-Each enabled job has its own explicitly installed monitor service:
-`vaultkeep-trigger@<job-id>-<identity>.service`, stored in
+Each canonical YAML path has one explicitly installed monitor service:
+`vaultkeep-trigger@<yaml-filename>-<path-hash>.service`, stored in
 `${XDG_CONFIG_HOME:-<account-home>/.config}/systemd/user/`. It runs
-`/usr/local/bin/vaultkeep --user --config <job.yaml> [--param ...] trigger monitor`, with
+`/usr/local/bin/vaultkeep --user --config <job.yaml> [--param ...] trigger monitor --expected-identity <execution-hash>`, with
 restart-on-failure, journald output, and `UMask=0077`.
 
 The installer supplies the shared `/etc/systemd/user/vaultkeep-trigger-exec@.service`
@@ -25,9 +25,10 @@ file at execution time, as described below.
 Installing Vaultkeep starts/enables no monitor. The explicit per-job `trigger install`
 command creates and enables that job's monitor; `update` refreshes and restarts it.
 `disable` and `remove` preserve recovery evidence and never stop workers.
-Monitor stop requires a free backup lock and no active/unreconciled attempt, blocked
-recovery state, or current safety warning. `disable` can recover from unrelated YAML
-schema errors using the original job identity; see the
+Monitor stop requires the installed execution identity’s free backup lock and no
+pending/unreconciled attempt, blocked recovery state, or unresolved safety warning.
+The unit persists the original job ID, effective parameters, and pinned execution hash.
+`disable` and `remove` recover that identity without reading YAML; see the
 [CLI recovery behavior](../cli.md#service-management).
 
 ## State and runtime locations
@@ -50,14 +51,16 @@ job ID and selected runtime parameters. Directories use `0700`, files `0600`.
 ```
 
 The monitor lock is
-`<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<identity>/monitor.lock`. Each monitor only
-reconciles its own job's state. Separate jobs and parameter selections can hold their
-locks concurrently. A duplicate monitor for the same identity is refused.
+`<XDG_RUNTIME_DIR>/vaultkeep-trigger/jobs/<path-hash>/monitor.lock`. Lifecycle commands
+serialize using `service.lock` alongside it. Each monitor reconciles only its selected
+execution namespace. Duplicate monitors for the same canonical YAML path are refused,
+including foreground invocations with different parameters. Different paths can run concurrently.
 
 The backup child receives the user's original `XDG_RUNTIME_DIR`, so its normal job
-lock is shared with manual and timer-driven backups. Moving the job or changing its
-ID/parameters creates a new identity; stop and drain the old identity first. Preserve
-its recovery evidence until any uncertainty has been reviewed.
+lock is shared with manual and timer-driven backups. Changing the job ID/parameters creates a new execution identity: use `trigger update`
+to perform the safety-checked transition at the same service name. Moving the YAML
+also changes the service identity; remove the old installation first. Existing recovery
+evidence is never moved or deleted.
 
 The worker's VaultKeep child environment is frozen in its request: `HOME` is the
 account home; absolute `XDG_STATE_HOME`/`XDG_CACHE_HOME` values are kept, otherwise
@@ -149,8 +152,8 @@ systemctl --user list-jobs --no-pager
 journalctl --user -u 'vaultkeep-trigger-exec@*.service' -n 100 --no-pager
 ```
 
-For a particular attempt, combine the job identity (shown in the service name and
-state path) with its attempt UUID from `status` to select
+For a particular attempt, combine the execution identity (shown in verbose status and
+the state path) with its attempt UUID from `status` to select
 `vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service`. `Type=oneshot` can remain `activating`
 for the whole backup. Submission success is not completion. Even a receipt does not
 release its slot until both the worker and queued job are confirmed gone. Reconcile

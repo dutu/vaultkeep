@@ -752,7 +752,7 @@ def test_legacy_monitor_launcher_order_is_identified(helper, managed_monitor):
     job = managed_monitor
     state = job.states[job.unit]
     state["ExecStart"] = state["ExecStart"].replace("--user --config", "--user trigger --config")
-    state["ExecStart"] = state["ExecStart"].replace(" trigger monitor ;", " monitor ;")
+    state["ExecStart"] = state["ExecStart"].replace(" trigger monitor", " monitor")
     assert helper.inventory(job.layout)["accounts"][1]["states"] == {job.unit: "enabled"}
 
 

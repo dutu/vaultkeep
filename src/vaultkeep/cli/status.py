@@ -16,10 +16,12 @@ from vaultkeep.config.identity import resolve_job_identity
 from vaultkeep.config.loader import load_document, validate_document
 from vaultkeep.config.models import JobConfig
 from vaultkeep.diagnostics import concise, duration, timestamp
-from vaultkeep.errors import ConfigurationError, TimerError
+from vaultkeep.errors import ConfigurationError, TimerError, ValidationIssue
 from vaultkeep.schedule.status import schedule_status
 from vaultkeep.state.identity import job_identity_hash
 from vaultkeep.trigger.config import from_prepared_job
+from vaultkeep.trigger.errors import TriggerError
+from vaultkeep.trigger.service import find_service
 from vaultkeep.trigger.status import recovery_status, trigger_status
 
 
@@ -30,7 +32,17 @@ def collect_status(
     runtime_params: Mapping[str, str],
     verbose: bool = False,
 ) -> dict[str, Any]:
-    document = load_document(config_path)
+    try:
+        document = load_document(config_path)
+    except ConfigurationError as error:
+        return _collect_recovery_status(
+            config_path,
+            {},
+            error,
+            user_mode=user_mode,
+            runtime_params=runtime_params,
+            verbose=verbose,
+        )
     try:
         result = _collect_valid_status(
             config_path,
@@ -159,12 +171,25 @@ def _collect_recovery_status(
     from vaultkeep.schedule import TimerManager
 
     trigger = document.get("trigger")
-    identity = resolve_job_identity(
-        config_path,
-        document,
-        runtime_params=runtime_params,
-        trigger_defaults=isinstance(trigger, dict) and trigger.get("enabled") is True,
-    )
+    current_identity = True
+    try:
+        identity = resolve_job_identity(
+            config_path,
+            document,
+            runtime_params=runtime_params,
+            trigger_defaults=isinstance(trigger, dict) and trigger.get("enabled") is True,
+        )
+    except ConfigurationError:
+        try:
+            installed = find_service(config_path) if user_mode else None
+        except TriggerError as inspection_error:
+            raise ConfigurationError(
+                (ValidationIssue(("trigger",), str(inspection_error), "installation"),)
+            ) from inspection_error
+        if installed is None:
+            raise error from None
+        identity = installed.identity
+        current_identity = False
     result: dict[str, Any] = {
         "schema_version": 2,
         "job_id": identity.job_id,
@@ -183,19 +208,13 @@ def _collect_recovery_status(
     }
     if user_mode:
         try:
-            monitor_identity = resolve_job_identity(
+            monitor_selection = resolve_job_identity(
                 config_path, document, runtime_params=runtime_params, trigger_defaults=True
             )
-            result["trigger"] = recovery_status(monitor_identity)
-        except ConfigurationError as identity_error:
-            result["trigger"] = {
-                "enabled": None,
-                "monitor": "UNKNOWN",
-                "application": "UNKNOWN",
-                "dispatch": "UNKNOWN",
-                "diagnostics": [str(identity_error)],
-                "read_error": True,
-            }
+        except ConfigurationError:
+            result["trigger"] = recovery_status(config_path)
+        else:
+            result["trigger"] = recovery_status(monitor_selection)
     elif trigger is not None:
         result["trigger"] = {
             "enabled": None,
@@ -204,6 +223,10 @@ def _collect_recovery_status(
             "dispatch": "UNKNOWN",
             "diagnostics": ["Inspect Trigger as the application owner with --user"],
         }
+    if not current_identity:
+        # Trigger metadata establishes only its own installed selection. It cannot
+        # establish a Schedule selection from missing or malformed YAML.
+        return result
     manager = TimerManager(user_mode=user_mode)
     instance = manager._instance_id(config_path, identity.job_id, identity.params)
     schedule: dict[str, Any] = {

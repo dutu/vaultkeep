@@ -545,7 +545,7 @@ def _validate_job_filename(
     config_path: Path | None,
     issues: list[ValidationIssue],
 ) -> None:
-    if config_path is None:
+    if config_path is None or (config.trigger.enabled and not config.schedule.enabled):
         return
     expected = config_path.stem
     if config.job.id != expected:

@@ -16,8 +16,8 @@ See [installer unit-property diagnosis](../troubleshooting.md#installer-reports-
 ## First checks
 
 ```sh
-systemctl --user status --no-pager 'vaultkeep-trigger@<job-id>-<identity>.service'
-journalctl --user -u 'vaultkeep-trigger@<job-id>-<identity>.service' -n 100 --no-pager
+systemctl --user status --no-pager 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service'
+journalctl --user -u 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service' -n 100 --no-pager
 vaultkeep --user --config /absolute/path/job.yaml status
 systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
 systemctl --user list-jobs --no-pager
@@ -27,6 +27,39 @@ Read the monitor update age and monitoring-health section, not just service acti
 A successful `status` exit does not mean the monitor or backups are healthy. Child
 diagnostics under the fixed state root can contain job output; review/redact them
 before sharing. Preserve requests/receipts when investigating uncertain execution.
+
+## Edited YAML or legacy monitor identity
+
+Use `status --verbose` to compare the installed execution identity/parameters with the
+current desired selection. `UPDATE REQUIRED` or an execution-identity startup error
+requires `trigger update`; restarting systemd alone does not authorize a switch.
+If validation reports the mismatch, correct other configuration/runtime errors first,
+then update and validate again. Active backups, pending/unreconciled work, corrupt
+state, and unresolved safety warnings must be resolved before the transition.
+
+A single verified legacy service migrates during `trigger update` or `trigger install`.
+Multiple services referencing one path are a conflict. Preserve their definitions and
+recovery directories, inspect each unit's original command and worker state, and stop
+and retire each only after its work is safely resolved. Do not delete state or simply
+start another monitor. Status/validation never perform migration.
+
+To disable or remove after invalid edits or deletion, use the original canonical path:
+
+```sh
+vaultkeep --user --config /original/canonical/path/job.yaml trigger remove
+```
+
+The command recovers job ID, parameters, and execution namespace from the verified unit.
+Missing or inconsistent metadata, unreviewed overrides, or unverifiable effective units
+fail closed. Review `systemctl --user cat <unit>` and the error; do not recreate obsolete
+YAML or guess an execution namespace. For a retargeted/missing symlink, use its original
+resolved target. Moving YAML is a separate installation, not an automatic rename.
+
+After a failed migration/systemd operation, inspect `systemctl --user list-unit-files
+'vaultkeep-trigger@*.service'`, the unit content, and journal. The monitor may remain
+stopped. Correct the manager failure, review/reload restored files if requested, and
+retry update. If stopping the new monitor failed, its definition remains available;
+resolve that failure before attempting another replacement.
 
 ## Validation reports failed or incomplete setup
 
@@ -49,7 +82,7 @@ executable, an account-owned `XDG_RUNTIME_DIR`, and writable state/runtime locat
 
 ```sh
 systemctl --user is-system-running
-systemctl --user cat 'vaultkeep-trigger@<job-id>-<identity>.service' vaultkeep-trigger-exec@.service
+systemctl --user cat 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service' vaultkeep-trigger-exec@.service
 test -n "$XDG_RUNTIME_DIR" && test -d "$XDG_RUNTIME_DIR" && test -O "$XDG_RUNTIME_DIR"
 ```
 

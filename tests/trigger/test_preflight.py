@@ -35,7 +35,7 @@ def _runtime_config(tmp_path: Path, monkeypatch):
 def test_runtime_preflight_is_read_only_and_checks_full_jobs_and_version(
     tmp_path: Path, monkeypatch
 ) -> None:
-    config, runtime = _runtime_config(tmp_path, monkeypatch)
+    config, _runtime = _runtime_config(tmp_path, monkeypatch)
     config = replace(
         config,
         instances=(
@@ -48,7 +48,7 @@ def test_runtime_preflight_is_read_only_and_checks_full_jobs_and_version(
     runner = FakeRunner([child_result(), child_result(stdout_tail="0.1.0")])
     root = tmp_path / "absent" / "state"
     assert runtime_preflight(config, FakeController(), root, runner=runner) == "0.1.0"
-    assert not root.parent.exists() and not (runtime / "vaultkeep-trigger").exists()
+    assert not root.parent.exists() and not (_runtime / "vaultkeep-trigger").exists()
     assert runner.calls[0][-2:] == ["validate", "--backup-only"]
     assert "--schema-only" not in runner.calls[0]
     assert "NETWORK=mainnet" in runner.calls[0]
@@ -95,7 +95,7 @@ def test_runtime_version_mismatch_warns_without_rejecting(
 def test_monitor_preflight_rejects_bad_job_without_state_and_releases_lock(
     tmp_path: Path, monkeypatch
 ) -> None:
-    config, runtime = _runtime_config(tmp_path, monkeypatch)
+    config, _runtime = _runtime_config(tmp_path, monkeypatch)
     config.vaultkeep.write_text("#!/bin/sh\nexit 3\n")
     store = StateStore(tmp_path / "state")
     monitor = Monitor(
@@ -109,15 +109,17 @@ def test_monitor_preflight_rejects_bad_job_without_state_and_releases_lock(
         monitor.run()
     assert not store.root.exists()
     from vaultkeep.trigger.monitor import MonitorLock
+    from vaultkeep.trigger.paths import monitor_lock_path
+    from vaultkeep.trigger.service import path_scope
 
-    with MonitorLock(runtime / "vaultkeep-trigger" / "monitor.lock"):
+    with MonitorLock(monitor_lock_path(path_scope(config.source_path))):
         pass
 
 
 def test_second_monitor_refuses_before_vaultkeep_preflight(tmp_path: Path, monkeypatch) -> None:
     from vaultkeep.trigger.monitor import MonitorLock
 
-    config, runtime = _runtime_config(tmp_path, monkeypatch)
+    config, _runtime = _runtime_config(tmp_path, monkeypatch)
     store = StateStore(tmp_path / "state")
     monitor = Monitor(
         config,
@@ -131,7 +133,10 @@ def test_second_monitor_refuses_before_vaultkeep_preflight(tmp_path: Path, monke
         raise AssertionError("duplicate monitor ran full preflight")
 
     monkeypatch.setattr("vaultkeep.trigger.preflight.runtime_preflight", unexpected_preflight)
-    with MonitorLock(runtime / "vaultkeep-trigger" / "monitor.lock"):
+    from vaultkeep.trigger.paths import monitor_lock_path
+    from vaultkeep.trigger.service import path_scope
+
+    with MonitorLock(monitor_lock_path(path_scope(config.source_path))):
         with pytest.raises(BlockedError, match="another monitor"):
             monitor.run()
     assert not store.root.exists()

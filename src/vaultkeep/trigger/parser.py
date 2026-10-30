@@ -11,7 +11,8 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "and run without sudo."
     )
     commands = parser.add_subparsers(dest="action", required=True)
-    commands.add_parser("monitor", help="monitor this job in the foreground")
+    monitor = commands.add_parser("monitor", help="monitor this YAML in the foreground")
+    monitor.add_argument("--expected-identity", help=argparse.SUPPRESS)
     for action, help_text in (
         ("install", "install and enable this job's user monitor service"),
         ("update", "refresh and restart this job's user monitor service"),

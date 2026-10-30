@@ -148,7 +148,7 @@ only the relevant timers and monitors in their owning managers:
 sudo systemctl list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'user@*.service'
 systemctl --user list-units --all 'vaultkeep@*.timer' 'vaultkeep@*.service' 'vaultkeep-trigger*'
 sudo systemctl stop vaultkeep@app.timer
-systemctl --user stop 'vaultkeep-trigger@<job-id>-<identity>.service'
+systemctl --user stop 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service'
 ```
 
 Record active states first and resume those units explicitly with `systemctl start`
@@ -356,9 +356,10 @@ the reported condition before retrying.
 ## Uninstall unit checklist
 
 Before [uninstalling](../README.md#uninstall-the-application), inventory every affected
-account, including accounts without a current login. Prefer `schedule disable` or
-`trigger disable` with each job's actual YAML path and parameter selection. If the
-job file is missing or a unit remains, inspect and disable its exact systemd name.
+account, including accounts without a current login. Prefer `schedule disable` with
+the original YAML identity and parameters, or `trigger disable` with the original
+canonical YAML path. Trigger uses installed metadata even if YAML is missing or
+invalid. If a unit remains, inspect its exact systemd name and recovery evidence.
 
 1. In each owning user manager, list timer and monitor units, then disable each
    relevant installed unit (replace the example names):
@@ -366,7 +367,7 @@ job file is missing or a unit remains, inspect and disable its exact systemd nam
    ```bash
    systemctl --user list-unit-files 'vaultkeep@*.timer' 'vaultkeep-trigger@*.service'
    systemctl --user disable --now vaultkeep@app.timer
-   systemctl --user disable --now 'vaultkeep-trigger@<job-id>-<identity>.service'
+   systemctl --user disable --now 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service'
    systemctl --user list-units --all 'vaultkeep@*.service' 'vaultkeep-trigger-exec@*.service'
    systemctl --user list-jobs --no-pager
    ```

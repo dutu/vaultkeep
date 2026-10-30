@@ -392,7 +392,7 @@ vaultkeep@documents.service
 → /etc/vaultkeep/jobs/documents.yaml
 ```
 
-The job ID must match the configuration filename stem. V1 job IDs contain only ASCII letters, digits, underscores, and hyphens.
+The job ID must match the configuration filename stem, except for Trigger-enabled jobs with Schedule disabled; their managed service identity follows the canonical YAML path. V1 job IDs contain only ASCII letters, digits, underscores, and hyphens.
 
 ---
 

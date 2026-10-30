@@ -612,10 +612,10 @@ example `vaultkeep --no-color --user --config JOB.yaml trigger install`. See
 ### Monitoring and checks
 
 `monitor` runs the selected job's foreground monitor. It requires an enabled trigger,
-acquires that job's lifetime lock, performs runtime preflight, reconciles saved
+acquires that canonical YAML path's lifetime lock, performs runtime preflight, reconciles saved
 attempts, and starts observation. SIGTERM/SIGINT stop the monitor while workers
-continue. Configuration is read once. A second monitor for the same identity is
-refused before backup validation runs. Different jobs have independent locks.
+continue. Configuration is read once. A second monitor for the same canonical YAML path is refused before backup
+validation, including invocations with different parameters. Different paths have independent locks.
 
 Use `vaultkeep --user --config JOB.yaml validate` to validate the complete job and
 check Trigger runtime prerequisites, installation, and health. It reports enabled
@@ -639,36 +639,67 @@ transitions can occur during or immediately after a report.
 
 ### Service management
 
-`install` performs runtime checks, writes this job's user service, reloads the user
-manager, and explicitly enables/starts its monitor. `update` requires an existing
-managed service, refreshes its command, enables it, and restarts the monitor. Both require
-`trigger.enabled: true`. Monitor units are named
-`vaultkeep-trigger@<job-id>-<identity>.service`; `status --verbose` includes the exact
-unit name in diagnostics.
+`install` validates the configuration and runtime prerequisites, writes the user service,
+reloads systemd, and enables/starts the monitor. There is **one Trigger per canonical
+YAML path**. A second installation for that path is refused, including when `--param`
+values differ; use `update` instead. Both commands require `trigger.enabled: true`.
 
-`disable` stops and disables this monitor, including failed monitors and monitors
-waiting for automatic restart. It requires readable, well-formed YAML with a valid
-`job.id` and `trigger.params` selection; unrelated unknown, obsolete, or missing
-backup settings do not prevent recovery. Explicit `--param` values override the
-trigger defaults. Use the original path, ID, parameter selection, and application
-owner so the installed identity still matches. Disabling an already-disabled monitor
-succeeds without deleting its unit or editing the YAML.
+The service is `vaultkeep-trigger@<yaml-filename>-<path-hash>.service`. The filename
+omits `.yaml`/`.yml` and is escaped for systemd; the hash is the first 16 hexadecimal
+characters of SHA-256 of the canonical absolute path. Symlink aliases resolving to
+that path identify the same service. YAML edits never change the name. Renaming or
+moving YAML creates a different path identity; remove the old installation using its
+original canonical path before installing the new one.
 
-`remove` also removes the generated unit and continues to require a fully valid job.
-Both commands preserve recovery state and never stop workers. Stopping the monitor
-is refused during an active backup or with unreconciled attempts, blocked/corrupt
-recovery state, or a current safety warning. Wait for completion, inspect `status`,
-and follow [Trigger recovery](trigger/recovery.md) before retrying. Drain workers and
-review outcomes before switching to scheduled execution. For maintenance pauses that should
-preserve enablement, use `systemctl --user stop <monitor-unit>` directly.
+After editing job settings or parameters, run:
 
-Service management refuses an unrelated file, symlink, or locally overridden monitor
-unit rather than adopting or overwriting it. Job changes require explicit validation
-and `update`; there is no automatic reload. Disable also verifies the installed command,
-file owner, and effective systemd fragment and overrides. Changed unit files requiring
-`daemon-reload` must be reviewed first; configuration errors alone do not require a reload.
-Identity changes require retiring the old
-service separately. See [service operation](trigger/service-operation.md).
+```sh
+vaultkeep --user --config /absolute/path/job.yaml validate
+vaultkeep --user --config /absolute/path/job.yaml trigger update
+vaultkeep --user --config /absolute/path/job.yaml status --verbose
+```
+
+Validation may report an installed/desired identity mismatch until update succeeds.
+`update` finds the installation by path, checks its original backup execution lock
+and recovery state, stops the monitor, rechecks safety, and replaces its command
+without renaming the service. Parameters still render backup destinations; they do
+not create extra services. Backup locks, workers, fingerprints, and recovery directories
+retain their existing execution identities. A restart cannot silently adopt a new
+execution identity; explicit update is required.
+
+`disable` stops/disables the monitor. `remove` also removes its managed unit and
+reloads systemd. Both use verified installation metadata, independently of current
+YAML contents, job ID, and parameters. They work after invalid edits or deletion:
+
+```sh
+vaultkeep --user --config /original/canonical/path/job.yaml trigger disable
+vaultkeep --user --config /original/canonical/path/job.yaml trigger remove
+```
+
+The original application owner and canonical path must still be identifiable. If a
+symlink was removed or retargeted, use its original resolved target path. Both commands
+preserve YAML, archives, execution state, and recovery evidence and never stop workers.
+They refuse active backups, pending requests, unreconciled attempts, blocked/corrupt
+state, and unresolved safety warnings. Review [Trigger recovery](trigger/recovery.md)
+before retrying. For a temporary maintenance pause that preserves enablement, use
+`systemctl --user stop <monitor-unit>` directly.
+
+A single verified legacy `vaultkeep-trigger@<job-id>-<execution-hash>.service` is
+migrated by `trigger update` (or `install`). Its installed command and name establish
+the original execution identity; current YAML is not used to reconstruct it. Migration
+safely retires the old monitor before starting the new one and preserves all history.
+Multiple services for the same path cause an explicit conflict; review and safely
+resolve every installation rather than selecting one automatically. Legacy units
+remain removable with `disable`/`remove` even if YAML is invalid or missing.
+
+All lifecycle commands verify managed structure, file ownership, installed identity,
+effective systemd fragment, and absence of unreviewed overrides. Changed unit files
+requiring `daemon-reload` must be reviewed first. A failed update/migration may leave
+the monitor stopped; inspect the reported unit and retry after correcting the failure.
+If activation fails, the new monitor is stopped before restoring the previous unit.
+If stopping or verification fails, its verifiable definition is retained for recovery.
+Status and validation never migrate services or change recovery records. See
+[service operation](trigger/service-operation.md).
 
 ### Job status
 

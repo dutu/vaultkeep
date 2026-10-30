@@ -179,7 +179,16 @@ def test_custom_executable_survives_systemd_parsing(
         job.write_text(json.dumps(valid_config))
         unit = tmp_path / "vaultkeep-test.service"
         unit.write_text(render_service(load_config(job)))
-        expected = [str(binary), "--user", "--config", str(job), "trigger", "monitor"]
+        expected = [
+            str(binary),
+            "--user",
+            "--config",
+            str(job),
+            "trigger",
+            "monitor",
+            "--expected-identity",
+            load_config(job).scope,
+        ]
     elif kind == "user-schedule":
         unit = tmp_path / "vaultkeep-test.service"
         unit.write_text(

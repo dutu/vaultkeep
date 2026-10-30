@@ -35,6 +35,7 @@ def health_job(tmp_path, valid_config, monkeypatch):
     valid_config["destination"].update(root=str(destination))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(validation, "state_root", lambda _scope: tmp_path / "trigger-state")
+    monkeypatch.setattr(validation, "find_service", lambda _: None)
     owner_uid = source.stat().st_uid
     monkeypatch.setattr(validation.os, "geteuid", lambda: owner_uid)
     return tmp_path / "app.yaml", valid_config

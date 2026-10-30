@@ -327,6 +327,10 @@ def test_unused_trigger_placeholder_is_omitted_without_systemd_probes(
     )
     path.write_text(json.dumps(raw))
     store.instance_path("app").unlink()
+    monkeypatch.setattr(
+        "vaultkeep.trigger.service._systemctl",
+        lambda *_: pytest.fail("unused trigger cannot require manager discovery"),
+    )
     monkeypatch.setattr("vaultkeep.trigger.status._monitor_status", lambda _: "stopped")
     monkeypatch.setattr(
         "vaultkeep.trigger.status.RealSystemdController.unit_state",

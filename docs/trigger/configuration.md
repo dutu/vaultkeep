@@ -2,7 +2,7 @@
 
 Trigger settings belong in the same YAML file as the backup sources, destination,
 retention, and schedule. There is no separate Trigger configuration file. Each
-monitor reads one job once at startup; validate and restart after edits.
+monitor reads one job once at startup; validate and run `trigger update` after edits.
 
 `trigger` is optional and defaults to disabled. `schedule.enabled` and
 `trigger.enabled` cannot both be true. Both may be false for manual-only jobs.
@@ -59,7 +59,9 @@ their execution account. An explicit `application.user` is unsupported in user m
 An enabled Trigger requires `application`, as does `consistency.mode: application_offline`.
 See [shared consistency settings](../configuration.md#consistency-and-shared-application-identity).
 
-The backup job's `job.id` identifies the monitored instance. Its `logging.level`
+The backup job's `job.id` identifies the monitored instance. When Trigger is enabled
+and Schedule disabled, `job.id` may differ from the YAML filename; changing it requires
+`trigger update`. Its `logging.level`
 controls monitor logging. The monitor invokes this installation's own `vaultkeep`
 entry point; there is no separately configured core executable.
 
@@ -96,16 +98,25 @@ trigger:
 ```
 
 Parameter names and values follow the normal `--param KEY=VALUE` rules. Command-line
-parameters may override these defaults. Use the same parameter selection for monitor
-installation, update, status, disable, and remove. Pass matching `--param` arguments
-to manual backup commands. Do not enable two monitors for the same application/data
-directory under different parameter selections without reviewing matcher overlap and
-backup destination independence.
+parameters override these defaults for installation/update and desired-state checks.
+Pass matching `--param` arguments to manual backups; manual and Schedule parameterization
+is unchanged. Parameters can render destination paths such as `/srv/backups/{repo}/bisq`.
 
-The canonical job path, `job.id`, and selected parameters determine a 16-hex identity.
-Each identity has its own monitor unit, runtime lock, and recovery directory. Moving
-or renaming a job, changing `job.id`, or changing parameters creates another identity:
-disable/drain the old service and review its recovery evidence first.
+There is one managed Trigger per canonical YAML path, regardless of parameters.
+The service name is `vaultkeep-trigger@<yaml-filename>-<path-hash>.service`; YAML
+contents, `job.id`, and parameter values do not affect it. See
+[service management](../cli.md#service-management) for escaping and path hashing.
+
+The backup execution identity still includes the canonical path, `job.id`, and
+effective parameters. Changing those execution settings requires `trigger update`,
+which verifies the previous identity is safe to retire before switching. The installed
+selection is persisted in the unit independently of YAML; unexpected restarts cannot
+silently switch identities. Old recovery directories remain untouched. Disable/remove
+use installed metadata and do not need the original parameters or readable YAML.
+
+Moving or renaming YAML changes the service identity. Remove the old installation
+using its original canonical path, then install at the new path. It is not an automatic
+rename or migration.
 
 ## Notifications
 
