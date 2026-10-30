@@ -1,5 +1,3 @@
-## Bisq backup example (user mode)
-## Copy to ~/.config/vaultkeep/jobs/bisq-main.yaml and replace example paths.
 ## Launch Bisq GUI/API daemon with the same explicit --appDataDir.
 ## Setup guide: docs/trigger/apps/bisq.md
 
@@ -88,7 +86,7 @@ application:
 
 ## Shutdown trigger
 trigger:
-  enabled: false                         # Shutdown-triggered backups off
+  enabled: true                         # Shutdown-triggered backups off
   poll_seconds: 2                        # Process check interval
   confirm_seconds: 5                     # Shutdown confirmation delay
   # deadline_seconds: 3600               # Advisory; never stops a backup
