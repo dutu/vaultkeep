@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from vaultkeep.trigger.models import AttemptOutcome, new_uuid
 from vaultkeep.trigger.monitor import MonitorLock, unit_name_for
 from vaultkeep.trigger.paths import monitor_lock_path, state_root
 from vaultkeep.trigger.preflight import runtime_preflight
+from vaultkeep.trigger.service import _systemctl
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +51,59 @@ def config(tmp_path: Path, valid_config: dict):
     path = tmp_path / "app.yaml"
     path.write_text(json.dumps(valid_config))
     return load_config(path)
+
+
+@pytest.mark.parametrize("loaded_units_fail", [False, True])
+def test_first_install_with_no_unit_files(
+    tmp_path: Path, valid_config: dict, monkeypatch, loaded_units_fail: bool
+) -> None:
+    job = config(tmp_path, valid_config)
+    calls = []
+
+    def run(argv, **_):
+        calls.append(argv[2:])
+        code = int(argv[2] == "list-unit-files" or (loaded_units_fail and argv[2] == "list-units"))
+        return subprocess.CompletedProcess(argv, code, stdout="", stderr="")
+
+    monkeypatch.setattr(service, "_systemctl", _systemctl)
+    monkeypatch.setattr(service.subprocess, "run", run)
+    if loaded_units_fail:
+        with pytest.raises(BlockedError, match=r"list-units.*exit 1"):
+            service.manage_service(job, "install")
+        assert not service.units_root().exists()
+        assert [args[0] for args in calls] == ["list-unit-files", "list-units"]
+    else:
+        service.manage_service(job, "install")
+        unit_path = service.units_root() / service.service_name(job)
+        assert unit_path.read_text() == service.render_service(job)
+        assert [args[0] for args in calls] == [
+            "list-unit-files",
+            "list-units",
+            "daemon-reload",
+            "enable",
+        ]
+
+
+@pytest.mark.parametrize(
+    "command,code,stdout,stderr",
+    [
+        ("list-unit-files", 1, "", "Failed to connect to bus"),
+        ("list-unit-files", 1, "partial output", ""),
+        ("list-unit-files", 2, "", ""),
+        ("list-unit-files", -15, "", ""),
+        ("list-units", 1, "", ""),
+        ("daemon-reload", 1, "", ""),
+        ("enable", 1, "", ""),
+    ],
+)
+def test_systemctl_failures_remain_blocking(monkeypatch, command, code, stdout, stderr) -> None:
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda argv, **_: subprocess.CompletedProcess(argv, code, stdout=stdout, stderr=stderr),
+    )
+    with pytest.raises(BlockedError, match=rf"{command}.*exit {code}"):
+        _systemctl(command)
 
 
 def test_distinct_jobs_can_hold_monitor_locks_together(tmp_path: Path, monkeypatch) -> None:

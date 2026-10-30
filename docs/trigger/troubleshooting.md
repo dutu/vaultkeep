@@ -28,6 +28,17 @@ A successful `status` exit does not mean the monitor or backups are healthy. Chi
 diagnostics under the fixed state root can contain job output; review/redact them
 before sharing. Preserve requests/receipts when investigating uncertain execution.
 
+## No monitor services are installed
+
+An empty `systemctl --user list-unit-files 'vaultkeep-trigger@*.service'` listing
+with exit code 1 means no monitor unit files match. This is expected before the
+first installation. Run `vaultkeep --user --config /absolute/path/job.yaml trigger install`;
+`trigger update` requires an existing monitor.
+
+If Vaultkeep reports `BlockedError: systemctl --user list-unit-files ... failed:`
+with no diagnostic text for this case, update Vaultkeep to a version containing
+the empty-listing fix, then retry installation.
+
 ## Edited YAML or legacy monitor identity
 
 Use `status --verbose` to compare the installed execution identity/parameters with the

@@ -70,9 +70,18 @@ def _systemctl(*arguments: str) -> str:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise BlockedError(f"cannot contact the systemd user manager: {error}") from error
-    if result.returncode:
+    # list-unit-files returns 1 without diagnostics when no units match.
+    # Keep this exception specific: other nonzero results remain failures.
+    empty_listing = (
+        arguments[0] == "list-unit-files"
+        and result.returncode == 1
+        and not result.stdout.strip()
+        and not result.stderr.strip()
+    )
+    if result.returncode and not empty_listing:
         raise BlockedError(
-            f"systemctl --user {' '.join(arguments)} failed: {result.stderr.strip()}"
+            f"systemctl --user {' '.join(arguments)} failed "
+            f"(exit {result.returncode}): {result.stderr.strip()}"
         )
     return result.stdout
 
