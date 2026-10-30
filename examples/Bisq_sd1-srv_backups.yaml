@@ -114,13 +114,13 @@ hooks:
 #     command: 'vaultkeep notify --level info "Finished reading backup sources for {job} on {hostname}"'
 #     timeout_seconds: 60
   on_success:
-    command: 'vaultkeep notify --level info "Backup completed for {job} on {hostname}"'
+    command: 'vaultkeep notify --level info "Backup completed for {job}"'
     timeout_seconds: 60
   on_failure:
-    command: 'vaultkeep notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
+    command: 'vaultkeep notify --level error "Backup failed for {job}: $VAULTKEEP_ERROR"'
     timeout_seconds: 60
   on_unchanged:
-    command: 'vaultkeep notify --level info "Backup sources unchanged for {job} on {hostname}"'
+    command: 'vaultkeep notify --level info "Backup unchanged for {job}"'
     timeout_seconds: 60
 
 ## Desktop notifications (independent for backup and trigger)
