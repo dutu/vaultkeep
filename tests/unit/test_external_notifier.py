@@ -162,11 +162,15 @@ def test_timeout_kills_process_group_even_when_leader_exits(tools, capsys, leade
         process_ids = [int(value) for value in pids.read_text().split()]
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
-            alive = [
-                pid
-                for pid in process_ids
-                if psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-            ]
+            alive = []
+            for pid in process_ids:
+                # A process can exit before either construction or status lookup.
+                try:
+                    status = psutil.Process(pid).status()
+                except psutil.NoSuchProcess:
+                    continue
+                if status != psutil.STATUS_ZOMBIE:
+                    alive.append(pid)
             if not alive:
                 break
             time.sleep(0.01)
