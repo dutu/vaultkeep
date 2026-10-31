@@ -43,7 +43,7 @@ def duration(seconds: float) -> str:
 
 def timestamp(value: str | None) -> str:
     parsed = parse_utc(value)
-    return parsed.strftime("%Y-%m-%d %H:%M UTC") if parsed else "unknown"
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M %Z") if parsed else "unknown"
 
 
 def concise(reason: str) -> str:

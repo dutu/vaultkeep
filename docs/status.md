@@ -75,7 +75,9 @@ current phase. It is not a claim that a new backup archive was created on every 
 | `UNKNOWN` | Completion cannot be established; for example, the process was killed or completion persistence failed. |
 | `NONE` | No previous execution evidence is available. |
 
-Completion time and duration are shown when known. Failed, interrupted, and unknown
+Completion time and duration are shown when known. Human output shows completion
+time in the local time zone, including its abbreviation; JSON retains the recorded
+timestamp. Failed, interrupted, and unknown
 previous executions show `Log` in normal output whenever the log is available;
 `--verbose` adds log excerpts and detailed diagnostics. Failures also include an exit
 code or signal and a concise reason. Atomic-rename

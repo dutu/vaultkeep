@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -20,7 +21,8 @@ from vaultkeep.backup.paths import user_workflow_paths
 from vaultkeep.backup.results import BackupInterrupted, classify_command
 from vaultkeep.backup.status import backup_status
 from vaultkeep.cli import main
-from vaultkeep.cli.status import collect_status
+from vaultkeep.cli.output import Console
+from vaultkeep.cli.status import collect_status, print_status
 from vaultkeep.errors import DestinationError, LockError, StateError
 from vaultkeep.locking import JobLock, job_lock_owner, job_lock_path
 from vaultkeep.state.identity import job_identity_hash
@@ -69,6 +71,36 @@ def status(job):
 
 def execution(job):
     return Execution(user_workflow_paths(), "app", job_identity_hash(job, "app"))
+
+
+@pytest.mark.parametrize(
+    ("zone", "completed_at", "expected"),
+    [
+        ("Europe/Bucharest", "2026-10-31T09:15:00Z", "2026-10-31 11:15 EET"),
+        ("Europe/Bucharest", "2026-07-31T09:15:00Z", "2026-07-31 12:15 EEST"),
+        ("America/New_York", "2026-10-31T01:15:00Z", "2026-10-30 21:15 EDT"),
+        ("UTC", "2026-10-31T09:15:00Z", "2026-10-31 09:15 UTC"),
+    ],
+)
+def test_completed_time_uses_local_timezone(monkeypatch, capsys, zone, completed_at, expected):
+    data = {
+        "job_id": "app",
+        "backup": {
+            "activity": "IDLE",
+            "current": None,
+            "diagnostics": [],
+            "previous": {"result": "SUCCESS", "completed_at": completed_at},
+        },
+    }
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", zone)
+            time.tzset()
+            print_status(data, Console(no_color=True))
+    finally:
+        time.tzset()
+    assert f"Completed {expected}" in " ".join(capsys.readouterr().out.split())
+    assert data["backup"]["previous"]["completed_at"] == completed_at
 
 
 def test_manual_execution_records_success_then_unchanged_without_new_archive(local_job):
