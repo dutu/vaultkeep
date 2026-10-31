@@ -16,6 +16,15 @@ output, history cleanup, optional notifications, public CLI commands, disabled e
 and application-specific configuration guides. The test suite uses fake jobs, processes,
 clocks, and systemd controllers.
 
+## Source-review baseline
+
+The integration source-review baseline is 2026-10-13. This is historical source evidence, not
+installed-deployment validation. The installed CLI, executable/version, selected
+environment, job scope, destination independence, and systemd semantics still need
+the checks below. Current shared behavior is specified in the
+[main architecture](../design/architecture_and_design.md); Trigger's use of that
+behavior is specified in its [execution boundary](../design/trigger.md#backup-execution-boundary).
+
 ## Validation status tracker
 
 | Gate | Status | Evidence needed |

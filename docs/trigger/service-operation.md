@@ -129,8 +129,9 @@ Before enabling automatic backup for an instance:
    destination roots, hooks/credentials, and external timers/direct runs. Compare the
    service and interactive runtime/cache namespace so VaultKeep's locks are shared.
 3. Check the actual installed VaultKeep version and validation/CLI contract. A version
-   match alone does not prove reviewed behavior. See the source-reviewed
-   [integration contract](../design/trigger.md#verified-integration-findings).
+   match alone does not prove reviewed behavior. Check the
+   [CLI contract](../cli.md) and Trigger's
+   [execution boundary](../design/trigger.md#backup-execution-boundary).
 4. In a separately scoped disposable deployment, exercise the static worker template
    with a fake job: queued/activating states, receipts, failed or absent units,
    rejection diagnostics/codes, and monitor-independent lifetime. Confirm the deployed
@@ -143,6 +144,27 @@ Before enabling automatic backup for an instance:
 There is no built-in deployment-test or dry-run-backup command. Automated tests mock
 service operations; live unit validation remains open. `vaultkeep validate`
 does not substitute for a real worker exercise.
+
+### Systemctl start rejection mapping
+
+Use the exact `systemctl --user start --no-block <unit>` command when validating
+rejections; the manual's service-status code table is not a start-command mapping.
+In the reviewed systemd v257 source, `translate_bus_error_to_exit_status()` maps
+`BUS_ERROR_NO_SUCH_UNIT` to `EXIT_NOTINSTALLED` (5), access-denied and related
+transaction refusals to `EXIT_NOPERMISSION` (4), and `BUS_ERROR_LOAD_FAILED` to
+`EXIT_NOTCONFIGURED` (6). See the
+[systemctl error mapping](https://raw.githubusercontent.com/systemd/systemd/v257/src/systemctl/systemctl-util.c)
+and [exit-code definitions](https://raw.githubusercontent.com/systemd/systemd/v257/src/shared/exit-status.h).
+Verify both diagnostics and codes on the deployed version. The current adapter
+classifies these codes without validating diagnostics; numeric codes alone do not
+prove rejection before queueing. Generic failure, timeout, and a lost bus response
+do not authorize replay. See the [recovery rules](recovery.md#retries).
+
+Also verify queued-start and oneshot states, absent-unit reporting, receipt durability,
+failed-unit cleanup, and monitor-independent lifetime against the deployed systemd
+version. The reviewed v257 references are
+[service semantics](https://raw.githubusercontent.com/systemd/systemd/v257/man/systemd.service.xml)
+and [unit collection](https://raw.githubusercontent.com/systemd/systemd/v257/man/systemd.unit.xml).
 
 ## Inspect workers without discarding evidence
 
@@ -159,6 +181,9 @@ for the whole backup. Submission success is not completion. Even a receipt does 
 release its slot until both the worker and queued job are confirmed gone. Reconcile
 evidence before a manual `systemctl --user reset-failed <unit>`; the monitor does not
 currently reset failed units automatically.
+
+Raw child diagnostics and captured job-validation output are not guaranteed to be
+redacted. Review them before sharing or publishing them.
 
 ## Lifecycle limits
 

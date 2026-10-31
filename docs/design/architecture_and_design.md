@@ -21,9 +21,9 @@ Requirement language is intentionally definitive:
 
 ## 1.1 Current implementation status
 
-Document status: **Core archive/configuration contracts remain schema 1. Shutdown Trigger is an optional per-job feature within the unified package; external Debian release execution remains required.**
+Document status: **Configuration and backup manifest/layout contracts use version 2. Manual, Schedule, and optional shutdown Trigger share the backup engine and destination safety rules. External Debian release and installed-deployment validation remain required.**
 
-Specification revision: **2026-10-19**.
+Specification revision: **2026-10-31**.
 
 The repository contains the installable Python package, project metadata, hashed runtime and development dependency locks, the `vaultkeep --version` command, safe YAML 1.2 loading, strict schema-v2 models, aggregate schema and semantic validation, GitWildMatch exclusions, deterministic source traversal, immutable source entries, versioned full-content source hashing, backup-relevant configuration fingerprints, credential-generation fingerprints, atomic local state, automatic state reconstruction policy, unchanged detection, verified `.tar.zst` and password-protected `.tar.7z` archive creation, strict password-file loading, credential-continuity verification, SHA-256 sidecars, private plaintext-TAR cleanup, no-overwrite atomic directory finalization, template-derived backup paths, immutable manifests, strict destination discovery, state-record production, retention planning, guarded destination deletion, lifecycle hooks, systemd scheduling and timer management, operational commands, runtime validation, the Debian installer, release-gate checks, unit tests, real-tool Linux integration tests, inactive `.example` configuration templates, and Python 3.13 continuous-integration quality gates. External Debian release-gate execution remains required before publishing v1.
 
@@ -50,21 +50,24 @@ Future enhancements, excluded from v1:
 - encrypted-backup password rotation within an existing job and destination namespace;
 - support for package managers or operating systems beyond Debian.
 
-Core backup behavior remains unchanged by shutdown triggering. The integration is specified in [Trigger integration](../plans/trigger-integration.md) and [Trigger design](trigger.md).
+Trigger initiates the same Backup lifecycle as manual and scheduled execution. Its
+monitoring, dispatch, and recovery contract is specified in [Trigger design](trigger.md).
 
 ## 1.2 Capability status
 
 | Capability | Release classification | Implementation status |
 |---|---|---|
 | Package, PEP 440 version, and development quality gates | v1 | Implemented |
-| Strict YAML 1.2 configuration | v1 | Implemented |
+| Strict YAML 1.2 configuration | Current | Schema 2 implemented; no schema-1 backup/configuration migration |
+| Shared application identity and consistency policy | Current | Detached resolved identity, shared preparation, and application-offline boundaries implemented |
+| Suspect replacement and guarded cleanup | Current | Manifest/layout 2, destination-authoritative markers, compatible replacement, and per-history deletion safeguards implemented |
 | Source discovery, exclusions, and hashing | v1 | Implemented |
 | `.tar.zst` archive creation and verification | v1 | Implemented |
 | Per-backup-directory destination and manifests | v1 | Implemented |
 | Local state reconciliation and unchanged detection | v1 | Implemented |
 | Count-based retention and dry-run pruning | v1 | Implemented |
 | Manual CLI and operational reporting | v1 | Implemented |
-| Shared destination locking release validation | v2 | Local and CIFS/NFS protocols implemented; live server and cross-machine release checks remain required |
+| Shared destination locking | Current | Local and CIFS/NFS protocols implemented; live server and cross-machine release checks remain required |
 | Password-protected `.tar.7z` | v1 | Implemented |
 | Lifecycle hooks | v1 | Implemented |
 | Extended filesystem metadata | Future enhancement | Not implemented |
@@ -195,13 +198,14 @@ V1 does not provide:
 - a GUI;
 - cloud-provider APIs;
 - direct SMB or NFS protocol clients;
-- distributed destination locking;
+- a separate distributed lock service;
 - a general restore engine;
 - a dynamic plugin or extension system;
-- an internal scheduler independent of systemd;
-- destination-level shared locking.
+- an internal scheduler independent of systemd.
 
-Mounted filesystems remain the responsibility of the operating system.
+Mounted filesystems and server-backed locking remain the responsibility of the
+operating system and storage server. Vaultkeep coordinates cooperating writers
+through the shared per-history file locks described in [Locking](#20-locking).
 
 ---
 
@@ -235,6 +239,7 @@ V1 runtime dependency ranges are:
 pydantic >=2.10,<3
 ruamel.yaml >=0.18.16,<0.19
 pathspec >=0.12.1,<1
+psutil >=6.1,<8
 ```
 
 The `pathspec` upper bound preserves the v1 GitWildMatch contract. The `ruamel.yaml` upper bound preserves the reviewed 0.18 safe-loader API and pure-Python behavior. Hatchling `>=1.26,<2` is the build backend.
@@ -370,7 +375,12 @@ Example layout:
     └── documents.passphrase
 ```
 
-All jobs use the same executable.
+All jobs use the same executable and installed distribution version. Optional
+`trigger` settings govern monitoring and dispatch; application identity is defined
+once in top-level `application`, and notification controls live in
+`desktop_notifications`. Trigger and Schedule cannot both be enabled; both may be
+disabled for manual-only operation. Trigger uses non-root user mode, while manual
+and scheduled execution support root and user scopes.
 
 Manual execution:
 
@@ -600,7 +610,11 @@ The same immutable `SourceSnapshot` entry list drives hashing and archive creati
 
 Vaultkeep also calculates a backup-relevant configuration fingerprint. It includes source paths, source archive path layout fields, exclusions, source options, destination identity, explicit runtime parameters, archive format, encryption mode, password-file path, and metadata policy. It excludes password contents, logging, retention counts, hooks, and scheduling. A changed fingerprint forces a new backup even when the source digest is unchanged.
 
-Configuration fingerprint format version 2 uses canonical, key-sorted JSON and SHA-256. Destination identity includes the root, naming template, marker path, and expected filesystem type. Archive identity includes the format and compression level. The fixed metadata-policy identifier records that mode, numeric user ID, and numeric group ID participate in source hashing.
+Configuration fingerprint format version 2 includes the effective consistency mode,
+canonical resolved application snapshot, and a separate numeric owner UID, as well
+as the backup mode for independent-file jobs. Policy or application changes force a
+new archive even when source contents are unchanged. It uses canonical, key-sorted
+JSON and SHA-256. Destination identity includes the root, naming template, marker path, and expected filesystem type. Archive identity includes the format and compression level. The fixed metadata-policy identifier records that mode, numeric user ID, and numeric group ID participate in source hashing.
 
 For password-protected jobs, Vaultkeep also records a local credential-generation fingerprint containing the password file's device, inode, size, nanosecond modification time, and nanosecond change time. This local fingerprint is never copied into a destination manifest and never contains a digest of the password.
 
@@ -622,7 +636,9 @@ When implemented, each setting must affect both:
 
 ## 9.2 Unchanged behavior
 
-If the newly calculated source digest matches the last successful source digest:
+If source digest, configuration fingerprint, credential continuity, and the
+referenced destination backup pass the unchanged checks, and there is no unresolved
+suspect in the active compatible history:
 
 - do not create an archive;
 - do not apply retention;
@@ -652,6 +668,20 @@ If the source changed while archiving:
 This process is best-effort consistency detection for a live filesystem, not a filesystem snapshot. Applications requiring a point-in-time image must supply a stable source, such as an LVM, ZFS, or application-native snapshot.
 
 Automatic retries are a future enhancement. V1 fails immediately when the source changes.
+
+`consistency.mode` defaults to `files`, which performs no backup-engine process
+checks. `application_offline` requires a shared application identity and reliable
+stopped observations before source discovery, after `before_archive` before the
+refreshed source snapshot, and after the final source reads. Running, ambiguous,
+or unavailable observations fail execution. Trigger requires application identity
+under either policy; its pre-dispatch stopped check does not imply continued
+process absence during a `files` backup.
+
+The final offline check precedes `after_archive`, which may restart the application.
+Only backup artifacts are read after that release hook. The checks apply separately
+to each archive in `per_file` mode and do not replace file hashing. Process absence
+neither proves clean shutdown nor excludes a short restart between observations;
+file consistency is not application-level transactional consistency.
 
 ---
 
@@ -1031,6 +1061,32 @@ After a successful new backup, Vaultkeep sets `last_unchanged_at_utc` to null. A
 
 Before returning `unchanged`, Vaultkeep verifies that the state matches the current configuration fingerprint, matches the current credential-generation fingerprint for a password-protected job, and references a valid backup in the current destination. Missing, corrupt, incompatible, or stale local state is reconstructed from destination manifests. Because manifests contain no credential-generation fingerprint, reconstruction for a password-protected job tests the newest valid encrypted backup with the current password before recording the current local fingerprint.
 
+## 13.3 Missing or unusable state recovery
+
+Vaultkeep executes without an existing `state.json`. A missing, empty, malformed, incompatible, or stale state file is a cache miss rather than a fatal application error.
+
+Recovery is automatic and requires no CLI flag:
+
+1. discover and classify entries in the configured destination;
+2. select the newest complete, valid backup for the job using `created_at_utc` and `backup_id`;
+3. reconstruct source digest, configuration fingerprint, backup ID, backup timestamp, archive path, and application version from its manifest;
+4. for a password-protected job, test the selected encrypted backup with the current password and establish the current credential-generation fingerprint;
+5. initialize non-reconstructable operational fields, hook outcomes, and `last_unchanged_at_utc` to null;
+6. atomically write the reconstructed local state;
+7. continue the normal digest and configuration comparison.
+
+When no valid destination backup exists, Vaultkeep initializes empty local state and continues toward creation of a new backup. When valid destination state exists but does not match the current source digest or configuration fingerprint, Vaultkeep creates a new backup. When reconstruction cannot prove that returning `unchanged` is safe, Vaultkeep creates a new backup instead of skipping.
+
+State absence never causes failure by itself. Independent safety failures still block execution, including an unavailable or unreadable destination, an unwritable state directory, or failure to establish encrypted credential continuity.
+
+Reconstruction never modifies a destination archive or manifest. The run reports that local state was reconstructed.
+
+The reconstruction API consumes typed `BackupStateRecord` values containing facts from already validated destination manifests. Manifest parsing and destination discovery produce those records. This boundary keeps local-state recovery independent from destination scanning and does not treat unvalidated JSON as a recovery source.
+
+---
+
+## 13.4 Replacement identity and suspect classification
+
 Run change detection discovers strict version-2 metadata for both archive formats.
 The active replacement class describes configured source coverage and consistency,
 independently of content, compression, retention, encryption settings, or matcher
@@ -1067,29 +1123,32 @@ performs full inspection under the same shared lock and marks demonstrated corru
 credentials, missing tools, or temporary I/O failures alone do not establish corruption.
 Inventory and status remain metadata-only and never mutate records.
 
-## 13.3 Missing or unusable state recovery
+Replacement source scope is canonical, versioned metadata describing job ID, backup
+mode, source roots and archive layout, exclusions, and traversal/missing-source
+policies. It describes configured coverage rather than current contents and can be
+compared without the original YAML. Both `manifest_version: 2` and replacement
+`identity_version: 1` are explicit requirements; missing versions are malformed.
 
-Vaultkeep executes without an existing `state.json`. A missing, empty, malformed, incompatible, or stale state file is a cache miss rather than a fatal application error.
+Replacement requires equal source scope and consistency mode. Offline histories
+also require equal logical application name, canonical username, and normalized
+data directory. UID and matcher details are not part of replacement identity,
+although both affect runtime enforcement and fingerprints. Retention, compression,
+archive format, encryption settings, password-file paths, notifications, and logging
+do not define the replacement class. Format/encryption changes still require an
+independently verified and recoverable replacement. Incompatible histories neither
+authorize deletion nor force endless creation in the current class.
 
-Recovery is automatic and requires no CLI flag:
+A suspect whose replacement disappears, becomes suspect, or no longer satisfies the
+relationship is unresolved again. A later valid replacement may supersede it while
+preserving its original reason and detection time. Conflicting or duplicate backup
+IDs block authorization. A valid reference survives a failed deletion; the surviving
+superseded suspect does not alone force another archive. Neither a local state cache
+nor Trigger history can override these destination facts.
 
-1. discover and classify entries in the configured destination;
-2. select the newest complete, valid backup for the job using `created_at_utc` and `backup_id`;
-3. reconstruct source digest, configuration fingerprint, backup ID, backup timestamp, archive path, and application version from its manifest;
-4. for a password-protected job, test the selected encrypted backup with the current password and establish the current credential-generation fingerprint;
-5. initialize non-reconstructable operational fields, hook outcomes, and `last_unchanged_at_utc` to null;
-6. atomically write the reconstructed local state;
-7. continue the normal digest and configuration comparison.
-
-When no valid destination backup exists, Vaultkeep initializes empty local state and continues toward creation of a new backup. When valid destination state exists but does not match the current source digest or configuration fingerprint, Vaultkeep creates a new backup. When reconstruction cannot prove that returning `unchanged` is safe, Vaultkeep creates a new backup instead of skipping.
-
-State absence never causes failure by itself. Independent safety failures still block execution, including an unavailable or unreadable destination, an unwritable state directory, or failure to establish encrypted credential continuity.
-
-Reconstruction never modifies a destination archive or manifest. The run reports that local state was reconstructed.
-
-The reconstruction API consumes typed `BackupStateRecord` values containing facts from already validated destination manifests. Manifest parsing and destination discovery produce those records. This boundary keeps local-state recovery independent from destination scanning and does not treat unvalidated JSON as a recovery source.
-
----
+If recording established corruption fails, the affected history permits no
+destructive cleanup. Before commitment, known-invalid staging artifacts are removed
+rather than committed as suspects. Committed archives and manifests remain immutable;
+classification changes only the separate marker.
 
 ## 14. Retention model
 
@@ -1181,9 +1240,29 @@ A backup is eligible for deletion only when:
 
 - it is an unmarked backup selected by no enabled retention tier, or a suspect with a valid compatible replacement;
 - its layout and metadata are valid;
-- every destination entry has been classified successfully;
-- the complete retention plan has been calculated successfully;
+- every relevant destination entry in that independent history has been classified successfully;
+- the complete retention plan for that history has been calculated successfully;
 - current checksums establish an eligible recovery point and validate every required replacement before deletion.
+
+Each `per_file` child is an independent history: successful child A can complete
+cleanup even if child B and the aggregate execution fail. No history's success
+authorizes another's deletion. Deleted or excluded source histories and incompatible
+classes are preserved. If malformed metadata prevents establishing a narrower safe
+boundary, the affected containing namespace is blocked rather than guessed.
+
+Before deleting, refresh discovery under the history lock, calculate the complete
+plan, and revalidate exact known artifacts and required replacement checksums.
+Metadata-only inventory and dry-run observations never authorize later deletion.
+Full decompression remains explicit `verify` work rather than a requirement on every
+prune. Deletion removes only validated regular artifacts and the known marker, then
+the directory; it never uses unrestricted recursive removal.
+
+A referenced replacement remains protected until its dependent suspect is removed
+or another validated replacement is established. If suspect deletion fails, preserve
+the replacement rather than assuming the planned deletion succeeded. Partial marker
+updates must not authorize partial cleanup from an unvalidated plan. Explicit prune
+uses the same rules; automatic cleanup runs only after reliable new creation and
+successful required state persistence and hooks, never after `UNCHANGED`.
 
 The retention module returns a `RetentionPlan` and never deletes files directly. The destination module performs only deletions authorized by that complete plan. `list` renders per-backup `KEEP`, `PRUNE`, `PROTECTED`, or `UNKNOWN` decisions; `prune --dry-run` displays the cleanup plan without mutation. A replacement reference does not require wall-clock ordering: a clock correction must not invalidate an independently verified replacement.
 
@@ -1943,6 +2022,15 @@ A local job lock retains execution/progress ownership using canonical configurat
 path, job ID, and runtime parameters. Per-file state also includes its file key.
 This local lock remains separate from destination mutual exclusion.
 
+User-mode local paths come from the selected HOME/XDG environment, as specified in
+[user-mode locations](../user-mode.md#user-mode-locations). Local job locks use
+`$XDG_RUNTIME_DIR/vaultkeep/locks`, falling back to
+`${XDG_CACHE_HOME:-~/.cache}/vaultkeep/locks` when no runtime directory is set.
+Manual, scheduled, and triggered executions need the same effective runtime/cache
+namespace to share that local job lock. `PATH` affects neither the lock directory nor
+the job identity. Trigger's separate recovery root does not relocate Backup state,
+workspaces, or locks.
+
 `run`, mutating `verify`, and actual `prune` acquire an exclusive lock on the
 persistent regular `<history>/.vaultkeep.lock` file before inspecting mutable
 history. The same protocol covers local and network filesystems, aliases, root/user
@@ -1987,7 +2075,8 @@ vaultkeep/
 │   ├── records.py     # bounded execution evidence
 │   ├── results.py     # common outcomes and error classification
 │   └── status.py      # read-only backup interpretation
-├── trigger/       # detection, shutdown confirmation, dispatch and recovery
+├── application.py # shared application identity, detection and offline checks
+├── trigger/       # shutdown confirmation, dispatch and recovery
 ├── schedule/      # systemd timers and scheduler health
 ├── config/
 ├── validation/
@@ -2046,6 +2135,95 @@ HookResult
 ValidationIssue
 ```
 
+## 21.3 Shared application identity
+
+`ApplicationConfig` holds raw YAML fields: application name, optional system-scope
+user override, data directory, and matcher. Resolution does not mutate this object,
+insert runtime values into `JobConfig`, or store private provenance in configuration.
+`ResolvedApplication` is a separate frozen value holding application name, canonical
+username, numeric owner UID, canonical directory, and a detached matcher snapshot with account-relative
+paths resolved. Nested entrypoints, argv tokens, and environment predicates are deep
+copied; consumers treat them as read-only. Canonical serialization returns fresh
+containers, so raw or serialized mutations cannot change a captured identity,
+execution policy, or fingerprint.
+
+`vaultkeep.application` owns scope checks, account/path resolution, the pure execution
+policy snapshot, and the shared UID-restricted process provider, matcher, and detector.
+It does not import validation, Backup workflows, or Trigger adapters. Shared job
+preparation in `vaultkeep.validation` orchestrates these lower-level capabilities:
+
+```text
+Backup / Schedule / Trigger / Installer
+                  ↓
+       validation.prepare_job
+                  ↓
+       application identity and scope
+```
+
+### Execution scope
+
+| Scope | Execution requirement | Application owner |
+| --- | --- | --- |
+| User | Effective process UID | Execution account; explicit `application.user` is rejected |
+| System | Effective UID 0 | Root by default, or an explicitly selected existing account |
+| Trigger | Non-root user execution only | Execution account |
+
+Scope is checked before privileged runtime paths, state writes, operation locks, or
+service mutation, including jobs without an application. User-mode overrides are
+rejected before any application account lookup. The default account comes from the
+validated effective UID, with home expansion from the OS account record;
+`HOME`, `USER`, `LOGNAME`, `SUDO_USER`, and YAML location do not select the owner.
+Expected identity errors identify the absolute YAML path and relevant property.
+
+### Preparation and inspection boundaries
+
+`prepare_job` returns `tuple[JobConfig, ResolvedApplication | None]`: absent optional
+application produces `None`; a configured valid application produces one resolved
+identity; missing required or invalid identity raises a validation error rather than
+fabricating an identity or returning `None`. The returned configuration retains raw
+application fields and the existing runtime-parameter expansion conventions.
+
+Normal preparation resolves an application once per operation/context. Backup,
+Trigger, Schedule install/update/bulk preflight, full validation, and installer
+maintenance use the shared contract. Downstream policy, fingerprints, directory
+checks, and combined/per-file workflows reuse that value. Disabled jobs and templates
+with deferred parameters still receive independent identity/context checks.
+Preparation validates accounts and context without requiring source or destination
+availability, installed application executables, process observations, or directory
+readiness; full runtime checks apply those additional requirements afterward.
+Schema-only validation performs no account lookup or runtime readiness checks.
+
+`prepare_config` applies configuration, parameter, and semantic checks without
+requiring current application identity. Archive `list` and `verify` use this path:
+original sources, application executables/processes, and application accounts are not
+prerequisites for inspection. Listing retains its all-zero retention allowance and
+source-independent per-file history discovery. Inspection still validates execution
+scope, destinations, credentials, archive members, and shared locks where required;
+it never fabricates current identity or grants deletion/replacement authority.
+Pruning retains its separate coverage and replacement authorization without adding
+source-availability or application-process prerequisites.
+
+### Runtime safety and identity limits
+
+The shared process provider restricts inspection to the selected UID before reading
+metadata and retains PID-reuse/liveness checks and fail-closed uncertainty handling.
+Offline checks independently revalidate canonical username against UID, authorized
+inspection scope, and strict canonical directory ownership. Account deletion/remapping,
+symlink changes, and ambiguous or unavailable observations cannot silently replace
+captured identity. These checks are safety revalidation, not repeated preparation.
+
+Trigger adapts instances to the shared detector while retaining its own lifecycle,
+request, attempt, receipt, monitor, and persisted-state models. Parent preflight and
+worker/child boundaries independently validate frozen UID, matcher, directory, and
+execution policy against the child's single effective configuration.
+
+Configuration fingerprints and execution policy retain canonical application fields
+and separate UID inputs. Replacement-history identity remains username-based and
+excludes UID. Account recreation under the same name or account rename can therefore
+affect history identity differently from runtime ownership. This limitation does not
+establish UID continuity for historical archives or authorize changing replacement
+compatibility rules.
+
 ---
 
 ## 22. Main workflow
@@ -2099,6 +2277,23 @@ preserve the committed backup
 → return the mapped non-zero exit code
 ```
 
+The execution result depends on the failed phase:
+
+| Failure | Result | Cleanup authorization |
+| --- | --- | --- |
+| Source/archive work or final offline check before commit | Failed; remove owned partial artifacts | None |
+| Committed-archive integrity | Failed; mark suspect when justified | None |
+| Required successful state persistence or `on_success` | Failed; preserve committed archive without inferring corruption | None |
+| Replacement-marker update, retention planning, or pruning after reliable creation and successful hooks | Created with cleanup warning | Stop unsafe further cleanup; retain exact partial results |
+
+Corruption of the newly committed archive is a failed execution even if discovered
+during cleanup, including when its marker cannot be saved. Ordinary cleanup errors
+keep `run: created` and exit zero. Structured results and cleanup diagnostics are
+available through execution records and `status --json`; `run` has no JSON interface.
+Destination-derived **Cleanup pending** and recorded **Previous cleanup error** are
+separate: retained work does not prove a prior failure when that record is missing.
+Final reporting persistence cannot retroactively undo safe completed deletion.
+
 Retention deletion is idempotent but not transactional. If one deletion succeeds and a later deletion fails, Vaultkeep reports the exact partial result and never describes the already committed backup as failed or absent.
 
 ---
@@ -2121,7 +2316,17 @@ V1 exit code map:
 143 Interrupted by SIGTERM
 ```
 
-The application exposes a structured internal error hierarchy.
+The classifier in `vaultkeep.backup.results` maps `ConfigurationError` and
+`ApplicationIdentityError` to 3, `DestinationError` (including `RetentionError` and
+`PruneError`) to 5, `LockError` to 10, `HookError` to 11, `TimerError` to 14, and
+`StateError` to 15. Other execution errors, including source hashing and archive
+verification errors, map to 7. Argument parsing supplies code 2.
+
+Caught SIGTERM/SIGINT record INTERRUPTED through the common execution lifecycle.
+Unhandled exceptions can exit 1. Callers must treat any other nonzero result as a
+failure and retain diagnostics. A direct subprocess return code is negative for
+signal termination; preserve the signal separately from normal exit codes rather
+than assuming shell-style 128 + signal encoding.
 
 Exit-code stability becomes part of the public CLI contract after `1.0.0`.
 
@@ -2384,6 +2589,11 @@ selection. Readers retain strict validation for schema 1 (legacy core) and schem
 command links and templates. A migration replaces these artifacts transactionally;
 old metadata never expands the deletion allowlist into user homes.
 
+A combined-deployment upgrade retires the managed standalone Trigger command and
+global monitor template, retaining the previous release and restoring old links,
+templates, and metadata on rollback. This deployment-metadata compatibility does
+not provide schema-1 backup/configuration migration.
+
 Unknown fields/schemas, duplicate or missing artifacts, unsafe paths, inconsistent
 metadata and invalid artifact targets are refused. Hashes and exact link targets
 detect local ownership conflicts. The timer registry remains a separate managed file.
@@ -2442,6 +2652,12 @@ back here.
 Existing YAML/TOML, secrets, user state and archives are never rewritten by the
 installer. Packaged `.example` files may be refreshed. Complete disabled YAML examples for scheduling and the three supported apps ship
 with the release; copying one into a user's configuration is explicit.
+
+Per-job Trigger preflight refuses unreviewed legacy shared JSON under the account's
+fixed recovery root. Moving settings and reviewing legacy work is an explicit
+operator procedure; installer upgrades neither relabel nor replay uncertain requests.
+See [legacy Trigger recovery](../maintenance.md#legacy-trigger-recovery-evidence).
+
 Enablement links, user overrides and persistent timer timestamps remain in place.
 After validation, the installer resumes only previously active schedules; calendar
 timers may legitimately catch up. The installer directly replays no completed backup attempt.
@@ -2943,4 +3159,4 @@ V1 Vaultkeep is designed as:
 - modular and extensively testable;
 - conservative about deletion and partial failures.
 
-Extended metadata, encrypted-namespace password rotation, non-Debian support, distributed destination locking, and automatic retries remain future enhancements and are not v1 capabilities.
+Extended metadata, encrypted-namespace password rotation, non-Debian support, a separate distributed lock service, and automatic retries remain outside the current implementation. Shared per-history locking on supported local and CIFS/NFS filesystems is implemented; live server and cross-machine release checks remain required.

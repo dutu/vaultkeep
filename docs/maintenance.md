@@ -238,6 +238,34 @@ inspect `current`, `install-manifest.json`, retained releases, and `.staging` or
 `.transaction.*` or `.maintenance.*` directories before retrying. Preserve recovery snapshots if rollback
 reports a failure; never erase Trigger evidence to force an update.
 
+### Legacy Trigger recovery evidence
+
+Deployment upgrades preserve old Trigger TOML and recovery records; they do not
+convert them into current job YAML or replay old requests. Per-job monitor preflight
+refuses legacy JSON under `instances/`, `attempts/`, or `blocked/` in
+`<account-home>/.local/state/vaultkeep-trigger/`. The current per-job namespaces live
+separately under `jobs/<identity>/`.
+
+For a deployment with legacy shared state:
+
+1. Drain and reconcile the old workers and queued starts using their original
+   deployment and evidence. Resolve uncertain outcomes through manual review; do not
+   treat missing unit state as proof that execution never happened.
+2. Preserve an archive of the configuration, unit definitions, and recovery evidence.
+3. Transfer reviewed instance settings into complete schema-2 job YAML, using the
+   current top-level application identity and notification settings. Backup/configuration
+   schema 1 has no automatic migration; preserve unsupported repositories separately.
+4. Retire old user monitor units only after their work is safely resolved. Archive the
+   reviewed legacy shared state outside the active recovery root; do not relabel it
+   as current per-job state or discard unresolved evidence to bypass preflight.
+5. Validate each new job and explicitly install/activate its monitor. Follow the
+   [Trigger activation procedure](../README.md#trigger) and
+   [recovery rules](trigger/recovery.md).
+
+The installer retires only its managed standalone command and shared monitor
+template during the deployment transition. It does not recursively edit user homes
+or retire user units on the operator's behalf.
+
 ## Installer-specific diagnosis
 
 ### Configuration validation fails

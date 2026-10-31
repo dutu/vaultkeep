@@ -151,6 +151,29 @@ engine for both backup modes. Installer fixtures copy only shipped templates and
 exclude private local examples. Filesystem and live application release gates remain
 separate from these local tests.
 
+Maintain the following regression requirements alongside the
+[architecture contract](../design/architecture_and_design.md#13-manifest-and-state).
+The main focused suites are
+[backup safety](../../tests/unit/test_backup_safety_redesign.py) and
+[safety regressions](../../tests/unit/test_review_safety_regressions.py).
+
+| Area | Required cases |
+| --- | --- |
+| Policy and snapshots | Both consistency modes with Trigger enabled/disabled; required shared identity; unsupported schema and incomplete fields; policy/identity fingerprint changes; frozen dispatch policy versus child setup; one effective configuration per execution. |
+| Source and offline boundaries | Refreshed pre-archive snapshot, source changes, stream/structure/checksum failures, no engine process checks for `files`, every offline boundary per archive, restart in `after_archive` with no later source reads, release exactly once on failure, primary error preserved with release errors. |
+| Metadata and classification | Explicit manifest/replacement versions, unsafe/oversized/unreadable markers, multiple suspects, original diagnostics preserved through durable updates and relocation, unsupported matching entries block deletion, operational/credential failures do not imply corruption. |
+| Replacement compatibility | Content changes within equal coverage; independent classes for coverage/policy/application changes; format, compression, retention, password-path, and matcher differences; independently verified encryption changes; incompatible classes preserved without endless creation. |
+| Replacement relationships | Missing, forged, cross-history, self/circular/conflicting IDs; later missing/corrupt replacements; reassignment; backward clock changes; fresh discovery after marker updates; interrupted/partial writes authorize no unsafe deletion. |
+| Cleanup and partial failure | Complete per-history planning, last recovery point and replacement dependencies protected, failed suspect deletion followed by `UNCHANGED`, explicit/later-new-archive retry only, successful per-file cleanup despite another child's failure, deleted/excluded histories preserved, malformed-entry boundaries fail closed. |
+| Failure results | Required state or hook failure after commit preserves archives; new committed corruption fails execution even during cleanup or marker-write failure; ordinary cleanup warnings preserve `created` and exact partial results; no cleanup after failed/suspect/unchanged creation. |
+| Inspection and reporting | Metadata-only list/status/dry-run versus deletion-time SHA-256, no preview writes or repairs, all inventory decisions including disabled/unknown, inline suspect reason without unverified health claims, unavailable destination still permits local status, cleanup pending separate from recorded error, JSON and notifications preserve cleanup diagnostics. |
+| Initiators | Identical engine behavior through Manual/Schedule/Trigger, worker idempotency and dispatch uncertainty, frozen identity checks, no replay or archive classification from monitoring gaps, independent notification switches, original result-marker interpretation. |
+
+These are continuing regression requirements, not a claim that every release or
+live-deployment scenario has passed. A recurring installer timeout must be investigated
+and recorded by affected repair variant; a successful rerun does not erase an
+intermittent failure.
+
 Network regressions emulate mount metadata while using real file locks, separate
 process contention, real archive tools, both backup modes, and encrypted/unencrypted
 archives. They cover unsafe mount options and lock anchors, permissions/server-lock
@@ -172,3 +195,27 @@ These opt-in tests create and remove private test directories, including their
 history lock files after all writers have stopped. They check real
 commit/verify/retention and separate process contention. Release validation must additionally check contention from two
 writing machines, server recovery, and the deployed mount/permission configuration.
+
+## Application identity regression coverage
+
+The shared identity/preparation contract is specified in
+[application identity](../design/architecture_and_design.md#213-shared-application-identity).
+Focused coverage lives in [application tests](../../tests/unit/test_application.py)
+and [preparation tests](../../tests/unit/test_application_preparation.py), with
+Schedule, Trigger, installer/maintenance, hashing, validation, and installed-worker
+suites covering the consumers. Preserve these checks when changing that boundary:
+
+| Area | Required cases |
+| --- | --- |
+| Detached identity | Raw fields unchanged, frozen runtime fields, nested matcher and serialized-container independence, equivalent repeated/raw-reconstructed resolution, explicit runtime serialization, stable canonical fingerprint and policy payloads including separate UID. |
+| Scope and accounts | Execution UID despite misleading environment/YAML location, implicit/explicit root equivalence, root selecting another owner, non-root system rejection before state/locks/services even without an application, missing accounts and lookup failures, user override rejection before every account lookup with field and absolute YAML path. |
+| Preparation | Optional/required/invalid identity outcomes, one resolution per ordinary loader/validator/adapter chain and combined/per-file operation, directory checks reuse resolved identity, schema-only performs no account/runtime checks, partial recovery/status remains useful. |
+| Runtime revalidation | Same-looking processes under different UIDs, UID filtering before metadata access, PID reuse, ambiguous/unreadable evidence, account removal/remapping, ownership and symlink changes, authoritative Trigger parent/child policy comparison. |
+| Inspection and deletion | `list`/`verify` survive missing sources, application executables/processes/accounts, and account-service failures without fabricated identity; existing credentials/member/destination/lock/suspect protections remain; inspection never enables unauthorized replacement or prune. |
+| Consumers and transactions | Schedule install/update/bulk checks include disabled and parameter-deferred templates; installer configuration failures precede mutation; identity and later failures/signals preserve units, registry, rollback, and restoration; retained replacement identity remains username-based. |
+| Dependencies | Import identity/preparation in different orders; inspect deferred imports too. Shared application code imports no validation, Backup workflows, or Trigger adapters, and offline enforcement/Trigger use the same detector. |
+
+Use disposable paths and mocked accounts/processes/managers for failure cases. Run
+the normal [checks](#checks), including package validation and the prepared installer
+repair variants, after relevant implementation changes. Record failures, skips, and
+environment limitations separately from passing results.
