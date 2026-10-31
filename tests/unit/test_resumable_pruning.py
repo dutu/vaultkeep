@@ -52,7 +52,7 @@ def intent(job, directory):
 def publish(job, directory):
     marker = intent(job, directory)
     with destination_lock(directory.parent), opened_directory(directory) as (parent, descriptor):
-        publish_marker(parent, descriptor, marker)
+        publish_marker(parent, descriptor, marker, directory.parent)
     return marker
 
 
@@ -279,7 +279,7 @@ def test_atomic_publication_never_overwrites_existing_marker(job, monkeypatch, r
         opened_directory(old.parent) as (parent, descriptor),
         pytest.raises((PruneError, FileExistsError)),
     ):
-        publish_marker(parent, descriptor, marker)
+        publish_marker(parent, descriptor, marker, old.parent.parent)
     assert path.read_bytes() == payload and old.is_file()
 
 
@@ -452,7 +452,7 @@ def test_pending_per_file_history_stays_visible_but_inactive(job, monkeypatch, c
     backup = discover_backups(child_config, metadata_only=True).backups[0]
     marker = PruneMarker(version=1, directory_name=old.parent.name, manifest=backup.manifest)
     with destination_lock(old.parent.parent), opened_directory(old.parent) as (parent, descriptor):
-        publish_marker(parent, descriptor, marker)
+        publish_marker(parent, descriptor, marker, old.parent.parent)
     if mode == "excluded":
         configure(job, exclude=[source.name])
     else:

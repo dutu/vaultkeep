@@ -1290,6 +1290,16 @@ backups on the same filesystem. Publish with descriptor-relative Linux
 the affected directories before unlinking artifacts. Unsupported operations defer
 cleanup; publication collisions stop the invocation without retry.
 
+Marker preparation requires the exact destination's validated held lock and a
+parent descriptor identifying that destination. Request owner-only modes on all
+filesystems. On local/NFS filesystems, require the preparation directory to be owned
+by the execution user and have no group/other permission bits. On validated `cifs`
+or `smb3` destinations, rely on the destination's server/share ACLs and mount access
+controls instead of mount-defined Unix ownership/mode values. This exception changes
+only that permission gate; no-follow descriptors, same-filesystem validation,
+exclusive temporary-file creation, no-replace publication, and all flush requirements
+remain mandatory. Displayed CIFS permissions are not proof of private access.
+
 Open validated parent and backup directory descriptors with directory-only/no-follow
 flags; inspect, unlink, and flush relative to pinned descriptors. Recheck the parent
 entry against the opened directory before removing it through the parent descriptor.

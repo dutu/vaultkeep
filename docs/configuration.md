@@ -403,6 +403,18 @@ See the Linux [flock reference](https://man7.org/linux/man-pages/man2/flock.2.ht
 [CIFS mount options](https://man7.org/linux/man-pages/man8/mount.cifs.8.html), and
 [NFS mount options](https://man7.org/linux/man-pages/man5/nfs.5.html).
 
+Prune-marker preparation uses `.vaultkeep-prune-tmp` inside each destination,
+outside committed backups. Vaultkeep requests mode `0700` for that directory and
+`0600` for preparation files. On CIFS/SMB, displayed ownership and modes can come
+from mount settings rather than the creating user. Marker publication therefore
+uses the validated destination's existing access-control model under its shared
+lock, without requiring the displayed owner to match the process or the mode to
+be `0700`. Restrict access through the server/share ACLs and mount access controls;
+the displayed Unix permissions do not establish privacy. Local and NFS destinations
+retain the owner-only directory permission check. Symlink rejection, same-filesystem
+validation, exclusive file creation, atomic no-replace publication, and durability
+checks apply on all destinations.
+
 Linux NFS rejects `renameat2(RENAME_NOREPLACE)`. While the history lock is
 held, Vaultkeep falls back to checking that the final path is absent and then
 performing an ordinary atomic directory rename. Existing nonempty backup

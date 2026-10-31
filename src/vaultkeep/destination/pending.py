@@ -186,8 +186,20 @@ def publish_noreplace(source_fd: int, name: str, target_fd: int) -> None:
         raise OSError(number, os.strerror(number), PRUNE_MARKER_NAME)
 
 
-def publish_marker(parent: int, descriptor: int, marker: PruneMarker) -> None:
+def publish_marker(parent: int, descriptor: int, marker: PruneMarker, destination: Path) -> None:
     """Prepare outside the committed backup, then publish and flush before deletion."""
+    filesystem = held_destination_filesystem(destination)
+    if filesystem is None:
+        raise PruneError(f"Destination lock required for marker publication: {destination}")
+    info = os.fstat(parent)
+    current = destination.lstat()
+    if not stat.S_ISDIR(current.st_mode) or (info.st_dev, info.st_ino) != (
+        current.st_dev,
+        current.st_ino,
+    ):
+        raise PruneError(
+            f"Marker publication parent differs from locked destination: {destination}"
+        )
     with suppress(FileExistsError):
         os.mkdir(TEMP_DIRECTORY_NAME, mode=0o700, dir_fd=parent)
     temporary = os.open(TEMP_DIRECTORY_NAME, _FLAGS, dir_fd=parent)
@@ -195,7 +207,11 @@ def publish_marker(parent: int, descriptor: int, marker: PruneMarker) -> None:
         info = os.fstat(temporary)
         if info.st_dev != os.fstat(descriptor).st_dev:
             raise PruneError("Prune temporary location must share the backup filesystem")
-        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        # CIFS may expose mount-defined ownership and modes, including in user
+        # namespaces. Its access controls are the destination's server/share ACLs.
+        if filesystem not in {"cifs", "smb3"} and (
+            info.st_uid != os.geteuid() or info.st_mode & 0o077
+        ):
             raise PruneError("Prune temporary directory must be private and owned by this user")
         name = uuid.uuid4().hex
         payload = (json.dumps(marker.model_dump(mode="json"), sort_keys=True) + "\n").encode()
@@ -232,7 +248,7 @@ def remove_backup(directory: Path, marker: PruneMarker, *, pending: bool) -> Non
             if not pending:
                 operation = "publish durable prune marker"
                 failing = directory / PRUNE_MARKER_NAME
-                publish_marker(parent, descriptor, marker)
+                publish_marker(parent, descriptor, marker, directory.parent)
             else:
                 # A previous publication may have stopped at a failed directory
                 # flush. Existence alone does not establish durable intent.

@@ -107,6 +107,15 @@ Temporary files are unpublished preparation only, never deletion authorization o
 a separate cleanup journal. Interruption before publication must leave the healthy
 backup directory unchanged and eligible.
 
+Use the exact destination's validated held lock and confirm the opened parent
+identifies that destination before preparation. Request owner-only permissions for
+the preparation directory and files. On local and NFS filesystems, enforce directory
+ownership by the execution user and no group/other permission bits. On validated
+CIFS/SMB (`cifs` or `smb3`) mounts, ownership and modes may be mount-defined; rely on
+the destination's existing server/share ACLs and mount access controls for privacy.
+Retain same-filesystem, descriptor, exclusive-creation, atomic no-replace, and
+flush checks on every filesystem. No configuration bypass is introduced.
+
 ### 2. Separate discovery from recovery-point eligibility
 
 Extend `DiscoveryResult` and inventory facts with pending and empty-orphan entries.
@@ -374,6 +383,10 @@ module if useful.
     pending plus archive failure: assert command results, exact exit codes, totals,
     warnings, and absence of false VERIFIED output. Repeat across independent
     per-file histories, including a pending-only sibling of a verified history.
+19. CIFS/SMB mount-defined owner/mode values permit marker publication and deferred
+    cleanup/resumption only under the exact validated destination lock. Local/NFS
+    owner-only checks remain strict. Reject symlinks, mismatched parent descriptors,
+    and different-filesystem temporary storage even on CIFS/SMB.
 
 Run focused affected unit/integration tests, then repository checks from
 [testing guidance](../development/testing.md):

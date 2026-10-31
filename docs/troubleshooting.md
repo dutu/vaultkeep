@@ -194,6 +194,15 @@ uses the private `.vaultkeep-prune-tmp` directory outside committed backups. Lef
 unpublished temporary files there are not backups or deletion authorization. Never
 remove preparation files while a VaultKeep execution is using the destination.
 
+On CIFS/SMB, mount-defined ownership and modes (for example, a different displayed
+owner and `0770`) are supported for marker preparation. If an older Vaultkeep build
+reports `Prune temporary directory must be private and owned by this user` on such
+a share, update Vaultkeep, preview with `prune --dry-run`, and run `prune` to apply
+cleanup. Changing the directory's displayed owner or mode is not required for this
+CIFS case. Share ACLs and mount access controls must protect the destination; see
+[CIFS and NFS locking](configuration.md#cifs-and-nfs-locking). The strict owner-only
+check remains in effect on local and NFS filesystems.
+
 
 1. Inspect `vaultkeep --user --config JOB.yaml list` for each suspect's original
    reason and retention decision. `PROTECTED` needs a reliable compatible replacement.
