@@ -166,14 +166,14 @@ def test_stale_listing_tolerance_does_not_authorize_unsafe_pending_cleanup(
         archive.unlink()
         stale_listing(monkeypatch, archive.parent, ghosts=(*marker.artifacts, PRUNE_MARKER_NAME))
     else:
-        original = os.stat
+        original = os.open
 
-        def stat(path, *args, **kwargs):
+        def open_file(path, *args, **kwargs):
             if path == marker.base_name + ".json":
                 raise PermissionError(errno.EACCES, "metadata busy", str(path))
             return original(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "stat", stat)
+        monkeypatch.setattr(os, "open", open_file)
     facts = discover(job)
     assert facts.malformed and not facts.pending
     with pytest.raises(PruneError, match="malformed"):
@@ -204,3 +204,105 @@ def test_pending_validation_probes_known_artifacts_even_when_listing_omits_them(
             *marker.artifacts,
             PRUNE_MARKER_NAME,
         }
+
+
+def stale_positive_attributes(monkeypatch, directory, names):
+    """Model cached path attributes surviving successful server-side unlinks."""
+    original = os.stat
+    identity = directory.stat()
+    cached = {name: (directory / name).lstat() for name in names}
+
+    def stat(path, *args, **kwargs):
+        descriptor = kwargs.get("dir_fd")
+        if descriptor is not None and path in cached:
+            current = os.fstat(descriptor)
+            if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                return cached[path]
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+
+def test_stale_positive_attributes_after_successful_unlinks_do_not_stop_cleanup(job, monkeypatch):
+    archive = run(job).archive_path
+    names = tuple(path.name for path in archive.parent.iterdir())
+    stale_listing(monkeypatch, archive.parent, ghosts=names)
+    stale_positive_attributes(monkeypatch, archive.parent, names)
+    original = os.unlink
+    attempts = []
+
+    def unlink(path, *args, **kwargs):
+        if path in names:
+            attempts.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    (job.parent / "source" / "data").write_bytes(b"new version")
+    result = run(job)
+    assert result.result == "created" and result.cleanup_errors == ()
+    assert result.removed == 1
+    assert sorted(attempts) == sorted(names)
+    assert not archive.parent.exists() and result.archive_path.is_file()
+
+
+def test_stale_positive_attributes_do_not_strand_marker_only_pending_directory(
+    job, pending_backup, monkeypatch
+):
+    archive, survivor, marker = pending_backup
+    stale_listing(monkeypatch, archive.parent, ghosts=marker.artifacts)
+    stale_positive_attributes(monkeypatch, archive.parent, marker.artifacts)
+    for name in marker.artifacts:
+        (archive.parent / name).unlink()
+    facts = discover(job)
+    assert not facts.malformed and len(facts.pending) == 1
+    original = os.unlink
+    attempts = []
+
+    def unlink(path, *args, **kwargs):
+        if path in marker.artifacts:
+            attempts.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    assert workflow.prune_backups(job, dry_run=False, user_mode=True).removed == 1
+    assert attempts == []  # Confirmed-missing artifacts are never unlinked again.
+    assert not archive.parent.exists() and survivor.is_file()
+
+
+@pytest.mark.parametrize("restored", ["archive", "checksum", "unexpected", "symlink"])
+def test_actual_reappearing_artifacts_preserve_intent_and_stop_without_retry(
+    job, pending_backup, monkeypatch, restored
+):
+    archive, survivor, marker = pending_backup
+    stale_positive_attributes(monkeypatch, archive.parent, marker.artifacts)
+    original = os.unlink
+    attempts = []
+    restored_path = None
+
+    def unlink(path, *args, **kwargs):
+        nonlocal restored_path
+        if path in marker.artifacts:
+            attempts.append(path)
+        original(path, *args, **kwargs)
+        if path == marker.artifacts[-1]:
+            name = {
+                "archive": archive.name,
+                "checksum": archive.name + ".sha256",
+                "unexpected": "foreign-sync-file",
+                "symlink": archive.name,
+            }[restored]
+            restored_path = archive.parent / name
+            if restored == "symlink":
+                restored_path.symlink_to(survivor)
+            else:
+                restored_path.write_bytes(b"reappeared after successful unlink")
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    with pytest.raises(PruneError):
+        workflow.prune_backups(job, dry_run=False, user_mode=True)
+    assert attempts == list(marker.artifacts)
+    assert (archive.parent / PRUNE_MARKER_NAME).is_file()
+    assert restored_path is not None and restored_path.exists()
+    if restored != "symlink":
+        assert restored_path.read_bytes() == b"reappeared after successful unlink"
+    assert survivor.is_file()

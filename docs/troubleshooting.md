@@ -191,6 +191,13 @@ intact; do not recreate the manifest. Explicit `prune` or the next successful ne
 backup can finish recognized pending cleanup. A missing/invalid marker, unexpected
 content, or other filesystem errors still require conservative protection.
 
+If `Artifacts appeared during cleanup` is followed by a directory containing only
+`.vaultkeep-prune-pending`, cached positive file attributes may have made an older
+build count deleted artifacts as present. Update Vaultkeep before the next new
+backup or explicit prune. Pending validation confirms presence through no-follow
+file opens without reading archive contents. Real reappearing files still defer
+cleanup and retain the marker; no immediate deletion retry is performed.
+
 A pending suspect with a missing/corrupt replacement forces a new compatible backup
 even when sources are unchanged. Incompatible, deleted, and excluded file histories
 remain protected. Restore compatible configuration to resume them safely.

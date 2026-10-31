@@ -197,13 +197,18 @@ For each new deletion:
 For resumed deletion, use the same executor with the validated marker. Treat
 already-absent expected artifacts as completed deletions; never require the old
 archive, checksum, or manifest. Do not hash a partly deleted candidate.
-Inspect every known artifact directly through the opened directory descriptor;
-network listings may include deleted names or omit live entries. With validated
-pending intent, treat ENOENT for expected artifacts during stat, metadata open, or
-unlink as already deleted, without retrying. Final validation uses observed
+Inspect every known pending artifact with a no-follow file open and `fstat` through
+the directory descriptor, without reading archive contents. Network listings may
+include deleted names or omit live entries, and path attributes may remain cached
+after unlink. A positive path stat alone does not establish presence. With validated
+pending intent, treat ENOENT for expected artifacts during open or unlink as already
+deleted, without retrying. Skip confirmed-missing entries instead of attempting
+another unlink. Final validation uses observed
 remaining entries instead of raw listing equality. Never ignore a missing marker,
 unexpected listed names, unsafe file types, invalid metadata, or non-ENOENT errors.
 Complete unmarked backup validation remains strict.
+A file that actually reappears after unlink must preserve the marker and defer
+cleanup rather than being deleted again in the same execution.
 
 Any filesystem failure stops that cleanup pass in the affected destination,
 including further candidates. Report operation, failing path, and completed
@@ -399,6 +404,10 @@ module if useful.
     between stat/open, ENOENT at unlink without retry, final entry validation after
     successful unlinks, hidden known symlinks, stale unknown names, missing markers,
     and non-ENOENT failures. Unmarked incomplete backups remain invalid.
+21. Cached positive path attributes survive successful unlinks: ordinary cleanup
+    and marker-only resumption use open-backed observations and complete safely.
+    Real reappearing artifacts, unexpected files, and symlinks still preserve
+    intent and stop cleanup without a second deletion attempt.
 
 Run focused affected unit/integration tests, then repository checks from
 [testing guidance](../development/testing.md):

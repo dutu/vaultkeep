@@ -1284,15 +1284,19 @@ Store exact derived artifact names through the manifest snapshot, backup/job/dir
 identity, ReplacementIdentity, and full original suspect metadata. Validate remaining
 manifest/suspect metadata against that snapshot, allow already-missing expected
 artifacts, and reject unexpected entries, directories, links, and duplicate IDs.
-Pending validation checks every known artifact directly through the directory
-descriptor, even if a network directory listing omits it. A stale listing of an
-already-deleted expected artifact does not invalidate deletion intent. ENOENT from
-an expected artifact's stat, metadata open, or unlink is treated as already deleted;
-unlinks are not retried. A missing marker, unexpected listed names (even stale ones),
+Pending validation checks every known artifact with a no-follow file open and
+`fstat` through the directory descriptor, even if a network directory listing
+omits it. Archive contents are not read. A cached positive path `stat` is not proof
+that a deleted artifact remains accessible. Stale listings and attributes of
+already-deleted expected artifacts do not invalidate deletion intent. ENOENT from
+an expected artifact's open or unlink is treated as already deleted; confirmed
+missing entries are skipped rather than unlinked again. Unlinks are not retried.
+A missing marker, unexpected listed names (even stale ones),
 unsafe file types, invalid metadata, and other filesystem errors remain barriers.
 Final entry validation uses these direct observations rather than raw listing
-equality before removing the marker. Complete unmarked backups still require all
-artifacts; this tolerance applies only to validated pending intent.
+equality before removing the marker. A file that actually reappears after unlink
+still blocks marker removal and defers cleanup. Complete unmarked backups still
+require all artifacts; this tolerance applies only to validated pending intent.
 Prepare the flushed marker in private `.vaultkeep-prune-tmp` storage outside committed
 backups on the same filesystem. Publish with descriptor-relative Linux
 `renameat2(RENAME_NOREPLACE)`, never an overwriting rename or directory rename. Flush

@@ -153,12 +153,19 @@ def _validate_entries(descriptor: int, marker: PruneMarker, *, pending: bool) ->
     if names - expected or (not pending and names != expected):
         raise PruneError("Unexpected or missing backup artifacts")
     present: set[str] = set()
-    # Network directory listings can retain deleted names or omit live ones.
-    # Inspect the exact allowlist directly; missing artifacts are safe only with
-    # validated deletion intent, and a missing intent marker is never tolerated.
+    # Network listings and path attributes can outlive an unlink. For pending
+    # intent, require an actual no-follow file handle before counting an artifact
+    # as present; no archive contents are read. A missing marker is never allowed.
     for name in expected:
         try:
-            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if pending:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+                try:
+                    info = os.fstat(fd)
+                finally:
+                    os.close(fd)
+            else:
+                info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
         except FileNotFoundError:
             if pending and name != PRUNE_MARKER_NAME:
                 continue
@@ -291,10 +298,7 @@ def remove_backup(directory: Path, marker: PruneMarker, *, pending: bool) -> Non
                 operation = "validate remaining entries"
                 failing = directory / name
                 check_directory(parent, descriptor, directory.name)
-                validate_entries(descriptor, marker, pending=True)
-                try:
-                    os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-                except FileNotFoundError:
+                if name not in validate_entries(descriptor, marker, pending=True):
                     continue
                 operation = "unlink artifact"
                 with suppress(FileNotFoundError):
