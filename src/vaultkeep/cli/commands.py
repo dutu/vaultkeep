@@ -233,6 +233,8 @@ def _dispatch(
         output.issue(error)
         return failure_exit_code(error)
     print(f"{result.command}: {result.result}", flush=True)
+    for classification, path in result.planned_cleanup:
+        output.print(f"  {classification}: {path}")
     for cleanup_error in result.cleanup_errors:
         output.print(
             f"Warning: backup created; cleanup failed: {cleanup_error}. "

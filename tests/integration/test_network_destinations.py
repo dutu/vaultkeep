@@ -66,8 +66,8 @@ def test_network_backup_verify_replacement_and_prune(
 ):
     share.filesystem = filesystem
     if filesystem == "nfs4":
-        # Exercise the Linux NFS rejection while keeping real atomic os.rename.
-        reject_native_noreplace(monkeypatch)
+        # Reject native directory commits while permitting atomic file-marker publication.
+        reject_native_noreplace(monkeypatch, allow_marker=True)
     monkeypatch.setattr(
         passwords_module, "_validate_password_path", lambda path, **kw: path.lstat()
     )

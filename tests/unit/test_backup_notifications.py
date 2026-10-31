@@ -258,3 +258,15 @@ def test_common_workflow_uses_only_backup_notification_setting(
     assert bool(recorder.calls) is backup
     assert recorder.configs == [NotificationConfig(backup, "/custom/notify", 250)]
     assert trigger_config(path).notifications == NotificationConfig(trigger, "/custom/notify", 250)
+
+
+def test_cleanup_deferral_keeps_success_notification(execution, recorder):
+    with execution:
+        execution.complete("created", cleanup_errors=["Cannot unlink archive: busy"])
+    title, body = recorder.calls[-1]
+    assert title == "VaultKeep: Backup completed"
+    assert "new archive created" in body and "cleanup failed" in body
+    assert "failed:" not in body.replace("cleanup failed:", "cleanup warning:")
+    history = read_history(execution.directory / "execution.json", "app", "a" * 16)
+    assert history.previous.result == "SUCCESS"
+    assert history.previous.cleanup_errors

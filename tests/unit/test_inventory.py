@@ -90,7 +90,7 @@ def job(tmp_path, valid_config):
         directory.mkdir(parents=True)
         archive = directory / paths.archive_path.name
         archive.write_bytes(b"x" * (number * 1024))
-        (directory / paths.checksum_path.name).write_text("checksum contents are not inspected")
+        write_checksum_sidecar(archive, directory / paths.checksum_path.name, "c" * 64)
         manifest = BackupManifest(
             manifest_version=2,
             replacement_identity=replacement_identity(
@@ -134,7 +134,8 @@ def records(text):
     row = None
     for line in text.splitlines():
         if line.startswith("2026-"):
-            row = re.split(r" {2,}", line.strip())
+            fields = re.split(r" {2,}", line.strip())
+            row = fields[:2] + fields[3:]
         elif line.startswith("  Backup:"):
             result[line.removeprefix("  Backup: ")] = row
     return result
@@ -293,7 +294,7 @@ def test_invalid_entries_warn_and_are_excluded_without_changing_exit_code(
     assert cli(job) == 0
     out, err = capsys.readouterr()
     assert "Warnings:\n" in out
-    assert f"  {bad.directory.name}:" in out
+    assert f"  INVALID {bad.directory.name}:" in out
     assert expected in out and "Invalid entries: 1" in out
     assert f"Backups: {int(with_valid)}" in out
     if with_valid:

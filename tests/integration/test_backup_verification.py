@@ -22,7 +22,7 @@ from vaultkeep.cli.commands import main
 from vaultkeep.destination import allocate_job_backup_paths, create_staging_directory
 from vaultkeep.destination.identity import replacement_identity
 from vaultkeep.destination.manifest import BackupManifest, write_manifest
-from vaultkeep.destination.suspect import read_suspect_marker
+from vaultkeep.destination.suspect import mark_backup_suspect, read_suspect_marker
 from vaultkeep.file_backups import file_config
 from vaultkeep.locking import DESTINATION_LOCK_NAME
 
@@ -153,6 +153,40 @@ def _files(root: Path) -> dict[Path, tuple[bytes, int]]:
         for path in root.rglob("*")
         if path.is_file() and path.name != DESTINATION_LOCK_NAME
     }
+
+
+def test_suspect_archive_contents_are_checked_but_never_counted_as_verified(
+    job: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from vaultkeep.backup import workflow
+
+    suspect = _backup(job, _tar("app/data"))
+    healthy = _backup(job, _tar("app/data"), number=2)
+    mark_backup_suspect(suspect.parent, "Original suspect diagnosis")
+    marker = read_suspect_marker(suspect.parent)
+    verifier_name = (
+        "verify_tar_zstd"
+        if load_validated_config(job).archive.format == "tar.zst"
+        else "verify_tar_7z"
+    )
+    original_verify = getattr(workflow, verifier_name)
+    inspected: list[Path] = []
+
+    def verify(path: Path, **kwargs: Any) -> None:
+        inspected.append(path)
+        original_verify(path, **kwargs)
+
+    monkeypatch.setattr(workflow, verifier_name, verify)
+
+    assert main(["--user", "--config", str(job), "verify"]) == 5
+
+    assert set(inspected) == {suspect, healthy}
+    assert len(inspected) == 2
+    output = capsys.readouterr()
+    assert "Verified:  1/2 backups" in output.out
+    assert "Result:    FAILED" in output.out
+    assert "SUSPECT" in output.out + output.err
+    assert read_suspect_marker(suspect.parent) == marker
 
 
 @pytest.mark.parametrize("backup_mode", ["combined", "per_file"])

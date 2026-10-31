@@ -324,6 +324,24 @@ writing markers. `verify` performs full archive verification and may mark demons
 corruption; wrong passwords, unavailable tools, and transient I/O errors do not by
 themselves establish corruption.
 
+Before pruning artifacts, Vaultkeep durably publishes `.vaultkeep-prune-pending`
+inside the selected backup. An interrupted deletion remains `PRUNE_PENDING` even
+when its archive, checksum, or manifest is gone. A later successful new backup or
+explicit `prune` resumes the same intent, requiring a compatible healthy surviving
+recovery point whose actual archive SHA-256 agrees with sidecar and manifest.
+Cleanup stops at the first filesystem error in the affected destination, without
+retrying, recursively deleting, or renaming directories. A failed final directory
+removal can leave an `EMPTY_ORPHAN`, removed only when confirmed empty under lock.
+Unknown nonempty entries and unexpected links remain protected and block pruning.
+
+Pending suspects in the compatible active history still force fresh creation if
+their designated replacement disappears or fails verification, even with unchanged
+sources. Pending entries never provide recovery evidence. Incompatible and
+excluded/deleted per-file histories remain visible and protected; restoring compatible
+configuration and a healthy survivor is required to resume them. Private marker
+preparation files stay outside committed backups on the destination filesystem.
+Unsupported atomic no-replace publication or descriptor-relative safety defers cleanup.
+
 Temporary backups use `~$.partial-vaultkeep-<job>-<backup-id>` directory names.
 On destinations managed by synchronization software, verify that temporary
 directories are excluded and completed backups are uploaded.
@@ -343,13 +361,18 @@ vaultkeep [--user] --config <job.yaml> list
 
 `list` prints a `Vaultkeep — Backups` inventory with the job ID, destination,
 and configured retention counts. Rows show `Created (UTC)`, compressed archive
-`Size`, `Decision`, and `Tiers`, newest first. Creation
+`Size`, `Classification`, `Decision`, and `Tiers`, newest first. Creation
 facts come from stored manifests, including backups in either
 supported format after an archive-setting change. Each row is followed by
 `  Backup: <directory>` with the complete directory path relative to the destination.
 Suspects show their original reason immediately below their directory. Unresolved
 suspects show `PROTECTED`; a metadata-valid replacement permits a `PRUNE` preview.
-An unmarked archive has no health label; marker absence is not full verification.
+`ELIGIBLE` means metadata and checksum-sidecar agreement passed; it does not claim
+archive verification. `SUSPECT` remains excluded from recovery-point counts.
+`PRUNE_PENDING` entries show deferred cleanup separately from ordinary retention
+choices. `EMPTY_ORPHAN` identifies a matching empty directory; `INVALID` entries
+appear in warnings. Only actual archive verification may report `VERIFIED`.
+Classification is separate from KEEP/PRUNE/PROTECTED/UNKNOWN decisions.
 For `per_file` jobs, this includes the file history directory.
 
 Retention decisions reuse the existing pruning planner, calculated independently
@@ -367,8 +390,8 @@ for each file history:
 
 Selections use the manifest's recorded local calendar time, while the table shows
 UTC. They are recalculated when the available backups or current policy change.
-The final summary gives total backups and Keep/Prune counts, plus Unknown when
-needed. An empty inventory says `No backups found.`
+The final summary counts eligible backups separately from suspects, pending cleanup,
+empty orphans, and invalid entries, with Keep/Prune and Unknown counts when needed. An empty inventory says `No backups found.`
 
 All-zero retention counts are shown as `Retention: disabled`, with `—` in `Tiers`
 and no Keep/Prune/Unknown counts. `Decision` is `—` except for unresolved suspects,
@@ -391,7 +414,8 @@ per-backup archive paths, or verbose metadata sections.
 
 Listing reads manifests and filesystem metadata, requires the archive and checksum
 sidecar to exist as regular files, and checks the expected directory layout. It
-does not read archive or checksum sidecar contents, calculate SHA-256, load encryption
+reads checksum-sidecar contents for syntax and manifest agreement but does not
+read archive contents, calculate SHA-256, load encryption
 passwords, require original sources or a live application account, or modify backup
 or local state. Current-history retention previews can be incomplete when application
 identity is unavailable. **Being listed
@@ -429,6 +453,20 @@ can make a suspect eligible for guarded cleanup, including its marker.
 Verification continues after individual backup failures. Invalid backups are excluded
 from archive verification. Failures are reported immediately with their full paths
 and reasons; exit codes are unchanged.
+
+Pending and empty-orphan entries are skipped, explicitly labeled, and excluded
+from verified counts. Verification outcomes are:
+
+| Contents/outcome | Result | Exit |
+| --- | --- | --- |
+| Pending only, or pending/orphan entries with no verified recovery point | FAILED; no recovery point verified | 5 |
+| Successfully verified backups plus pending entries, no failures | VERIFIED for checked backups; cleanup warning | 0 |
+| Malformed metadata, with or without pending/verified entries | FAILED with partial counts and diagnostics | 5 |
+| Actual archive checksum or content failure | FAILED; takes precedence over metadata-only errors | 7 |
+
+Each discovered independent per-file history must satisfy these rules; a healthy
+sibling does not hide a pending-only history. A truly empty destination retains its
+existing zero-backup verification behavior. Verification never resumes deletion.
 
 The shared [progress display](#progress-display) shows two phases:
 

@@ -141,8 +141,10 @@ def _patch_creation_workflow(
     )
     discovered = iter(
         [
-            SimpleNamespace(state_records=(), backups=(), malformed=()),
-            SimpleNamespace(state_records=(record,), backups=(backup,), malformed=()),
+            SimpleNamespace(pending=(), orphans=(), state_records=(), backups=(), malformed=()),
+            SimpleNamespace(
+                pending=(), orphans=(), state_records=(record,), backups=(backup,), malformed=()
+            ),
         ]
     )
     states: list[LocalState] = []
@@ -162,7 +164,9 @@ def _patch_creation_workflow(
     monkeypatch.setattr(
         workflow, "calculate_config_fingerprint", lambda *args, **kwargs: "sha256:" + "b" * 64
     )
-    final_discovery = SimpleNamespace(state_records=(record,), backups=(backup,), malformed=())
+    final_discovery = SimpleNamespace(
+        pending=(), orphans=(), state_records=(record,), backups=(backup,), malformed=()
+    )
     monkeypatch.setattr(
         workflow, "discover_backups", lambda *args, **kwargs: next(discovered, final_discovery)
     )

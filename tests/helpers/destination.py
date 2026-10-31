@@ -35,10 +35,13 @@ def share(tmp_path, monkeypatch):
     return settings
 
 
-def reject_native_noreplace(monkeypatch):
+def reject_native_noreplace(monkeypatch, *, allow_marker=False):
+    real_rename = ctypes.CDLL(None, use_errno=True).renameat2
     native = SimpleNamespace(error=errno.EINVAL, calls=0)
 
     def renameat2(*args):
+        if allow_marker and args[3] == b".vaultkeep-prune-pending":
+            return real_rename(*args)
         native.calls += 1
         ctypes.set_errno(native.error)
         return -1

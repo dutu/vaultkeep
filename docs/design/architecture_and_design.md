@@ -1150,6 +1150,23 @@ destructive cleanup. Before commitment, known-invalid staging artifacts are remo
 rather than committed as suspects. Committed archives and manifests remain immutable;
 classification changes only the separate marker.
 
+Pending deletion retains the complete original suspect marker (reason, timestamp,
+and replacement ID) alongside an immutable manifest snapshot. Active pending suspects
+participate in unresolved-replacement detection before UNCHANGED: a missing, invalid,
+suspect, pending, incompatible, or checksum-corrupt designated replacement forces
+fresh creation. Pending intent itself never supplies recovery evidence. A new verified
+compatible backup can satisfy the dependency without rewriting original deletion
+intent; each cleanup invocation resolves and checks dependencies anew.
+
+Discovery retains pending and orphan collections through active-history filtering,
+inventory aggregation, and status reconstruction. Pending history compatibility uses
+the stored ReplacementIdentity. Inactive, incompatible, deleted, and excluded per-file
+histories remain visible and protected from automatic and manual cleanup; pending
+state does not override those boundaries. Restoring compatible configuration and a
+healthy surviving point makes pending cleanup actionable again. Empty per-file
+orphan cleanup also requires the current selected source namespace; missing,
+excluded, and symbolic-link sources leave those directories protected.
+
 ## 14. Retention model
 
 Vaultkeep uses count-based, calendar-bucket retention.
@@ -1234,7 +1251,12 @@ A finer tier's configured count is a maximum. The tier retains fewer recovery po
 
 Only complete, valid, unmarked backups recognized through the configured naming rule and manifest participate in retention counts. Suspects remain outside those counts. An unresolved suspect is protected; a superseded suspect becomes eligible for guarded deletion after its compatible replacement is validated.
 
-Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `verify` reports matching malformed entries, and `list` displays inventory warnings with incomplete retention decisions. `prune --dry-run` refuses a malformed destination instead of displaying a partial plan. A valid suspect marker is recognized metadata; other unexpected files and malformed markers still block pruning.
+Vaultkeep ignores unrelated content, dot-prefixed entries, and temporary staging directories. A directory that matches the configured template but contains a malformed or incomplete backup is never automatically deleted and blocks destructive pruning until an operator resolves it. `verify` reports matching malformed entries, and `list` displays inventory warnings with incomplete retention decisions. `prune --dry-run` refuses a malformed destination instead of displaying a partial plan. Valid suspect and prune-pending markers are recognized metadata; unexpected entries
+and invalid markers still block pruning. Pending backups never satisfy retention,
+state reconstruction, replacement evidence, or survivor requirements, even when all
+original artifacts remain. Matching empty real directories are EMPTY_ORPHAN entries,
+not malformed backups; under the destination lock only their empty directory entry
+may be removed. Nonempty unknown entries remain protected.
 
 A backup is eligible for deletion only when:
 
@@ -1252,7 +1274,32 @@ boundary, the affected containing namespace is blocked rather than guessed.
 
 Before deleting, refresh discovery under the history lock, calculate the complete
 plan, and revalidate exact known artifacts and required replacement checksums.
+Before candidate modification, including marker publication, hash at least one
+surviving eligible recovery point of the same history against its actual archive,
+sidecar, and immutable manifest. Apply the same gate when resuming pending cleanup;
+original intent does not replace a current compatible healthy survivor.
 Metadata-only inventory and dry-run observations never authorize later deletion.
+Persist versioned `.vaultkeep-prune-pending` intent before the first artifact unlink.
+Store exact derived artifact names through the manifest snapshot, backup/job/directory
+identity, ReplacementIdentity, and full original suspect metadata. Validate remaining
+manifest/suspect metadata against that snapshot, allow already-missing expected
+artifacts, and reject unexpected entries, directories, links, and duplicate IDs.
+Prepare the flushed marker in private `.vaultkeep-prune-tmp` storage outside committed
+backups on the same filesystem. Publish with descriptor-relative Linux
+`renameat2(RENAME_NOREPLACE)`, never an overwriting rename or directory rename. Flush
+the affected directories before unlinking artifacts. Unsupported operations defer
+cleanup; publication collisions stop the invocation without retry.
+
+Open validated parent and backup directory descriptors with directory-only/no-follow
+flags; inspect, unlink, and flush relative to pinned descriptors. Recheck the parent
+entry against the opened directory before removing it through the parent descriptor.
+Do not fall back to path-based destructive operations. Flush artifact removals before
+removing the intent marker, flush marker removal, then rmdir and flush the parent.
+A failed final rmdir leaves an empty orphan recoverable on a later cleanup pass.
+Any filesystem failure stops the affected destination's pass, preserving intent and
+remaining artifacts where possible. No same-execution retry or recursive fallback is
+permitted. Pending cleanup precedes new deletions after complete plan validation.
+
 Full decompression remains explicit `verify` work rather than a requirement on every
 prune. Deletion removes only validated regular artifacts and the known marker, then
 the directory; it never uses unrestricted recursive removal.
@@ -1264,7 +1311,19 @@ updates must not authorize partial cleanup from an unvalidated plan. Explicit pr
 uses the same rules; automatic cleanup runs only after reliable new creation and
 successful required state persistence and hooks, never after `UNCHANGED`.
 
-The retention module returns a `RetentionPlan` and never deletes files directly. The destination module performs only deletions authorized by that complete plan. `list` renders per-backup `KEEP`, `PRUNE`, `PROTECTED`, or `UNKNOWN` decisions; `prune --dry-run` displays the cleanup plan without mutation. A replacement reference does not require wall-clock ordering: a clock correction must not invalidate an independently verified replacement.
+The retention module returns a `RetentionPlan` and never deletes files directly. The destination module performs only deletions authorized by that complete plan. `list` separates metadata classification (ELIGIBLE, SUSPECT, PRUNE_PENDING,
+EMPTY_ORPHAN, INVALID) from per-backup `KEEP`, `PRUNE`, `PROTECTED`, or `UNKNOWN`
+decisions and tier columns; `prune --dry-run` displays the cleanup plan without mutation. A replacement reference does not require wall-clock ordering: a clock correction must not invalidate an independently verified replacement.
+
+Verification reserves VERIFIED for successful checksum and archive-content checks.
+Pending/orphan entries receive skipped labels and separate totals. A pending-only
+history, including pending/orphan combinations without a verified recovery point,
+returns DestinationError (exit 5), never zero-backup VERIFIED. Successfully verified
+backups with pending entries and no failures return verified (exit 0) with cleanup
+warnings. Malformed metadata produces exit 5; archive verification failures produce
+exit 7 and take precedence. Each independent per-file history follows the same rules,
+and output aggregates successful counts and diagnostics. Truly empty destinations
+retain existing behavior. Verification does not run cleanup.
 
 ---
 

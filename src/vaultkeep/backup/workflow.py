@@ -55,7 +55,12 @@ from vaultkeep.destination.discovery import (
     MalformedDestinationEntry,
 )
 from vaultkeep.destination.identity import replacement_identity
-from vaultkeep.destination.pruning import valid_replacement, verify_backup_checksum
+from vaultkeep.destination.pending import PendingBackup
+from vaultkeep.destination.pruning import (
+    pending_replacement,
+    valid_replacement,
+    verify_backup_checksum,
+)
 from vaultkeep.destination.suspect import mark_backup_suspect, record_suspect_replacement
 from vaultkeep.errors import (
     ApplicationIdentityError,
@@ -122,6 +127,7 @@ class CommandResult:
     archive_size: int | None = None
     files: tuple[FileBackupResult, ...] = ()
     cleanup_errors: tuple[str, ...] = ()
+    planned_cleanup: tuple[tuple[str, Path], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +142,9 @@ class BackupInventory:
     retained_by: dict[Path, tuple[RetentionTier, ...] | None]
     retention_warnings: tuple[tuple[Path, str], ...]
     decisions: dict[Path, str]
+    pending: tuple[PendingBackup, ...] = ()
+    orphans: tuple[Path, ...] = ()
+    active_orphans: tuple[Path, ...] = ()
 
 
 class _HookRunKwargs(TypedDict, total=False):
@@ -239,11 +248,16 @@ def list_backups(
     retained_by: dict[Path, tuple[RetentionTier, ...] | None] = {}
     decisions: dict[Path, str] = {}
     retention_warnings: list[tuple[Path, str]] = []
+    classified_pending: list[PendingBackup] = []
+    active_orphans: list[Path] = []
     for destination, history in zip(destinations, discovered, strict=True):
         decisions.update((backup.directory, "—") for backup in history.backups)
         try:
             history = _active_history(history, destination, application=application)
+            classified_pending.extend(history.pending)
+            active_orphans.extend(history.active_orphans or ())
         except SourceDiscoveryError as error:
+            classified_pending.extend(replace(item, active=False) for item in history.pending)
             decisions.update((backup.directory, "UNKNOWN") for backup in history.backups)
             retention_warnings.append((Path(destination.destination.root), str(error)))
             continue
@@ -300,6 +314,9 @@ def list_backups(
         retained_by,
         tuple(retention_warnings),
         decisions,
+        tuple(classified_pending),
+        tuple(path for history in histories for path in history.orphans),
+        tuple(active_orphans),
     )
 
 
@@ -321,6 +338,7 @@ def prune_backups(
     _validate_runtime(config, require_sources=False, require_writable_destination=not dry_run)
     removed: list[Path] = []
     failures: list[str] = []
+    planned_cleanup: list[tuple[str, Path]] = []
     destinations = file_destinations(config) if config.backup_mode == "per_file" else (config,)
     for destination in destinations:
         try:
@@ -337,7 +355,15 @@ def prune_backups(
                     application=application,
                 )
                 plan = build_prune_plan(discovered, config.retention)
-                if not dry_run:
+                if dry_run:
+                    planned_cleanup.extend(
+                        ("PRUNE_PENDING", item.directory) for item in plan.pending
+                    )
+                    planned_cleanup.extend(("EMPTY_ORPHAN", path) for path in plan.orphans)
+                    planned_cleanup.extend(
+                        ("PRUNE", backup.directory) for backup in plan.backups_to_delete
+                    )
+                else:
                     removed.extend(execute_prune_plan(plan, discovered))
         except (VaultkeepError, OSError) as error:
             if config.backup_mode != "per_file" and isinstance(error, LockError):
@@ -351,7 +377,12 @@ def prune_backups(
             + "; ".join(failures),
             removed=tuple(str(path) for path in removed),
         )
-    return CommandResult("prune", "planned" if dry_run else "pruned", removed=len(removed))
+    return CommandResult(
+        "prune",
+        "planned" if dry_run else "pruned",
+        removed=len(removed),
+        planned_cleanup=tuple(planned_cleanup),
+    )
 
 
 def verify_backups(
@@ -472,6 +503,7 @@ def _verify_history(
             config,
             runtime_params=parameters,
             metadata_only=True,
+            defer_checksum_validation=True,
             on_progress=on_progress,
         )
     except (DestinationError, OSError) as error:
@@ -486,7 +518,12 @@ def _verify_history(
             ),
         )
         raise
-    backup_total = len(discovered.backups) + len(discovered.malformed)
+    skipped = len(discovered.pending) + len(discovered.orphans)
+    for item in discovered.pending:
+        report(f"PRUNE_PENDING: {item.directory}: cleanup deferred; not verified")
+    for path in discovered.orphans:
+        report(f"EMPTY_ORPHAN: {path}: no recovery point")
+    backup_total = len(discovered.backups) + len(discovered.malformed) + skipped
     for backup in discovered.backups:
 
         def checksum_progress(
@@ -584,6 +621,17 @@ def _verify_history(
                 )
             )
             continue
+        if backup.suspect_reason is not None:
+            archive_progress(
+                VerificationProgress(
+                    "archive",
+                    "Archive verification",
+                    "failed",
+                    backup.archive_path,
+                    error=f"SUSPECT remains excluded: {backup.suspect_reason}",
+                )
+            )
+            continue
         count += 1
         archive_progress(
             VerificationProgress("archive", "Archive verification", "ok", backup.archive_path)
@@ -601,9 +649,21 @@ def _verify_history(
             total=len(backups),
         ),
     )
+    if not count and skipped and not failures:
+        failures.append("No recovery point verified")
     if failures:
         error_type = ArchiveVerificationError if archive_failed else DestinationError
-        raise error_type("Backup verification failed:\n" + "\n".join(failures))
+        raise error_type(
+            f"Backup verification failed: Verified: {count}; "
+            f"PRUNE_PENDING: {len(discovered.pending)}; "
+            f"EMPTY_ORPHAN: {len(discovered.orphans)}; INVALID: {len(discovered.malformed)}\n"
+            + "\n".join(failures)
+            + "\n"
+            + "\n".join(
+                [f"PRUNE_PENDING: {item.directory}" for item in discovered.pending]
+                + [f"EMPTY_ORPHAN: {path}" for path in discovered.orphans]
+            )
+        )
     return CommandResult("verify", "verified", backups=count)
 
 
@@ -845,6 +905,19 @@ def _run_single_backup(
             backup.suspect_reason is not None and valid_replacement(backup, discovered) is None
             for backup in discovered.backups
         )
+        for pending in discovered.pending:
+            if not pending.active or pending.suspect_reason is None:
+                continue
+            replacement = pending_replacement(pending, discovered, original_only=True)
+            if replacement is None:
+                replacement_required = True
+                continue
+            try:
+                verify_backup_checksum(replacement)
+            except (ArchiveVerificationError, OSError) as error:
+                if isinstance(error, ArchiveChecksumMismatchError):
+                    mark_backup_suspect(replacement.directory, str(error))
+                replacement_required = True
         if replacement_required:
             report("Unresolved suspect needs replacement; creating fresh backup")
         if (
@@ -1375,7 +1448,8 @@ def _active_history(
     identity = replacement_identity(config, application=application)
     seen: set[str] = set()
     duplicate_entries: list[MalformedDestinationEntry] = []
-    for backup in discovered.backups:
+    identified: list[DiscoveredBackup | PendingBackup] = [*discovered.backups, *discovered.pending]
+    for backup in identified:
         if backup.manifest.backup_id in seen:
             duplicate_entries.append(
                 MalformedDestinationEntry(
@@ -1384,7 +1458,7 @@ def _active_history(
             )
         seen.add(backup.manifest.backup_id)
 
-    def compatible(backup: DiscoveredBackup) -> bool:
+    def compatible(backup: DiscoveredBackup | PendingBackup) -> bool:
         if backup.manifest.replacement_identity == identity:
             return True
         if config.backup_mode != "per_file":
@@ -1400,6 +1474,10 @@ def _active_history(
             matcher = compile_exclusions((*config.exclude, *config.sources[0].exclude))
             if (
                 source_path.parent != parent
+                or (
+                    isinstance(backup, PendingBackup)
+                    and not stat.S_ISREG(source_path.lstat().st_mode)
+                )
                 or backup.directory.parent.name != file_key(source_path.name)
                 or matcher.matches(source_path.name, is_directory=False)
             ):
@@ -1407,10 +1485,28 @@ def _active_history(
             return backup.manifest.replacement_identity == replacement_identity(
                 file_config(config, source_path), application=application
             )
-        except (ValueError, KeyError, IndexError, TypeError):
+        except (ValueError, KeyError, IndexError, TypeError, OSError):
             return False
+
+    orphans_active = config.backup_mode != "per_file"
+    if discovered.orphans and config.backup_mode == "per_file":
+        source = Path(config.sources[0].path)
+        root = Path(config.destination.root)
+        try:
+            if stat.S_ISREG(source.lstat().st_mode):
+                # A derived single-file execution already selected this source.
+                orphans_active = root.name == file_key(source.name)
+            else:
+                orphans_active = any(
+                    root.name == file_key(path.name) for path in select_files(config)
+                )
+        except (SourceDiscoveryError, OSError):
+            orphans_active = False
 
     return DiscoveryResult(
         tuple(backup for backup in discovered.backups if compatible(backup)),
         discovered.malformed + tuple(duplicate_entries),
+        tuple(replace(item, active=compatible(item)) for item in discovered.pending),
+        discovered.orphans,
+        discovered.orphans if orphans_active else (),
     )

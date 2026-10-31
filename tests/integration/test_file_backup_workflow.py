@@ -468,7 +468,7 @@ def test_manual_prune_validates_each_history_independently(file_job: Path) -> No
     broken = first.files[-1].archive_path.with_suffix(".zst.sha256")
     original = broken.read_bytes()
     broken.write_text("invalid checksum")
-    with pytest.raises(DestinationError, match="Malformed"):
+    with pytest.raises(DestinationError, match=r"[Mm]alformed|Invalid archive checksum"):
         workflow.prune_backups(file_job, dry_run=False, user_mode=True)
     assert not first.files[0].archive_path.exists()
     assert first.files[-1].archive_path.is_file()

@@ -210,7 +210,9 @@ def test_verify_reports_stages_without_changing_verification_result(
     local_job: Path, malformed: bool
 ) -> None:
     if malformed:
-        (local_job.parent / "destination" / ("backup-app-20260724T120000Z-" + "0" * 32)).mkdir()
+        broken = local_job.parent / "destination" / ("backup-app-20260724T120000Z-" + "0" * 32)
+        broken.mkdir()
+        (broken / "unknown").write_text("preserve")
     stages: list[str] = []
 
     if malformed:

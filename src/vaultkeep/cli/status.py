@@ -99,7 +99,31 @@ def _collect_valid_status(
     result["destination"] = destination
     try:
         inventory = list_backups(config_path, runtime_params=parameters, user_mode=user_mode)
-        discovery = DiscoveryResult(inventory.backups, inventory.malformed)
+        discovery = DiscoveryResult(
+            inventory.backups,
+            inventory.malformed,
+            inventory.pending,
+            inventory.orphans,
+            inventory.active_orphans,
+        )
+        for pending in inventory.pending:
+            destination["cleanup_pending"].append(
+                {
+                    "directory": str(pending.directory),
+                    "classification": "PRUNE_PENDING",
+                    "reason": "Cleanup deferred"
+                    if pending.active
+                    else "Preserved; inactive history",
+                }
+            )
+        for orphan in inventory.orphans:
+            destination["cleanup_pending"].append(
+                {
+                    "directory": str(orphan),
+                    "classification": "EMPTY_ORPHAN",
+                    "reason": "Empty orphan directory",
+                }
+            )
         for backup in inventory.backups:
             if backup.suspect_reason is not None:
                 key = (

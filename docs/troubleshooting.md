@@ -176,6 +176,25 @@ whether an archive extracts successfully.
 
 ## Suspect backups and cleanup warnings
 
+`PRUNE_PENDING` is an interrupted intentional deletion, not a usable backup. Keep
+its marker and remaining files intact. `EMPTY_ORPHAN` is a matching directory with
+no remaining files. Both can be cleaned by a later successful newly created backup
+or explicit guarded pruning; an unchanged run does not retry cleanup. The completed
+backup remains SUCCESS when only cleanup fails.
+
+A pending suspect with a missing/corrupt replacement forces a new compatible backup
+even when sources are unchanged. Incompatible, deleted, and excluded file histories
+remain protected. Restore compatible configuration to resume them safely.
+
+Do not remove unexpected nonempty content or malformed markers based on their names.
+Inspect the reported operation/path and external synchronization activity. Permission,
+flush, atomic no-replace publication, or descriptor-operation failures defer cleanup;
+there is no recursive, rename, or same-execution retry fallback. Marker preparation
+uses the private `.vaultkeep-prune-tmp` directory outside committed backups. Leftover
+unpublished temporary files there are not backups or deletion authorization. Never
+remove preparation files while a VaultKeep execution is using the destination.
+
+
 1. Inspect `vaultkeep --user --config JOB.yaml list` for each suspect's original
    reason and retention decision. `PROTECTED` needs a reliable compatible replacement.
 2. Run `vaultkeep --user --config JOB.yaml verify` for full integrity checks. Wrong

@@ -201,6 +201,7 @@ def test_verify_checks_all_archives_and_reports_all_failures(
         archives.append(next(directory.glob("*.tar.zst")))
         bad = root / f"backup-app-20260723T{number:02}3000Z"
         bad.mkdir()
+        (bad / "unknown").write_text("preserve")
         malformed.append(bad)
     good_directory = _create_backup(destinations[-1], 3, datetime(2026, 7, 23, 3, tzinfo=UTC))
     good = next(good_directory.glob("*.tar.zst"))
@@ -494,6 +495,7 @@ def test_matching_malformed_entry_blocks_pruning(
     _create_backup(config, 1, datetime(2026, 7, 23, 12, tzinfo=UTC))
     broken = tmp_path / f"backup-app-20260724T120000Z{suffix}"
     broken.mkdir()
+    (broken / "unknown").write_text("preserve")
 
     discovered = discover_backups(config)
 
@@ -540,7 +542,7 @@ def test_prune_preserves_the_only_eligible_recovery_point(
     before = {
         path.relative_to(tmp_path): path.read_bytes()
         for path in tmp_path.rglob("*")
-        if path.is_file()
+        if path.is_file() and path.name != ".vaultkeep.lock"
     }
 
     plan = build_prune_plan(discovered, config.retention)
@@ -556,7 +558,7 @@ def test_prune_preserves_the_only_eligible_recovery_point(
     assert {
         path.relative_to(tmp_path): path.read_bytes()
         for path in tmp_path.rglob("*")
-        if path.is_file()
+        if path.is_file() and path.name != ".vaultkeep.lock"
     } == before
 
 

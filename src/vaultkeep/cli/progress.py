@@ -417,6 +417,14 @@ class VerificationDisplay:
         self._progress.update(description, lines=self._header(), detail=detail, log=log)
 
     def report(self, event: VerificationProgress) -> None:
+        if event.operation in ("PRUNE_PENDING", "EMPTY_ORPHAN"):
+            row = self._row(event)
+            if row is not None:
+                row.manifest = event.operation
+                row.checksum = row.archive = "SKIPPED"
+            self._progress.checkpoint(f"{event.operation}: {event.path}; not verified")
+            return
+
         phase = 2 if event.phase == "archive" else 1
         if event.status == "complete":
             if self._phase != phase:
@@ -510,13 +518,24 @@ class VerificationDisplay:
         total = f"{len(rows)} backups"
         if self._unknown_total or 1 not in self._completed:
             total = f"{len(rows)} known backups (total unknown)"
-        complete = all(row.manifest == row.checksum == row.archive == "OK" for row in rows)
+        skipped = [row for row in rows if row.manifest in ("PRUNE_PENDING", "EMPTY_ORPHAN")]
+        complete = all(
+            row in skipped or row.manifest == row.checksum == row.archive == "OK" for row in rows
+        )
+        if skipped:
+            complete = complete and verified > 0
         result = "VERIFIED" if success and complete and not self._unknown_total else "FAILED"
         lines += [
             f"Verified:  {verified}/{total}",
             f"Duration:  {minutes:02d}:{seconds:02d}",
             f"Result:    {result}",
         ]
+        for classification in ("PRUNE_PENDING", "EMPTY_ORPHAN"):
+            count = sum(row.manifest == classification for row in rows)
+            if count:
+                lines.append(f"{classification}: {count}; not verified")
+        if skipped:
+            lines.append("Warning: cleanup deferred")
         for directory, check, reason, path in self._failures:
             lines += [
                 "",

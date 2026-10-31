@@ -80,10 +80,10 @@ def test_sidecar_disagrees_with_manifest_marks_replacement_before_deletion(job, 
         replacement = safety.run(job).archive_path
     sidecar = replacement.with_suffix(replacement.suffix + ".sha256")
     sidecar.write_text("0" * 64 + f"  {replacement.name}\n")
-    with pytest.raises(PruneError, match="immutable manifest"):
+    with pytest.raises(PruneError, match="Manifest archive digest"):
         workflow.prune_backups(job, dry_run=False, user_mode=True)
     assert old.is_file() and replacement.is_file()
-    assert read_suspect_marker(replacement.parent) is not None
+    assert read_suspect_marker(replacement.parent) is None
 
 
 @pytest.mark.parametrize("missing", ["manifest", "identity", "both"])

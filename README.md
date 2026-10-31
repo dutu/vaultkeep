@@ -245,14 +245,19 @@ vaultkeep --user --config "$job_config" verify
    an empty `per_file` selection is unchanged and verification can find zero archives.
 
 A created backup directory contains `<base>.tar.zst` (or `.tar.7z`), its `.sha256`,
-and a version-2 `<base>.json` manifest. `list` shows UTC dates, sizes, retention
+and a version-2 `<base>.json` manifest. `list` shows UTC dates, sizes, ELIGIBLE
+metadata classification, retention
 choices, and complete relative backup directories. Invalid entries produce warnings
 and `UNKNOWN` decisions. `verify` checks archive contents and checksums without
 requiring sources and may record demonstrated corruption as `SUSPECT`.
 
 Unresolved suspects are protected and force a new compatible archive. Ordinary
 cleanup failures leave `run: created` successful with a warning; retry with `prune`
-or a later archive-creating run. Corruption found in the newly committed archive
+or a later archive-creating run. Interrupted deletion appears as `PRUNE_PENDING`
+and resumes from its durable deletion intent; no immediate retries occur.
+`EMPTY_ORPHAN` identifies a matching empty directory eligible for guarded removal.
+Pending and invalid entries never fill retention tiers. `ELIGIBLE` does not mean
+archive contents are verified; use `verify`. Corruption found in the newly committed archive
 fails the run, including during cleanup. Unchanged runs never prune. See
 [suspect protection, replacement, and cleanup](docs/cli.md#run-a-job-manually)
 before removing suspect backups.
@@ -443,12 +448,12 @@ Job:         app
 Destination: /mnt/backups/app
 Retention:   1 hourly, 1 daily, 0 weekly, 0 monthly, 0 yearly
 
-Created (UTC)        Size       Decision  Tiers
+Created (UTC)        Size       Classification  Decision  Tiers
 ────────────────────────────────────────────────────────────
-2026-10-25 08:00:00  756.7 MiB  KEEP      daily, hourly
+2026-10-25 08:00:00  756.7 MiB  ELIGIBLE        KEEP      daily, hourly
   Backup: backup-app-20261025T080000Z
 
-2026-10-25 07:00:00  756.7 MiB  PRUNE     —
+2026-10-25 07:00:00  756.7 MiB  ELIGIBLE        PRUNE     —
   Backup: backup-app-20261025T070000Z
 ────────────────────────────────────────────────────────────
 

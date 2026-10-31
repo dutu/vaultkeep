@@ -41,6 +41,7 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
             (
                 backup.manifest.created_datetime_utc.strftime("%Y-%m-%d %H:%M:%S"),
                 format_size(backup.archive_size),
+                "SUSPECT" if backup.suspect_reason else "ELIGIBLE",
                 decisions[backup.directory],
                 ", ".join(inventory.retained_by.get(backup.directory) or ()) or "—",
             )
@@ -51,7 +52,7 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
             for backup in inventory.backups
         ]
         table = format_table(
-            ("Created (UTC)", "Size", "Decision", "Tiers"),
+            ("Created (UTC)", "Size", "Classification", "Decision", "Tiers"),
             rows,
             stream=sys.stdout,
             details=details,
@@ -68,6 +69,18 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
     else:
         lines += ["No backups found."]
 
+    for pending in inventory.pending:
+        detail = "Cleanup deferred" if pending.active else "Preserved; inactive history"
+        lines += [
+            f"PRUNE_PENDING  {_display_path(pending.directory.relative_to(destination))}: {detail}"
+        ]
+    for orphan in inventory.orphans:
+        detail = (
+            "Guarded removal planned"
+            if orphan in inventory.active_orphans
+            else "Preserved; inactive history"
+        )
+        lines += [f"EMPTY_ORPHAN   {_display_path(orphan.relative_to(destination))}: {detail}"]
     suspects = tuple(backup for backup in inventory.backups if backup.suspect_reason is not None)
     if inventory.malformed or inventory.retention_warnings:
         lines += ["", "Warnings:"]
@@ -75,7 +88,7 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
             label = _display_path(entry.path.relative_to(destination))
             reason = entry.reason.replace(str(entry.path) + "/", "").replace(str(entry.path), "")
             diagnostic = reason.splitlines()
-            lines += [f"  {label}: {diagnostic[0].rstrip(': ')}"]
+            lines += [f"  INVALID {label}: {diagnostic[0].rstrip(': ')}"]
             lines += [f"    {line}" for line in diagnostic[1:]]
         for history, reason in inventory.retention_warnings:
             label = _display_path(history.relative_to(destination))
@@ -83,7 +96,11 @@ def print_inventory(inventory: BackupInventory, *, output: Console) -> None:
         if enabled and inventory.malformed:
             lines += ["  Matching invalid entries block pruning; affected histories are UNKNOWN."]
 
-    summary = f"Backups: {len(inventory.backups)}"
+    summary = f"Backups: {len(inventory.backups) - len(suspects)}"
+    if inventory.pending:
+        summary += f" · PRUNE_PENDING: {len(inventory.pending)}"
+    if inventory.orphans:
+        summary += f" · EMPTY_ORPHAN: {len(inventory.orphans)}"
     if suspects:
         summary += f" · Suspect: {len(suspects)}"
     if enabled and inventory.backups:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import stat
 import string
@@ -13,6 +14,12 @@ from pathlib import Path
 from vaultkeep.archive.checksums import read_checksum_sidecar, verify_checksum_sidecar
 from vaultkeep.config.models import JobConfig
 from vaultkeep.destination.manifest import BackupManifest, load_manifest
+from vaultkeep.destination.pending import (
+    PendingBackup,
+    opened_directory,
+    read_marker,
+    validate_entries,
+)
 from vaultkeep.destination.suspect import SUSPECT_MARKER_NAME, read_suspect_marker
 from vaultkeep.destination.templates import STAGING_DIRECTORY_PREFIX
 from vaultkeep.errors import (
@@ -74,6 +81,9 @@ class DiscoveryResult:
 
     backups: tuple[DiscoveredBackup, ...]
     malformed: tuple[MalformedDestinationEntry, ...]
+    pending: tuple[PendingBackup, ...] = ()
+    orphans: tuple[Path, ...] = ()
+    active_orphans: tuple[Path, ...] | None = None
 
     @property
     def state_records(self) -> tuple[BackupStateRecord, ...]:
@@ -88,9 +98,13 @@ def discover_backups(
     runtime_params: Mapping[str, str] | None = None,
     verify_archives: bool = True,
     metadata_only: bool = False,
+    defer_checksum_validation: bool = False,
     on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> DiscoveryResult:
-    """Discover matching backups; metadata_only skips all checksum/content reads.
+    """Discover matching backups; metadata_only skips archive-content reads.
+
+    defer_checksum_validation is reserved for verify, which performs and reports
+    checksum checks separately before any archive verification.
 
     Both supported formats use the stored manifest's facts. Checksum validation
     remains available independently of the currently configured archive format.
@@ -124,6 +138,8 @@ def discover_backups(
 
     backups: list[DiscoveredBackup] = []
     malformed: list[MalformedDestinationEntry] = []
+    pending: list[PendingBackup] = []
+    orphans: list[Path] = []
     candidates = tuple(
         child
         for child in children
@@ -167,6 +183,29 @@ def discover_backups(
 
         report(VerificationProgress("backup", operation, path=child))
         try:
+            with opened_directory(child) as (_, descriptor):
+                marker = read_marker(descriptor)
+                if marker is not None:
+                    if (
+                        marker.directory_name != child.name
+                        or marker.manifest.job != config.job.id
+                        or _base_name_matcher(
+                            config.destination.name_template,
+                            config.job.id,
+                            marker.manifest.archive_format,
+                            runtime_params=runtime_params,
+                        ).fullmatch(marker.base_name)
+                        is None
+                    ):
+                        raise DestinationDiscoveryError(f"Prune marker identity mismatch: {child}")
+                    validate_entries(descriptor, marker, pending=True)
+                    pending.append(PendingBackup(child, marker))
+                    report(VerificationProgress("backup", "PRUNE_PENDING", "complete", child))
+                    continue
+                if not os.listdir(descriptor):
+                    orphans.append(child)
+                    report(VerificationProgress("backup", "EMPTY_ORPHAN", "complete", child))
+                    continue
             backups.append(
                 _validate_backup_directory(
                     child,
@@ -174,11 +213,12 @@ def discover_backups(
                     config,
                     verify_archives=verify_archives,
                     metadata_only=metadata_only,
+                    defer_checksum_validation=defer_checksum_validation,
                     runtime_params=runtime_params,
                     on_progress=report if on_progress is not None else None,
                 )
             )
-        except (DestinationError, ManifestError) as error:
+        except (DestinationError, ManifestError, OSError, ValueError) as error:
             malformed.append(
                 MalformedDestinationEntry(
                     child, str(error), isinstance(error, UnsupportedManifestError)
@@ -187,7 +227,7 @@ def discover_backups(
             report(
                 VerificationProgress("backup", operation, "failed", current_path, error=str(error))
             )
-    return DiscoveryResult(tuple(backups), tuple(malformed))
+    return DiscoveryResult(tuple(backups), tuple(malformed), tuple(pending), tuple(orphans))
 
 
 def _validate_backup_directory(
@@ -197,6 +237,7 @@ def _validate_backup_directory(
     *,
     verify_archives: bool,
     metadata_only: bool = False,
+    defer_checksum_validation: bool = False,
     runtime_params: Mapping[str, str] | None = None,
     on_progress: Callable[[VerificationProgress], None] | None = None,
 ) -> DiscoveredBackup:
@@ -288,9 +329,9 @@ def _validate_backup_directory(
             backup_id=manifest.backup_id,
         ),
     )
-    if metadata_only:
+    if metadata_only and defer_checksum_validation:
         return backup
-    operation = "SHA-256" if verify_archives else "Checksum metadata"
+    operation = "SHA-256" if verify_archives and not metadata_only else "Checksum metadata"
     if damage is not None:
         report_progress(
             on_progress,
@@ -307,7 +348,7 @@ def _validate_backup_directory(
     try:
         digest = (
             verify_checksum_sidecar(archive_path, checksum_path, on_progress=on_progress)
-            if verify_archives
+            if verify_archives and not metadata_only
             else read_checksum_sidecar(archive_path, checksum_path)
         )
     except Exception as error:  # Archive errors are malformed destination facts here.

@@ -195,6 +195,10 @@ checksum validation. `backup.previous.cleanup_errors` contains recorded cleanup
 failures for that attempt (an empty list when none were recorded). Human output
 separates **Cleanup pending** from **Previous cleanup error**. A cleanup error after
 reliable creation leaves the result `SUCCESS` and the command exit code zero.
+`cleanup_pending` also includes entries with `classification: PRUNE_PENDING` or
+`EMPTY_ORPHAN`, including after process termination. Their `reason` identifies
+deferred cleanup or preservation of an inactive history. Invalid intent remains
+in `diagnostics`; pending and invalid entries are never recovery-point evidence.
 There is no `safety` array or historical archive-review annotation in Trigger status.
 
 Missing/unavailable next-execution information is null. A subsystem inspection error
