@@ -25,6 +25,12 @@ from vaultkeep.schedule import (
 pytestmark = pytest.mark.usefixtures("system_execution")
 
 
+@pytest.fixture(autouse=True)
+def backup_readiness(monkeypatch):
+    """Isolate unit rendering/transactions from backup filesystem readiness."""
+    monkeypatch.setattr(schedule_module, "validate_prepared_job", lambda *a, **kw: None)
+
+
 def _install_templates(paths: TimerPaths) -> None:
     paths.units_root.mkdir(parents=True, exist_ok=True)
     (paths.units_root / "vaultkeep@.timer").write_text(TIMER_TEMPLATE)
@@ -1227,3 +1233,93 @@ def test_sync_snapshots_the_whole_plan_before_mutating(
             manager.sync()
     assert commands == []
     assert _sync_files(manager) == before
+
+
+@pytest.mark.parametrize("action", ["install", "update"])
+@pytest.mark.parametrize(
+    "failure,diagnostic",
+    [
+        ("missing", "not an accessible directory"),
+        ("file", "not an accessible directory"),
+        ("marker", "marker is missing"),
+        ("filesystem", "filesystem type mismatch"),
+        ("unwritable", "Destination probe failed"),
+        ("source", "Configured source does not exist"),
+    ],
+)
+def test_schedule_readiness_failure_preserves_installed_state(
+    managed_timers, valid_config, monkeypatch, action, failure, diagnostic
+):
+    from vaultkeep.backup import workflow
+    from vaultkeep.errors import DestinationError
+
+    manager, commands = managed_timers
+    root = manager.paths.jobs_root.parent
+    destination = root / "backups"
+    destination.mkdir()
+    source = root / "source"
+    source.mkdir()
+    valid_config["schedule"]["enabled"] = True
+    valid_config["destination"]["root"] = str(destination)
+    valid_config["sources"][0]["path"] = str(source)
+    path = _save_sync_job(manager, valid_config, "app")
+    monkeypatch.setattr(schedule_module, "validate_prepared_job", workflow.validate_prepared_job)
+    if action == "update":
+        manager.install(path)
+    before = _sync_files(manager)
+    commands.clear()
+    if failure == "missing":
+        valid_config["destination"]["root"] = str(root / "missing")
+    elif failure == "file":
+        target = root / "file"
+        target.touch()
+        valid_config["destination"]["root"] = str(target)
+    elif failure == "marker":
+        valid_config["destination"]["marker_file"] = ".missing-marker"
+    elif failure == "filesystem":
+        valid_config["destination"]["expected_fstype"] = "cifs"
+        monkeypatch.setattr(workflow, "_mounted_filesystem_type", lambda _: "ext4")
+    elif failure == "unwritable":
+
+        def denied(_root):
+            raise DestinationError("Destination probe failed: permission denied")
+
+        monkeypatch.setattr(workflow, "probe_destination_writability", denied)
+    else:
+        source.rmdir()
+    _save_sync_job(manager, valid_config, "app")
+
+    with pytest.raises(DestinationError, match=diagnostic):
+        getattr(manager, action)(path)
+
+    assert commands == []
+    assert _sync_files(manager) == before
+    assert not (root / "missing").exists()
+    assert not tuple(destination.glob(".vaultkeep-write-test-*"))
+
+
+def test_schedule_readiness_uses_resolved_destination_and_allows_valid_updates(
+    managed_timers, valid_config, monkeypatch
+):
+    from vaultkeep.backup import workflow
+
+    manager, commands = managed_timers
+    root = manager.paths.jobs_root.parent
+    destination = root / "backups" / "nas-a"
+    destination.mkdir(parents=True)
+    (destination / ".marker").touch()
+    source = root / "source"
+    source.mkdir()
+    valid_config["schedule"]["enabled"] = True
+    valid_config["destination"]["root"] = str(root / "backups" / "{repo}")
+    valid_config["destination"]["marker_file"] = ".marker"
+    valid_config["sources"][0]["path"] = str(source)
+    path = _save_sync_job(manager, valid_config, "app")
+    monkeypatch.setattr(schedule_module, "validate_prepared_job", workflow.validate_prepared_job)
+
+    manager.install(path, runtime_params={"repo": "nas-a"})
+    manager.update(path, runtime_params={"repo": "nas-a"})
+
+    assert any("enable" in command for command in commands)
+    assert any("restart" in command for command in commands)
+    assert not tuple(destination.glob(".vaultkeep-write-test-*"))

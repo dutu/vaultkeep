@@ -485,7 +485,8 @@ Use the actual YAML path with the command prefix
 `vaultkeep --user --config /absolute/path/job.yaml` (for root, omit `--user` and use
 `sudo`). Edit and validate the YAML as its owner. For an installed timer run `schedule update`;
 for an installed monitor run `trigger update` when monitoring should resume, then
-validate again. New content/archive settings can require a new backup; retention
+validate again. Schedule install/update also checks source availability and destination
+readiness before changing the timer. New content/archive settings can require a new backup; retention
 changes alone do not. Apply changed retention with a prune preview followed by prune.
 See [configuration changes](docs/configuration.md#apply-configuration-changes).
 

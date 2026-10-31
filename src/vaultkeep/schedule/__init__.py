@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vaultkeep.application import runtime_owner
+from vaultkeep.backup.workflow import validate_prepared_job
 from vaultkeep.config import (
     JobConfig,
     load_config,
@@ -721,7 +722,7 @@ class TimerManager:
         runtime_params: Mapping[str, str] | None = None,
     ) -> JobConfig:
         parameters = dict(runtime_params or {})
-        config, _application = prepare_job(
+        config, application = prepare_job(
             self._load_template(config_path),
             user_mode=self.user_mode,
             config_path=config_path.resolve(),
@@ -729,6 +730,8 @@ class TimerManager:
         )
         if require_enabled and not config.schedule.enabled:
             raise TimerError("Timer installation requires schedule.enabled: true")
+        if require_enabled:
+            validate_prepared_job(config, application, config_path=config_path.resolve())
         return config
 
     def _unit(self, instance: str) -> str:

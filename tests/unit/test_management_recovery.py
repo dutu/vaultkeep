@@ -68,6 +68,7 @@ def resources(tmp_path, monkeypatch, valid_config):
     monkeypatch.setattr(service, "_systemctl", systemctl)
     monkeypatch.setattr(TimerManager, "_systemctl", lambda _, *a, **kw: systemctl(*a, **kw))
     monkeypatch.setattr(TimerManager, "_run", lambda *_a, **_kw: "")
+    monkeypatch.setattr("vaultkeep.schedule.validate_prepared_job", lambda *a, **kw: None)
     monkeypatch.setattr("vaultkeep.schedule.status.unit_properties", inspect)
     service.manage_service(config, "install")
     valid_config["trigger"]["enabled"] = False

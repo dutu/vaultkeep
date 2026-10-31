@@ -485,6 +485,7 @@ def test_schedule_identity_failure_preserves_installed_files_and_registry(
     )
     monkeypatch.setattr(manager, "_systemctl", lambda *_a, **_kw: "")
     monkeypatch.setattr(manager, "_validate_change", lambda *_a: None)
+    monkeypatch.setattr("vaultkeep.schedule.validate_prepared_job", lambda *a, **kw: None)
     manager.install(path)
     valid_config["application"]["user"] = "unsupported-account"
     path.write_text(json.dumps(valid_config))

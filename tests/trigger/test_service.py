@@ -200,6 +200,12 @@ def test_root_schedule_and_user_trigger_coexist(
 
     root_config = deepcopy(valid_config)
     root_config["schedule"]["enabled"] = True
+    source = tmp_path / "source"
+    source.mkdir()
+    destination = tmp_path / "backups"
+    destination.mkdir()
+    root_config["sources"][0]["path"] = str(source)
+    root_config["destination"]["root"] = str(destination)
     root_jobs = tmp_path / "etc/vaultkeep/jobs"
     root_jobs.mkdir(parents=True)
     root_job = root_jobs / "app.yaml"

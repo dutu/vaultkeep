@@ -552,8 +552,9 @@ Update the timer after changing the job schedule:
 vaultkeep [--user] --config <job.yaml> schedule update
 ```
 
-Install and update validate the job's execution scope and application identity,
-then the generated calendar and staged service/timer units
+Install and update validate the job's execution scope, application identity, source
+availability, and destination readiness (directory, configured marker/filesystem,
+and create/write/rename/remove probe), then the generated calendar and staged service/timer units
 before replacing the managed files. Update preserves timer enablement and restarts
 an enabled timer. If applying either command fails or is interrupted with Ctrl-C,
 Vaultkeep restores the preceding managed files, ownership registry, and timer

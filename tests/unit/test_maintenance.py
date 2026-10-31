@@ -58,6 +58,7 @@ def scheduled_job(tmp_path, valid_config, monkeypatch, *, user, params=None):
         installation.setattr(manager, "_systemctl", lambda *args, **kwargs: "")
         # Schedule tests cover staged validation; this fixture only seeds managed files.
         installation.setattr(manager, "_validate_change", lambda *args: None)
+        installation.setattr("vaultkeep.schedule.validate_prepared_job", lambda *a, **kw: None)
         manager.install(config, runtime_params=params)
     return spec, paths, config
 
@@ -968,6 +969,7 @@ def test_preflight_prepares_each_saved_parameter_selection_once(
     with monkeypatch.context() as installation:
         installation.setattr(manager, "_systemctl", lambda *a, **kw: "")
         installation.setattr(manager, "_validate_change", lambda *a: None)
+        installation.setattr("vaultkeep.schedule.validate_prepared_job", lambda *a, **kw: None)
         manager.install(path, runtime_params={"repo": "two"})
     identities = []
 

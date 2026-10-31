@@ -1895,7 +1895,7 @@ The generated timer is inspectable through standard systemd tools. `systemd-anal
 6. enable and start the timer;
 7. record the instance in the ownership registry.
 
-`schedule install` and `schedule update` require `schedule.enabled: true` and refuse to enable an invalid or incomplete job.
+`schedule install` and `schedule update` require `schedule.enabled: true` and run the shared backup readiness validation before staging units. This checks source availability, the application data directory when configured, and destination directory, marker, filesystem type, and writability. They refuse to enable an invalid or incomplete job.
 
 `schedule update` validates the staged units, rewrites the generated files, reloads systemd, preserves the timer's enabled or disabled state, and restarts an enabled timer. Use `schedule next` to display the next run.
 
