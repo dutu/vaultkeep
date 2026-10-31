@@ -137,39 +137,59 @@ def read_marker(descriptor: int) -> PruneMarker | None:
         raise PruneError(f"Invalid prune marker: {error}") from error
 
 
-def validate_entries(descriptor: int, marker: PruneMarker, *, pending: bool) -> None:
+def validate_entries(descriptor: int, marker: PruneMarker, *, pending: bool) -> frozenset[str]:
+    """Validate intent and return entries still present, allowing stale known names."""
     try:
-        _validate_entries(descriptor, marker, pending=pending)
+        return _validate_entries(descriptor, marker, pending=pending)
     except ValueError as error:
         raise PruneError(f"Invalid remaining backup metadata: {error}") from error
 
 
-def _validate_entries(descriptor: int, marker: PruneMarker, *, pending: bool) -> None:
+def _validate_entries(descriptor: int, marker: PruneMarker, *, pending: bool) -> frozenset[str]:
     expected = set(marker.artifacts)
     if pending:
         expected.add(PRUNE_MARKER_NAME)
     names = set(os.listdir(descriptor))
     if names - expected or (not pending and names != expected):
         raise PruneError("Unexpected or missing backup artifacts")
-    for name in names:
-        info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    present: set[str] = set()
+    # Network directory listings can retain deleted names or omit live ones.
+    # Inspect the exact allowlist directly; missing artifacts are safe only with
+    # validated deletion intent, and a missing intent marker is never tolerated.
+    for name in expected:
+        try:
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            if pending and name != PRUNE_MARKER_NAME:
+                continue
+            raise
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise PruneError(f"Backup artifact is not a single-link regular file: {name}")
+        present.add(name)
     manifest_name = f"{marker.base_name}.json"
-    if (
-        manifest_name in names
-        and BackupManifest.model_validate_json(read_regular(descriptor, manifest_name))
-        != marker.manifest
-    ):
-        raise PruneError("Manifest changed since deletion intent")
-    if (
-        SUSPECT_MARKER_NAME in names
-        and SuspectMarker.model_validate_json(read_regular(descriptor, SUSPECT_MARKER_NAME))
-        != marker.suspect
-    ):
-        raise PruneError("Suspect marker changed since deletion intent")
+    if manifest_name in present:
+        try:
+            manifest_payload = read_regular(descriptor, manifest_name)
+        except FileNotFoundError:
+            if not pending:
+                raise
+            present.remove(manifest_name)
+        else:
+            if BackupManifest.model_validate_json(manifest_payload) != marker.manifest:
+                raise PruneError("Manifest changed since deletion intent")
+    if SUSPECT_MARKER_NAME in present:
+        try:
+            suspect_payload = read_regular(descriptor, SUSPECT_MARKER_NAME)
+        except FileNotFoundError:
+            if not pending:
+                raise
+            present.remove(SUSPECT_MARKER_NAME)
+        else:
+            if SuspectMarker.model_validate_json(suspect_payload) != marker.suspect:
+                raise PruneError("Suspect marker changed since deletion intent")
     if pending and read_marker(descriptor) != marker:
         raise PruneError("Prune marker changed since discovery")
+    return frozenset(present)
 
 
 def publish_noreplace(source_fd: int, name: str, target_fd: int) -> None:
@@ -277,11 +297,13 @@ def remove_backup(directory: Path, marker: PruneMarker, *, pending: bool) -> Non
                 except FileNotFoundError:
                     continue
                 operation = "unlink artifact"
-                os.unlink(name, dir_fd=descriptor)
+                with suppress(FileNotFoundError):
+                    os.unlink(name, dir_fd=descriptor)
             operation = "flush artifact removals"
             os.fsync(descriptor)
-            validate_entries(descriptor, marker, pending=True)
-            if set(os.listdir(descriptor)) != {PRUNE_MARKER_NAME}:
+            operation = "validate final backup entries"
+            failing = directory
+            if validate_entries(descriptor, marker, pending=True) != {PRUNE_MARKER_NAME}:
                 raise PruneError("Artifacts appeared during cleanup")
             operation = "unlink prune marker"
             failing = directory / PRUNE_MARKER_NAME

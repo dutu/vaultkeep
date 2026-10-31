@@ -197,6 +197,13 @@ For each new deletion:
 For resumed deletion, use the same executor with the validated marker. Treat
 already-absent expected artifacts as completed deletions; never require the old
 archive, checksum, or manifest. Do not hash a partly deleted candidate.
+Inspect every known artifact directly through the opened directory descriptor;
+network listings may include deleted names or omit live entries. With validated
+pending intent, treat ENOENT for expected artifacts during stat, metadata open, or
+unlink as already deleted, without retrying. Final validation uses observed
+remaining entries instead of raw listing equality. Never ignore a missing marker,
+unexpected listed names, unsafe file types, invalid metadata, or non-ENOENT errors.
+Complete unmarked backup validation remains strict.
 
 Any filesystem failure stops that cleanup pass in the affected destination,
 including further candidates. Report operation, failing path, and completed
@@ -387,6 +394,11 @@ module if useful.
     cleanup/resumption only under the exact validated destination lock. Local/NFS
     owner-only checks remain strict. Reject symlinks, mismatched parent descriptors,
     and different-filesystem temporary storage even on CIFS/SMB.
+20. Stale network listings retain deleted artifact names or omit live known names:
+    pending discovery and resumption remain safe. Cover metadata disappearing
+    between stat/open, ENOENT at unlink without retry, final entry validation after
+    successful unlinks, hidden known symlinks, stale unknown names, missing markers,
+    and non-ENOENT failures. Unmarked incomplete backups remain invalid.
 
 Run focused affected unit/integration tests, then repository checks from
 [testing guidance](../development/testing.md):

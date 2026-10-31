@@ -1284,6 +1284,15 @@ Store exact derived artifact names through the manifest snapshot, backup/job/dir
 identity, ReplacementIdentity, and full original suspect metadata. Validate remaining
 manifest/suspect metadata against that snapshot, allow already-missing expected
 artifacts, and reject unexpected entries, directories, links, and duplicate IDs.
+Pending validation checks every known artifact directly through the directory
+descriptor, even if a network directory listing omits it. A stale listing of an
+already-deleted expected artifact does not invalidate deletion intent. ENOENT from
+an expected artifact's stat, metadata open, or unlink is treated as already deleted;
+unlinks are not retried. A missing marker, unexpected listed names (even stale ones),
+unsafe file types, invalid metadata, and other filesystem errors remain barriers.
+Final entry validation uses these direct observations rather than raw listing
+equality before removing the marker. Complete unmarked backups still require all
+artifacts; this tolerance applies only to validated pending intent.
 Prepare the flushed marker in private `.vaultkeep-prune-tmp` storage outside committed
 backups on the same filesystem. Publish with descriptor-relative Linux
 `renameat2(RENAME_NOREPLACE)`, never an overwriting rename or directory rename. Flush

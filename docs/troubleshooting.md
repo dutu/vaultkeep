@@ -182,6 +182,15 @@ no remaining files. Both can be cleaned by a later successful newly created back
 or explicit guarded pruning; an unchanged run does not retry cleanup. The completed
 backup remains SUCCESS when only cleanup fails.
 
+A network directory listing may still include an artifact already deleted during
+cleanup. With a valid `.vaultkeep-prune-pending` marker, missing expected artifacts
+are treated as deleted and cleanup can resume. If an older build instead reports
+the pending directory as malformed because its manifest is missing, update Vaultkeep
+and inspect `list` and `prune --dry-run` again. Keep the marker and remaining files
+intact; do not recreate the manifest. Explicit `prune` or the next successful new
+backup can finish recognized pending cleanup. A missing/invalid marker, unexpected
+content, or other filesystem errors still require conservative protection.
+
 A pending suspect with a missing/corrupt replacement forces a new compatible backup
 even when sources are unchanged. Incompatible, deleted, and excluded file histories
 remain protected. Restore compatible configuration to resume them safely.
