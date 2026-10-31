@@ -122,7 +122,7 @@ def test_service_identity_depends_only_on_canonical_path(installation, tmp_path)
 @pytest.mark.parametrize(
     "filename,escaped",
     [
-        ("Bisq_sd1-srv_backups.yaml", "Bisq_sd1-srv_backups"),
+        ("Bisq_sd1-srv_backups-full.yaml", "Bisq_sd1-srv_backups"),
         ("space %\\é.yml", r"space\x20\x25\x5c\xc3\xa9"),
         (".hidden.yaml", r"\x2ehidden"),
     ],

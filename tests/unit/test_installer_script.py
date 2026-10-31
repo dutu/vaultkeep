@@ -2006,7 +2006,7 @@ def restarting_user_monitor(host, source, tmp_path, valid_config, monkeypatch, *
     valid_config["sources"][0]["path"] = str(wallet)
     valid_config["destination"]["root"] = str(destination)
     valid_config["trigger"] = {"enabled": True}
-    config = jobs / "Bisq_sd0-srv_backups.yaml"
+    config = jobs / "Bisq_sd0-srv_backups-full.yaml"
     config.write_text(json.dumps(valid_config))
     monkeypatch.setenv("VAULTKEEP_BIN_LINK", host["VAULTKEEP_BIN_LINK"])
     trigger = load_config(config)
