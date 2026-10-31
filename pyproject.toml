@@ -28,6 +28,7 @@ vaultkeep = "vaultkeep.cli:main"
 include = [
     "/src",
     "/hatch_build.py",
+    "/examples/bisq-schedule.yaml",
     "/examples/bisq-trigger.yaml",
     "/examples/electrum-trigger.yaml",
     "/examples/vaultkeep-schedule.yaml",
