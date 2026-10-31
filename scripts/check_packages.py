@@ -113,6 +113,7 @@ def check() -> None:
             "install.sh",
             "examples/vaultkeep-schedule.yaml",
             "examples/electrum-trigger.yaml",
+            "examples/bisq-schedule.yaml",
             "examples/bisq-trigger.yaml",
             "examples/wasabi-trigger.yaml",
         ):

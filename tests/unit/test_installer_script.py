@@ -167,6 +167,7 @@ def frozen_source(tmp_path_factory: pytest.TempPathFactory):
             "--exclude=.agents/",
             "--include=/examples/",
             "--include=/examples/vaultkeep-schedule.yaml",
+            "--include=/examples/bisq-schedule.yaml",
             "--include=/examples/bisq-trigger.yaml",
             "--include=/examples/electrum-trigger.yaml",
             "--include=/examples/wasabi-trigger.yaml",
@@ -450,7 +451,7 @@ def test_invalid_systemd_executable_path_fails_before_installation(host, tmp_pat
 @pytest.mark.usefixtures("installer_wheelhouse")
 def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str], valid_config) -> None:
     examples = sorted((CANDIDATE_SOURCE / "examples").glob("*.yaml"))
-    assert len(examples) == 4
+    assert len(examples) == 5
     jobs = Path(host["VAULTKEEP_CONFIG_ROOT"]) / "jobs"
     jobs.mkdir(parents=True)
     for example in examples:
@@ -511,7 +512,7 @@ def test_maintenance_refreshes_examples_without_overwriting_jobs(
 ):
     source = candidate_source(tmp_path, mode) if changed_source else CANDIDATE_SOURCE
     examples = sorted((source / "examples").glob("*.yaml"))
-    assert len(examples) == 4
+    assert len(examples) == 5
     if changed_source:
         for example in examples:
             example.write_text(example.read_text() + "\n## Updated release template.\n")
