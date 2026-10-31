@@ -128,14 +128,15 @@ if needed.
 <a id="choose-a-mode-specific-workflow"></a>
 ## Create a backup job
 
-1. Choose the starting example. Application examples include disabled Trigger
-   settings and require checking against the installed application's real processes.
+1. Choose the starting example. Trigger examples require checking against the
+   installed application's real processes.
 
    | Job | Complete example | Application preparation |
    | --- | --- | --- |
    | Manual or Schedule | [General job](examples/vaultkeep-schedule.yaml) | Steps below |
    | <a id="back-up-directory-files-separately"></a>Electrum | [Electrum job](examples/electrum-trigger.yaml) | [Electrum guide](docs/trigger/apps/electrum.md), including separate wallet archives |
    | Bisq 1 GUI/API daemon | [Bisq job](examples/bisq-trigger.yaml) | [Bisq guide](docs/trigger/apps/bisq.md); explicit `--appDataDir` required |
+   | Bisq 1 scheduled live backup | [Bisq schedule job](examples/bisq-schedule.yaml) | Replace source and hook paths; selective live reads are not a consistent snapshot. Follow the Schedule workflow below. |
    | Wasabi GUI/daemon | [Wasabi job](examples/wasabi-trigger.yaml) | [Wasabi guide](docs/trigger/apps/wasabi.md) |
 
    Repository examples use `.yaml`. The installer copies them into

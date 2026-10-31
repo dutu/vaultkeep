@@ -1,0 +1,192 @@
+## Scheduled selective live Bisq 1 backup (user mode).
+## Copy to ~/.config/vaultkeep/jobs/bisq-schedule.yaml; filename must match job.id.
+## Replace /home/user/.local/share/Bisq in sources AND the before_check hook.
+## Set destination.root to an existing writable backup directory.
+## Runs hourly at 15 minutes past the hour once its systemd timer is installed.
+## These files are read while Bisq may still be running: not a consistent snapshot.
+## Use alongside a separate shutdown-triggered full backup (bisq-trigger.yaml).
+## Archives are unencrypted; review archive protection before use.
+## Notifications require telegram-notify and notify-send to be configured.
+## Setup and timer installation: README.md; notification setup: docs/configuration.md.
+config_version: 2
+
+job:
+  id: bisq-schedule
+
+# Combined archive of selected sources; 'per_file' accepts only one directory.
+backup_mode: combined
+
+# Database allowlist (28 files), plus keys, wallet, Tor identity and optional settings.
+sources:
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/BsqSwapTrades
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/BsqSwapTrades
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/BallotList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/BallotList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/DisputeList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/DisputeList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/RefundDisputeList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/RefundDisputeList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/SequenceNumberMap
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/SequenceNumberMap
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/MyVoteList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/MyVoteList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/OpenOffers
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/OpenOffers
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/MyBlindVoteList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/MyBlindVoteList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/ClosedTrades
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/ClosedTrades
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/MediationDisputeList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/MediationDisputeList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/MyProposalList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/MyProposalList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/MailboxMessageList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/MailboxMessageList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/AccountAgeWitnessStore
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/AccountAgeWitnessStore
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/PendingTrades
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/PendingTrades
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/MyProofOfBurnList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/MyProofOfBurnList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/PreferencesPayload
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/PreferencesPayload
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/UserPayload
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/UserPayload
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/AddressEntryList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/AddressEntryList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/FailedTrades
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/FailedTrades
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/MyReputationList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/MyReputationList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/TempProposalStore
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/TempProposalStore
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/NavigationPath
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/NavigationPath
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/UnconfirmedBsqChangeOutputList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/UnconfirmedBsqChangeOutputList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/IgnoredMailboxMap
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/IgnoredMailboxMap
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/PeerList
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/PeerList
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/RemovedPayloadsMap
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/RemovedPayloadsMap
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/TradeStatistics3Store
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/TradeStatistics3Store
+  - path: /home/user/.local/share/Bisq/btc_mainnet/db/SignedWitnessStore
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/db/SignedWitnessStore
+  - path: /home/user/.local/share/Bisq/btc_mainnet/keys
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/keys
+    exclude:
+      - "*/"  # Include immediate files only
+  - path: /home/user/.local/share/Bisq/btc_mainnet/wallet
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/wallet
+    exclude:
+      - "*/"  # Include immediate files only
+  - path: /home/user/.local/share/Bisq/btc_mainnet/tor/hiddenservice
+    archive_path_mode: prefix
+    archive_prefix: btc_mainnet/tor/hiddenservice
+  - path: /home/user/.local/share/Bisq/bisq.properties
+    archive_path_mode: prefix
+    archive_prefix: bisq.properties
+
+source_options:
+  follow_symlinks: false
+  cross_filesystems: false
+  ignore_missing: true  # Some selected Bisq DB files and bisq.properties may not exist.
+
+# Use a separate job ID and archive name from the full backup job.
+destination:
+  root: /mnt/backups/bisq-live
+  name_template: "backup-{job}-live-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+  # marker_file: ".vaultkeep-target"  # Optional: create this file under root first
+  # expected_fstype: cifs            # Optional: require the actual destination type
+
+archive:
+  format: tar.zst
+  compression_level: 6
+
+encryption:
+  mode: none
+
+retention:
+  hourly: 24
+  daily: 7
+  weekly: 8
+  monthly: 12
+  yearly: 3
+
+schedule:
+  enabled: true
+  interval: hourly
+  at: "00:15"  # 15 minutes past every hour (local time)
+  persistent: true
+
+# 'files' permits a running Bisq. Fail if the source changes during a read.
+consistency:
+  mode: files
+
+trigger:
+  enabled: false
+
+external_notifier:
+  command: telegram-notify
+  timeout_seconds: 15
+
+hooks:
+  # Prevent ignore_missing from silently skipping essential wallet and identity files.
+  before_check:
+    command: >-
+      test -s /home/user/.local/share/Bisq/btc_mainnet/keys/sig.key &&
+      test -s /home/user/.local/share/Bisq/btc_mainnet/keys/enc.key &&
+      test -s /home/user/.local/share/Bisq/btc_mainnet/wallet/bisq_BTC.wallet &&
+      test -s /home/user/.local/share/Bisq/btc_mainnet/wallet/bisq_BSQ.wallet
+    timeout_seconds: 60
+  on_success:
+    command: 'vaultkeep notify --level info "Live backup completed for {job}"'
+    timeout_seconds: 60
+  on_failure:
+    command: 'vaultkeep notify --level error "Live backup failed for {job}: $VAULTKEEP_ERROR"'
+    timeout_seconds: 60
+  # No on_unchanged hook: avoids hourly Telegram messages when nothing changed.
+
+desktop_notifications:
+  command: notify-send
+  timeout_ms: 5000
+  backup:
+    enabled: true
+  trigger:
+    enabled: false
+
+logging:
+  level: info
+  include_command_output: false
