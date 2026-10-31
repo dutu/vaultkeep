@@ -26,7 +26,7 @@ from vaultkeep.trigger.errors import (
 from vaultkeep.trigger.models import AttemptOutcome, Receipt, Request, utc_now
 from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.version import DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
-from vaultkeep.version import installed_version
+from vaultkeep.version import version_report
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +141,7 @@ def exec_worker(
     actual_version = (
         (version_result.stdout_tail or "").strip() if version_result.exit_code == 0 else None
     )
-    if actual_version != (request.preflight_version or installed_version()):
+    if actual_version != (request.preflight_version or version_report()):
         logging.getLogger(__name__).warning(
             "VaultKeep execution version differs from preflight/contract"
         )

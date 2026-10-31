@@ -14,7 +14,7 @@ from vaultkeep.trigger.errors import BlockedError, ConfigurationError, Integrati
 from vaultkeep.trigger.paths import runtime_dir, state_root, trigger_runtime_dir
 from vaultkeep.trigger.systemd import SystemdController
 from vaultkeep.trigger.version import DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
-from vaultkeep.version import installed_version
+from vaultkeep.version import version_report
 
 _LOG = logging.getLogger(__name__)
 
@@ -100,10 +100,10 @@ def runtime_preflight(
     if result.spawn_error:
         raise IntegrationError("failed to execute VaultKeep version preflight")
     version = result.stdout_tail.strip() if result.exit_code == 0 and result.stdout_tail else None
-    if version != installed_version():
+    if version != version_report():
         message = (
             "configured Vaultkeep executable version differs from this installation "
-            f"{installed_version()}"
+            f"{version_report()}"
         )
         if warning is None:
             _LOG.warning(message)

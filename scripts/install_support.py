@@ -520,13 +520,15 @@ def verify_environment(release: Path, version: str, components: list[str], sourc
     if (release / "venv/bin/vaultkeep-trigger").exists():
         fail("obsolete standalone Trigger entry point in application environment")
     execute([sys.executable, "-m", "pip", "check"])
+    from vaultkeep.version import version_report
+
     for command in commands:
         executable = release / "venv/bin" / command
         # pip uses a shell trampoline when the interpreter path contains spaces.
         header = "\n".join(executable.read_text().splitlines()[:4])
         if str(release / "venv/bin/python") not in header:
             fail(f"incorrect console script interpreter: {executable}")
-        if execute([str(executable), "--version"]).strip() != version:
+        if execute([str(executable), "--version"]).strip() != version_report():
             fail(f"incorrect command version: {executable}")
     for example in (source / "examples").glob("*.yaml"):
         execute(

@@ -33,7 +33,7 @@ from vaultkeep.errors import (
 )
 from vaultkeep.locking import deployment_lock, requires_deployment_lock
 from vaultkeep.schedule import TimerManager
-from vaultkeep.version import installed_version
+from vaultkeep.version import version_report
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -49,7 +49,7 @@ def _main(argv: Sequence[str] | None) -> int:
     output = Console(no_color=namespace.no_color)
 
     if namespace.show_version:
-        print(installed_version())
+        print(version_report())
         return 0
 
     guarded = requires_deployment_lock(namespace.command, getattr(namespace, "action", None))

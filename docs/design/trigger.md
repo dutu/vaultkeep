@@ -59,7 +59,7 @@ The source-review baseline is 2026-10-13, with the CLI/validation/locking behavi
 | Results | Backup owns execution evidence; `vaultkeep status --json` exposes unified job status | Parse the child command result for the immutable dispatch receipt; Backup sends its own execution notifications |
 | Configuration | YAML jobs own sources, destinations, archive/encryption settings, retention, and hooks | Trigger does not copy or reinterpret backup configuration or credentials |
 | Validation | `validate --schema-only` loads YAML schema; full `validate` checks backup paths and destination writability plus enabled automation prerequisites, installation, and health | Pass configured parameters; internal backup preflight uses `validate --backup-only` to avoid requiring an installed/healthy monitor before installation or startup |
-| Version | `--version` prints the installed distribution version | Record preflight and execution versions; warn on a reviewed-contract mismatch |
+| Version | `--version` prints the installed distribution version and source commit | Record preflight and execution versions; warn on a reviewed-contract mismatch |
 | Commit/retention | A created archive is committed and state is updated before pruning and the final CLI result | Trigger cannot undo retention or discard an archive safely by ignoring the result |
 | Cancellation | Hook timeouts exist; no documented safe whole-backup cancellation interface was found | Use advisory execution deadlines without forced termination |
 | Consistency | Archive workflow checks source digests, verifies artifacts, and commits completed directories atomically | Preserve these protections; they do not establish application-level snapshot consistency |

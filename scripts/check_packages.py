@@ -9,6 +9,7 @@ import configparser
 import email
 import json
 import os
+import runpy
 import subprocess
 import sys
 import tarfile
@@ -18,6 +19,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Load the source helper without importing the application or requiring installation.
+SOURCE_COMMIT = runpy.run_path(str(ROOT / "src/vaultkeep/version.py"))["source_commit"](ROOT)
 
 
 def run(*command: str, cwd: Path = ROOT, env: dict[str, str] | None = None) -> str:
@@ -40,6 +44,7 @@ def check_wheel(wheel: Path, version: str) -> None:
         }
         assert "vaultkeep/trigger/monitor.py" in names
         assert "vaultkeep/py.typed" in names
+        assert archive.read("vaultkeep/_commit.txt").decode().strip() == SOURCE_COMMIT
         assert "vaultkeep/notifications/notifier.py" in names
         assert "vaultkeep/notifications/desktop.py" in names
         assert "vaultkeep/notifications/external.py" in names
@@ -92,6 +97,8 @@ def check() -> None:
         extracted = next((output / "extracted").iterdir())
         for required in (
             "src/vaultkeep/py.typed",
+            "src/vaultkeep/_commit.txt",
+            "hatch_build.py",
             "src/vaultkeep/trigger/cli.py",
             "src/vaultkeep/notifications/notifier.py",
             "src/vaultkeep/notifications/desktop.py",
@@ -111,6 +118,7 @@ def check() -> None:
         ):
             assert (extracted / required).is_file(), required
         build(extracted, output / "rebuilt", "wheel")
+        check_wheel(next((output / "rebuilt").glob("*.whl")), version)
         os_release = base / "os-release"
         os_release.write_text("ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n")
         preview = base / "preview"
@@ -152,7 +160,7 @@ def check() -> None:
             "assert importlib.util.find_spec('vaultkeep_trigger') is None",
         )
         command = str(venv / "bin/vaultkeep")
-        assert run(command, "--version").strip() == version
+        assert run(command, "--version").strip() == f"{version} (commit {SOURCE_COMMIT})"
         tools = base / "tools"
         tools.mkdir()
         notifier = tools / "telegram-notify"

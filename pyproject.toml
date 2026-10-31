@@ -27,6 +27,7 @@ vaultkeep = "vaultkeep.cli:main"
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
+    "/hatch_build.py",
     "/examples/bisq-trigger.yaml",
     "/examples/electrum-trigger.yaml",
     "/examples/vaultkeep-schedule.yaml",
@@ -44,6 +45,9 @@ include = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vaultkeep"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
 
 [tool.ruff]
 target-version = "py313"

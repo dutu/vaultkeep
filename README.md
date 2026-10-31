@@ -101,7 +101,7 @@ sudo ./install.sh install
 vaultkeep --version
 ```
 
-   Expect the selected version. Installation uses `/opt/vaultkeep/current` and
+   Expect the selected version and commit hash (`unknown` if unavailable). Installation uses `/opt/vaultkeep/current` and
    `/usr/local/bin/vaultkeep`. A fresh install starts no backups or monitors and
    enables no jobs or lingering. Reinstallation/update automatically pauses,
    refreshes, validates, and resumes previously active managed automation.

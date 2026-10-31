@@ -59,7 +59,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--version",
         action="store_true",
         dest="show_version",
-        help="print the installed version and exit",
+        help="print the installed version and commit hash and exit",
     )
     parser.add_argument("--no-color", action="store_true", help="disable colored terminal messages")
     parser.add_argument("--config", type=Path, help="path to one job YAML configuration")

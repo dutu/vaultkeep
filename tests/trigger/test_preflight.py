@@ -19,6 +19,7 @@ from vaultkeep.trigger.errors import BlockedError, ConfigurationError
 from vaultkeep.trigger.monitor import Monitor
 from vaultkeep.trigger.preflight import runtime_preflight, validate_jobs
 from vaultkeep.trigger.state import StateStore
+from vaultkeep.version import version_report
 
 
 def _runtime_config(tmp_path: Path, monkeypatch):
@@ -81,6 +82,14 @@ def test_state_parent_is_checked_without_a_write_probe(tmp_path: Path, monkeypat
     with pytest.raises(BlockedError, match="not writable"):
         runtime_preflight(config, FakeController(), parent / "state", runner=FakeRunner([]))
     assert parent.read_text() == "preserve"
+
+
+def test_matching_version_and_commit_do_not_warn(tmp_path: Path, monkeypatch, caplog) -> None:
+    config, _runtime = _runtime_config(tmp_path, monkeypatch)
+    report = version_report()
+    runner = FakeRunner([child_result(), child_result(stdout_tail=report)])
+    assert runtime_preflight(config, FakeController(), tmp_path / "state", runner=runner) == report
+    assert "differs from this installation" not in caplog.text
 
 
 def test_runtime_version_mismatch_warns_without_rejecting(

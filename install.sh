@@ -544,6 +544,7 @@ stage_release() {
         --exclude='.aws/' --exclude='.codex/' --exclude='.agents/' --exclude='.coverage*' \
         --exclude='.env' --exclude='.env.*' \
         "$SOURCE_DIR/" "$stage/src/"
+    python3 "$SOURCE_DIR/src/vaultkeep/version.py" "$SOURCE_DIR" > "$stage/src/src/vaultkeep/_commit.txt"
     stage_start "Python environment"
     support run python3 -m venv "$stage/venv"
     support run "$stage/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$stage/src/requirements.lock"

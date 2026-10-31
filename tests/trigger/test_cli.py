@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from vaultkeep.cli import main
-from vaultkeep.version import installed_version
+from vaultkeep.version import version_report
 
 
 def job(tmp_path: Path, valid_config: dict) -> Path:
@@ -17,7 +17,7 @@ def job(tmp_path: Path, valid_config: dict) -> Path:
 
 def test_version(capsys) -> None:
     assert main(["--version"]) == 0
-    assert capsys.readouterr().out == installed_version() + "\n"
+    assert capsys.readouterr().out == version_report() + "\n"
 
 
 def test_requires_command() -> None:
@@ -92,7 +92,7 @@ def test_trigger_rejects_root_before_any_work(monkeypatch, command, capsys) -> N
 def test_root_can_inspect_trigger_version_and_help(monkeypatch, capsys) -> None:
     monkeypatch.setattr("vaultkeep.trigger.cli.os.geteuid", lambda: 0)
     assert main(["--version"]) == 0
-    assert capsys.readouterr().out == installed_version() + "\n"
+    assert capsys.readouterr().out == version_report() + "\n"
     with pytest.raises(SystemExit) as error:
         main(["trigger", "--help"])
     assert error.value.code == 0

@@ -214,6 +214,20 @@ def run_installer(
     return result
 
 
+@pytest.mark.usefixtures("installer_wheelhouse")
+def test_install_preserves_embedded_commit(host: dict[str, str], tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    shutil.copytree(CANDIDATE_SOURCE, source)
+    commit = "a" * 40
+    (source / "src/vaultkeep/_commit.txt").write_text(commit + "\n")
+    run_installer(host, "install", source=source)
+    shutil.rmtree(source)
+    assert (
+        subprocess.check_output([host["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
+        == f"{CANDIDATE_VERSION} (commit {commit})"
+    )
+
+
 def diagnostic_log(result: subprocess.CompletedProcess[str]) -> Path:
     line = next(line for line in result.stdout.splitlines() if line.startswith("Diagnostics: "))
     return Path(line.removeprefix("Diagnostics: "))
@@ -472,7 +486,7 @@ def test_fresh_install_packages_and_relocated_scripts(host: dict[str, str], vali
     assert "components" not in json.loads((release / "deployment.json").read_text())
     assert (
         subprocess.check_output([host["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == CANDIDATE_VERSION
+        == f"{CANDIDATE_VERSION} (commit unknown)"
     )
     worker = Path(host["VAULTKEEP_USER_SYSTEMD_ROOT"]) / "vaultkeep-trigger-exec@.service"
     assert "TimeoutStartSec=infinity" in worker.read_text()
@@ -624,7 +638,7 @@ def test_missing_cli_module_reports_traceback_and_preserves_existing_install(
     assert not list((Path(installed["VAULTKEEP_INSTALL_PREFIX"]) / ".staging").iterdir())
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == CANDIDATE_VERSION
+        == f"{CANDIDATE_VERSION} (commit unknown)"
     )
 
 
@@ -718,7 +732,7 @@ os.execvp(args[0], args)
     assert manifest(installed)["retained_release"] == previous["retained_release"]
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == CANDIDATE_VERSION
+        == f"{CANDIDATE_VERSION} (commit unknown)"
     )
     calls = [json.loads(line) for line in Path(installed["HOST_LOG"]).read_text().splitlines()]
     assert any(
@@ -819,7 +833,7 @@ def test_exact_match_repairs_environment_or_missing_artifacts(
     assert manifest(installed) == data
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == CANDIDATE_VERSION
+        == f"{CANDIDATE_VERSION} (commit unknown)"
     )
 
 
@@ -869,7 +883,7 @@ def test_reload_failure_rolls_back_refresh_or_fresh_install(
         assert "components" not in manifest(host)
         assert (
             subprocess.check_output([host["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-            == CANDIDATE_VERSION
+            == f"{CANDIDATE_VERSION} (commit unknown)"
         )
 
 
@@ -981,7 +995,7 @@ def test_same_version_refresh_failure_restores_replaced_directory(
     assert snapshot(installed) == before
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == CANDIDATE_VERSION
+        == f"{CANDIDATE_VERSION} (commit unknown)"
     )
 
 
@@ -1981,7 +1995,7 @@ def test_configuration_errors_are_compact_and_leave_previous_installation_operat
     assert "Traceback" in transcript and diagnostic in transcript
     assert (
         subprocess.check_output([installed["VAULTKEEP_BIN_LINK"], "--version"], text=True).strip()
-        == CANDIDATE_VERSION
+        == f"{CANDIDATE_VERSION} (commit unknown)"
     )
     settings = json.loads(Path(installed["HOST_CONTROL"]).read_text())
     assert settings["launcher_states"]["vaultkeep@app.timer"] == "active"

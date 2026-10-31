@@ -41,7 +41,12 @@ vaultkeep [--user] schedules sync [--dry-run]
 
 Job management commands and actions support `-h` or `--help` in their own position, for example
 `vaultkeep schedule --help`, `vaultkeep schedule install --help`, or
-`vaultkeep status --help`. Version inspection uses `vaultkeep --version`.
+`vaultkeep status --help`. Version inspection uses `vaultkeep --version`, which prints the installed version
+and full source commit hash, for example `0.3.0.dev5 (commit <hash>)`. The hash is
+embedded during installation and package builds, so Git is not required on the
+installed system. Editable installations resolve the checkout’s current HEAD.
+Sources without Git or embedded revision metadata report `commit unknown`.
+The hash identifies HEAD; it does not describe uncommitted changes.
 
 Use `--user` for per-user job configuration, per-user state, and systemd user timers.
 Omit it for root mode. Root-mode backup execution, full validation, inventory,

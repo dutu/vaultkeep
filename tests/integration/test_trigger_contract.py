@@ -84,7 +84,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from dataclasses import replace
-from importlib.metadata import version
+from vaultkeep.version import version_report
 from io import StringIO
 from pathlib import Path
 
@@ -119,7 +119,7 @@ paths = WorkflowPaths(base / 'core-state/vaultkeep/jobs',
 execution_dir = paths.state_root / ('app-' + identity)
 argv = [str(binary), *JobSpec(config=job, params=params).argv()]
 runner = RealChildRunner()
-core_version = version('vaultkeep')
+core_version = version_report()
 assert runner.run([str(binary), '--version'], env=env).stdout_tail == core_version
 schema = runner.run([*argv, 'validate', '--schema-only'], env=env)
 assert schema.exit_code == 0, schema
