@@ -61,20 +61,20 @@ owned by an unmapped UID. See the [systemd namespace documentation](https://www.
    locally edited units still require review.
 2. If an existing schedule still needs refreshing, run as its owner:
 
-   ```bash
-   vaultkeep --user --config /absolute/path/app.yaml schedule update
-   systemctl --user cat vaultkeep@app.service
-   ```
+```bash
+vaultkeep --user --config /absolute/path/app.yaml schedule update
+systemctl --user cat vaultkeep@app.service
+```
 
    The regenerated user service should have no `PrivateTmp=true` setting. Include
    the original `--param` selections for parameterized jobs and inspect
    `schedules list` for their unit names.
 3. Test through systemd, then inspect the backup result:
 
-   ```bash
-   systemctl --user start vaultkeep@app.service
-   vaultkeep --user --config /absolute/path/app.yaml status --verbose
-   ```
+```bash
+systemctl --user start vaultkeep@app.service
+vaultkeep --user --config /absolute/path/app.yaml status --verbose
+```
 
 Do not change ownership of `/bin` or relax hook ownership checks. User services
 share normal temporary directories; root schedule services retain `PrivateTmp`.

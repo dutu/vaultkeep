@@ -189,9 +189,9 @@ recovery investigation. Preserve both when investigating uncertain dispatches.
 2. For full context, rerun `status --verbose`.
    Read `Backup diagnostics`, then use the displayed `Log` path:
 
-   ```sh
-   tail -n 40 '<diagnostics-path>'
-   ```
+```sh
+tail -n 40 '<diagnostics-path>'
+```
 
    Verbose output includes at most ten nonblank log lines, each capped at 500 characters.
    The backup log rotates at 64 KiB with one retained segment. Trigger additionally
@@ -201,9 +201,9 @@ recovery investigation. Preserve both when investigating uncertain dispatches.
 3. If diagnostics were not recorded or are no longer retained, use the reported attempt
    ID and job identity from verbose diagnostics to inspect the worker journal:
 
-   ```sh
-   journalctl --user -u 'vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service' --no-pager
-   ```
+```sh
+journalctl --user -u 'vaultkeep-trigger-exec@<identity>_<attempt-uuid>.service' --no-pager
+```
 
    Missing or unreadable diagnostics do not change the saved outcome or establish
    a cause. Summary records can outlive detailed logs; preserve recovery state.

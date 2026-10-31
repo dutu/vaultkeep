@@ -364,22 +364,22 @@ invalid. If a unit remains, inspect its exact systemd name and recovery evidence
 1. In each owning user manager, list timer and monitor units, then disable each
    relevant installed unit (replace the example names):
 
-   ```bash
-   systemctl --user list-unit-files 'vaultkeep@*.timer' 'vaultkeep-trigger@*.service'
-   systemctl --user disable --now vaultkeep@app.timer
-   systemctl --user disable --now 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service'
-   systemctl --user list-units --all 'vaultkeep@*.service' 'vaultkeep-trigger-exec@*.service'
-   systemctl --user list-jobs --no-pager
-   ```
+```bash
+systemctl --user list-unit-files 'vaultkeep@*.timer' 'vaultkeep-trigger@*.service'
+systemctl --user disable --now vaultkeep@app.timer
+systemctl --user disable --now 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service'
+systemctl --user list-units --all 'vaultkeep@*.service' 'vaultkeep-trigger-exec@*.service'
+systemctl --user list-jobs --no-pager
+```
 
 2. Inventory root timers and disable each relevant installed instance:
 
-   ```bash
-   sudo systemctl list-unit-files 'vaultkeep@*.timer'
-   sudo systemctl disable --now vaultkeep@app.timer
-   sudo systemctl list-units --all 'vaultkeep@*.service'
-   sudo systemctl list-jobs --no-pager
-   ```
+```bash
+sudo systemctl list-unit-files 'vaultkeep@*.timer'
+sudo systemctl disable --now vaultkeep@app.timer
+sudo systemctl list-units --all 'vaultkeep@*.service'
+sudo systemctl list-jobs --no-pager
+```
 
 3. Let backups, workers, and queued work finish. A stopped monitor does not establish
    that its workers have stopped. Resolve unreachable managers and retain uncertain

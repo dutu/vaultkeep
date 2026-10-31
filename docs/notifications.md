@@ -63,15 +63,15 @@ is optional and defaults to disabled.
 
 1. Install the desktop notification command if needed:
 
-   ```bash
-   sudo apt-get install libnotify-bin
-   ```
+```bash
+sudo apt-get install libnotify-bin
+```
 
    From the backup owner's graphical session, test delivery:
 
-   ```bash
-   notify-send "Vaultkeep" "Desktop notifications are available"
-   ```
+```bash
+notify-send "Vaultkeep" "Desktop notifications are available"
+```
 
    Expect a desktop notification unless desktop settings suppress it. The desktop
    must run as the backup owner in the same host or container. Session discovery
@@ -87,17 +87,17 @@ is optional and defaults to disabled.
 
 3. Set `job_config` to the actual YAML path, then validate as its owner. For example:
 
-   ```bash
-   job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
-   vaultkeep --user --config "$job_config" validate
-   ```
+```bash
+job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
+vaultkeep --user --config "$job_config" validate
+```
 
    Future backups read these settings automatically. If this job has an installed
    Trigger monitor, also apply the change to it:
 
-   ```bash
-   vaultkeep --user --config "$job_config" trigger update
-   ```
+```bash
+vaultkeep --user --config "$job_config" trigger update
+```
 
 ## Backup notifications
 

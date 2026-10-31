@@ -123,9 +123,9 @@ observers and can produce duplicate or competing backups.
 
 1. With the application running, inspect its actual process command lines:
 
-   ```sh
-   ps -u "$(id -un)" -o pid=,args= | grep -i '[w]asabi'
-   ```
+```sh
+ps -u "$(id -un)" -o pid=,args= | grep -i '[w]asabi'
+```
 
    Confirm the actual GUI/daemon executable, `WASABI_DATADIR` or `--datadir`
    evidence, and related writers. Add verified daemon entrypoints when needed; do not
@@ -136,11 +136,11 @@ observers and can produce duplicate or competing backups.
 2. Stop the application and related writers normally. With both automation flags
    still disabled, test the complete backup as its owner:
 
-   ```bash
-   vaultkeep --user --config "$job_config" validate
-   vaultkeep --user --config "$job_config" run
-   vaultkeep --user --config "$job_config" verify
-   ```
+```bash
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" run
+vaultkeep --user --config "$job_config" verify
+```
 
    Expect `Result: OK`, then `run: created` (or `run: unchanged` for an existing
    baseline), and verification `Result: VERIFIED`. Confirm an archive exists for the selected
@@ -149,12 +149,12 @@ observers and can produce duplicate or competing backups.
 
 3. Set `trigger.enabled: true`, keep `schedule.enabled: false`, then activate:
 
-   ```bash
-   vaultkeep --user --config "$job_config" validate
-   vaultkeep --user --config "$job_config" trigger install
-   vaultkeep --user --config "$job_config" status
-   vaultkeep --user --config "$job_config" validate
-   ```
+```bash
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" trigger install
+vaultkeep --user --config "$job_config" status
+vaultkeep --user --config "$job_config" validate
+```
 
    Before installation, `Monitor service: NOT INSTALLED` and `SETUP INCOMPLETE`
    are expected. Fix any other failed checks first. Allow the monitor's first

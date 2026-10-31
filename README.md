@@ -78,28 +78,28 @@ Upgrade Debian 12 before installing current Vaultkeep. Until then, retain versio
 <a id="install-the-application"></a>
 1. Install the checkout and editing tools if they are not already available:
 
-   ```bash
-   sudo apt-get update
-   sudo apt-get install -y git nano
-   ```
+```bash
+sudo apt-get update
+sudo apt-get install -y git nano
+```
 
 2. Replace `/path/to/vaultkeep` in both commands with your chosen local checkout
    directory, and `<release-tag-or-commit>` with a published release tag or reviewed
    commit. Then clone and select that version. A development commit is not a released version.
 
-   ```bash
-   git clone https://github.com/dutu/vaultkeep.git /path/to/vaultkeep
-   cd /path/to/vaultkeep
-   git checkout <release-tag-or-commit>
-   ```
+```bash
+git clone https://github.com/dutu/vaultkeep.git /path/to/vaultkeep
+cd /path/to/vaultkeep
+git checkout <release-tag-or-commit>
+```
 
 3. <a id="check-the-installed-version"></a>Preview and apply the installation:
 
-   ```bash
-   sudo ./install.sh install --dry-run
-   sudo ./install.sh install
-   vaultkeep --version
-   ```
+```bash
+sudo ./install.sh install --dry-run
+sudo ./install.sh install
+vaultkeep --version
+```
 
    Expect the selected version. Installation uses `/opt/vaultkeep/current` and
    `/usr/local/bin/vaultkeep`. A fresh install starts no backups or monitors and
@@ -145,15 +145,15 @@ if needed.
 2. For a **user-owned job**, copy the installed general example without overwriting
    an existing job, then edit it as that user:
 
-   ```bash
-   jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
-   install -d -m 700 "$jobs_dir"
-   job_config="$jobs_dir/app.yaml"
-   if [ ! -e "$job_config" ]; then
-       install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
-   fi
-   nano "$job_config"
-   ```
+```bash
+jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
+install -d -m 700 "$jobs_dir"
+job_config="$jobs_dir/app.yaml"
+if [ ! -e "$job_config" ]; then
+    install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
+fi
+nano "$job_config"
+```
 
    For an application job, substitute `electrum-trigger.yaml`,
    `bisq-trigger.yaml`, or `wasabi-trigger.yaml` and name the YAML
@@ -161,11 +161,11 @@ if needed.
 
    For a **root-owned job**, use:
 
-   ```bash
-   job_config=/etc/vaultkeep/jobs/app.yaml
-   sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example "$job_config"
-   sudo nano "$job_config"
-   ```
+```bash
+job_config=/etc/vaultkeep/jobs/app.yaml
+sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example "$job_config"
+sudo nano "$job_config"
+```
 
 3. <a id="minimal-job-configuration"></a><a id="destination-name-templates"></a>Set `job.id` to the YAML filename stem, replace source paths and `destination.root`,
    and review retention. For a simple job, edit these existing fields:
@@ -222,14 +222,14 @@ if needed.
 2. Set `job_config` to the actual YAML path (`app.yaml` below is an example), then
    validate, run, inspect status, and verify as the backup owner:
 
-   ```bash
-   job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
-   vaultkeep --user --config "$job_config" validate
-   vaultkeep --user --config "$job_config" run
-   vaultkeep --user --config "$job_config" status
-   vaultkeep --user --config "$job_config" list
-   vaultkeep --user --config "$job_config" verify
-   ```
+```bash
+job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" run
+vaultkeep --user --config "$job_config" status
+vaultkeep --user --config "$job_config" list
+vaultkeep --user --config "$job_config" verify
+```
 
    **For root jobs**, replace the assignment with `job_config=/etc/vaultkeep/jobs/app.yaml`,
    omit `--user`, and prefix commands with `sudo`, for example
@@ -296,14 +296,14 @@ options such as `status --json` follow it. Keep parameter selections consistent.
    For root jobs, replace the assignment with `job_config=/etc/vaultkeep/jobs/app.yaml`, omit `--user`, and
    prefix each command with `sudo`:
 
-   ```bash
-   job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
-   vaultkeep --user --config "$job_config" validate
-   vaultkeep --user --config "$job_config" schedule install
-   vaultkeep --user --config "$job_config" status
-   vaultkeep --user --config "$job_config" schedule next
-   vaultkeep --user --config "$job_config" validate
-   ```
+```bash
+job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" schedule install
+vaultkeep --user --config "$job_config" status
+vaultkeep --user --config "$job_config" schedule next
+vaultkeep --user --config "$job_config" validate
+```
 
    Before installation, expect `Timer: NOT INSTALLED` and `SETUP INCOMPLETE`.
    Correct any other failed checks before continuing. Afterwards, expect an enabled,
@@ -340,13 +340,13 @@ account-owned `XDG_RUNTIME_DIR`; a graphical desktop is optional.
 2. Keep `schedule.enabled: false` and set `trigger.enabled: true` only after those
    checks. Set the actual job path (`electrum-main.yaml` is an example), then run:
 
-   ```bash
-   job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/electrum-main.yaml"
-   vaultkeep --user --config "$job_config" validate
-   vaultkeep --user --config "$job_config" trigger install
-   vaultkeep --user --config "$job_config" status
-   vaultkeep --user --config "$job_config" validate
-   ```
+```bash
+job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/electrum-main.yaml"
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" trigger install
+vaultkeep --user --config "$job_config" status
+vaultkeep --user --config "$job_config" validate
+```
 
    Before installation, `Monitor service: NOT INSTALLED` and `SETUP INCOMPLETE` are
    expected. Fix other failed checks first. After installation, allow the monitor's
@@ -537,34 +537,34 @@ and path-safety checks.
 
 1. Replace the directory and archive filenames with the selected backup's paths:
 
-   ```bash
-   cd /absolute/path/to/backup-directory
-   sha256sum --check backup.tar.zst.sha256
-   zstd --test backup.tar.zst
-   ```
+```bash
+cd /absolute/path/to/backup-directory
+sha256sum --check backup.tar.zst.sha256
+zstd --test backup.tar.zst
+```
 
    Expect the checksum to report `OK` and the stream test to succeed. Stop if either
    fails; do not extract an archive whose integrity could not be verified.
 
 2. From that backup directory, extract into a new staging directory:
 
-   ```bash
-   restore_dir="$HOME/vaultkeep-restore"
-   mkdir -m 700 "$restore_dir"
-   zstd --decompress --stdout backup.tar.zst \
-     | tar --extract --file=- --directory="$restore_dir"
-   ```
+```bash
+restore_dir="$HOME/vaultkeep-restore"
+mkdir -m 700 "$restore_dir"
+zstd --decompress --stdout backup.tar.zst \
+  | tar --extract --file=- --directory="$restore_dir"
+```
 
 <a id="restore-an-encrypted-backup"></a>
 ### Encrypted archive
 
 1. Replace the directory and archive filenames, then verify before extracting:
 
-   ```bash
-   cd /absolute/path/to/backup-directory
-   sha256sum --check backup.tar.7z.sha256
-   7z t backup.tar.7z
-   ```
+```bash
+cd /absolute/path/to/backup-directory
+sha256sum --check backup.tar.7z.sha256
+7z t backup.tar.7z
+```
 
    7-Zip prompts for the original passphrase. Expect checksum `OK` and a successful
    archive test. Stop on any checksum, password, or archive-test failure.
@@ -572,15 +572,15 @@ and path-safety checks.
 2. From that backup directory, preserve the absolute archive path before changing
    directories. The inner TAR is named after `job.id` (`app.tar` in this example):
 
-   ```bash
-   archive="$PWD/backup.tar.7z"
-   restore_root="$HOME/vaultkeep-restore-encrypted"
-   mkdir -m 700 "$restore_root"
-   mkdir -m 700 "$restore_root/staging" "$restore_root/work"
-   cd "$restore_root/work"
-   7z x "$archive"
-   tar --extract --file=app.tar --directory="$restore_root/staging"
-   ```
+```bash
+archive="$PWD/backup.tar.7z"
+restore_root="$HOME/vaultkeep-restore-encrypted"
+mkdir -m 700 "$restore_root"
+mkdir -m 700 "$restore_root/staging" "$restore_root/work"
+cd "$restore_root/work"
+7z x "$archive"
+tar --extract --file=app.tar --directory="$restore_root/staging"
+```
 
 After checking the restored content, remove the plaintext working TAR when no longer
 needed. Secure physical erasure is not guaranteed. Retain old passphrases for old
@@ -638,23 +638,23 @@ use different locks. Backup files and configuration need no migration. See
 
 1. From a trusted checkout on Debian 13, select the intended newer source:
 
-   ```bash
-   cd /path/to/vaultkeep
-   git fetch --tags --prune
-   git checkout <new-release-tag-or-commit>
-   sudo ./install.sh update --dry-run
-   sudo ./install.sh update
-   vaultkeep --version
-   ```
+```bash
+cd /path/to/vaultkeep
+git fetch --tags --prune
+git checkout <new-release-tag-or-commit>
+sudo ./install.sh update --dry-run
+sudo ./install.sh update
+vaultkeep --version
+```
 
 2. Validate affected jobs in their owning scopes and inspect their status. Existing
    managed timers/monitors are refreshed automatically; only previously active
    launchers resume. New schedules remain an explicit choice. For root schedules:
 
-   ```bash
-   sudo vaultkeep schedules validate
-   sudo vaultkeep schedules sync --dry-run
-   ```
+```bash
+sudo vaultkeep schedules validate
+sudo vaultkeep schedules sync --dry-run
+```
 
    Apply `schedules sync` only after reviewing intended additions/removals.
 
@@ -684,15 +684,15 @@ For old/custom launchers and custom XDG layouts, read that reference before upgr
 
    For a Schedule job:
 
-   ```bash
-   vaultkeep --user --config /absolute/path/job.yaml schedule disable
-   ```
+```bash
+vaultkeep --user --config /absolute/path/job.yaml schedule disable
+```
 
    For a Trigger job:
 
-   ```bash
-   vaultkeep --user --config /absolute/path/job.yaml trigger disable
-   ```
+```bash
+vaultkeep --user --config /absolute/path/job.yaml trigger disable
+```
 
    For root timers, omit `--user`, use the root YAML path, and prefix with `sudo`.
    Let backups, workers, and queued work finish; stopping a monitor does not stop
@@ -701,10 +701,10 @@ For old/custom launchers and custom XDG layouts, read that reference before upgr
 
 2. Preview, then remove the installation:
 
-   ```bash
-   sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
-   sudo /opt/vaultkeep/current/src/install.sh uninstall
-   ```
+```bash
+sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
+sudo /opt/vaultkeep/current/src/install.sh uninstall
+```
 
    To also remove managed root configuration, secrets, and local state, choose
    `uninstall --purge --dry-run`, then `uninstall --purge` **instead**, before the

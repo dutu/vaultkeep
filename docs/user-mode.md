@@ -41,15 +41,15 @@ OS account home, independent of `XDG_STATE_HOME`. See
 
 1. Run as the backup owner and copy the installed example safely:
 
-   ```bash
-   jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
-   install -d -m 700 "$jobs_dir"
-   job_config="$jobs_dir/app.yaml"
-   if [ ! -e "$job_config" ]; then
-       install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
-   fi
-   nano "$job_config"
-   ```
+```bash
+jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
+install -d -m 700 "$jobs_dir"
+job_config="$jobs_dir/app.yaml"
+if [ ! -e "$job_config" ]; then
+    install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
+fi
+nano "$job_config"
+```
 
 2. Set `job.id: app`, use absolute readable source paths, and select an existing writable
    destination. For a local example you can create `$HOME/.local/share/backups/app`

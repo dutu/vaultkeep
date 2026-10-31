@@ -44,11 +44,11 @@ tests must not be skipped.
 
 - [ ] Clean checkout is on the intended release tag.
 
-  ```bash
-  git status --short
-  git rev-parse --short HEAD
-  git describe --tags --exact-match
-  ```
+```bash
+git status --short
+git rev-parse --short HEAD
+git describe --tags --exact-match
+```
 
   Acceptable result:
 
@@ -57,15 +57,15 @@ tests must not be skipped.
 
 - [ ] Project metadata version matches the intended tag.
 
-  ```bash
-  python3 - <<'PY'
-  import tomllib
-  from pathlib import Path
+```bash
+python3 - <<'PY'
+import tomllib
+from pathlib import Path
 
-  data = tomllib.loads(Path("pyproject.toml").read_text())
-  print(data["project"]["version"])
-  PY
-  ```
+data = tomllib.loads(Path("pyproject.toml").read_text())
+print(data["project"]["version"])
+PY
+```
 
   Acceptable result:
 
@@ -81,11 +81,11 @@ exercise real archive tools when available.
 
 - [ ] Create and activate a fresh virtual environment.
 
-  ```bash
-  python3 -m venv .venv-release
-  . .venv-release/bin/activate
-  python -m pip install --upgrade pip
-  ```
+```bash
+python3 -m venv .venv-release
+. .venv-release/bin/activate
+python -m pip install --upgrade pip
+```
 
   Acceptable result:
 
@@ -94,11 +94,11 @@ exercise real archive tools when available.
 
 - [ ] Install locked development dependencies and the candidate package.
 
-  ```bash
-  python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock
-  python -m pip install --no-deps --no-build-isolation --editable .
-  python -m pip download --require-hashes --only-binary=:all: -r requirements.lock -d /tmp/vaultkeep-wheelhouse
-  ```
+```bash
+python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.lock
+python -m pip install --no-deps --no-build-isolation --editable .
+python -m pip download --require-hashes --only-binary=:all: -r requirements.lock -d /tmp/vaultkeep-wheelhouse
+```
 
   Acceptable result:
 
@@ -107,13 +107,13 @@ exercise real archive tools when available.
 
 - [ ] Run formatting, linting, type checking, and tests.
 
-  ```bash
-  ruff format --check .
-  ruff check .
-  mypy
-  pytest -vv
-  python scripts/check_packages.py
-  ```
+```bash
+ruff format --check .
+ruff check .
+mypy
+pytest -vv
+python scripts/check_packages.py
+```
 
   Acceptable result:
 
@@ -160,12 +160,12 @@ For each host, record:
 
 - [ ] Confirm host identity.
 
-  ```bash
-  cat /etc/os-release
-  uname -m
-  systemctl --version
-  test -d /run/systemd/system
-  ```
+```bash
+cat /etc/os-release
+uname -m
+systemctl --version
+test -d /run/systemd/system
+```
 
   Acceptable result:
 
@@ -177,10 +177,10 @@ For each host, record:
 
 - [ ] Install required Debian packages.
 
-  ```bash
-  sudo apt-get update
-  sudo apt-get install --yes python3 python3-venv tar zstd 7zip rsync util-linux mount
-  ```
+```bash
+sudo apt-get update
+sudo apt-get install --yes python3 python3-venv tar zstd 7zip rsync util-linux mount
+```
 
   Acceptable result:
 
@@ -195,11 +195,11 @@ For each host, record:
 
 - [ ] Run opt-in release gates as root.
 
-  ```bash
-  sudo env \
-    VAULTKEEP_RELEASE_GATE=1 \
-    python3 -m pytest -vv -m release_gate
-  ```
+```bash
+sudo env \
+  VAULTKEEP_RELEASE_GATE=1 \
+  python3 -m pytest -vv -m release_gate
+```
 
   Acceptable result:
 
@@ -213,9 +213,9 @@ For each host, record:
 
 - [ ] Run the complete test suite on the same host.
 
-  ```bash
-  python3 -m pytest -vv
-  ```
+```bash
+python3 -m pytest -vv
+```
 
   Acceptable result:
 
@@ -236,9 +236,9 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
 
 - [ ] Preview first install.
 
-  ```bash
-  sudo ./install.sh install --dry-run
-  ```
+```bash
+sudo ./install.sh install --dry-run
+```
 
   Acceptable result:
 
@@ -248,9 +248,9 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
 
 - [ ] Apply first install.
 
-  ```bash
-  sudo ./install.sh install
-  ```
+```bash
+sudo ./install.sh install
+```
 
   Acceptable result:
 
@@ -263,11 +263,11 @@ Run on a disposable Debian release host. This gate mutates `/opt/vaultkeep`,
 
 - [ ] Verify installed command and timers.
 
-  ```bash
-  vaultkeep --version
-  sudo vaultkeep schedules validate
-  systemd-analyze verify /etc/systemd/system/vaultkeep@.service /etc/systemd/system/vaultkeep@.timer
-  ```
+```bash
+vaultkeep --version
+sudo vaultkeep schedules validate
+systemd-analyze verify /etc/systemd/system/vaultkeep@.service /etc/systemd/system/vaultkeep@.timer
+```
 
   Acceptable result:
 
@@ -285,9 +285,9 @@ run this candidate checkout as the update source.
 
 - [ ] Preview update.
 
-  ```bash
-  sudo ./install.sh update --dry-run
-  ```
+```bash
+sudo ./install.sh update --dry-run
+```
 
   Acceptable result:
 
@@ -297,11 +297,11 @@ run this candidate checkout as the update source.
 
 - [ ] Apply update.
 
-  ```bash
-  sudo ./install.sh update
-  vaultkeep --version
-  sudo vaultkeep schedules validate
-  ```
+```bash
+sudo ./install.sh update
+vaultkeep --version
+sudo vaultkeep schedules validate
+```
 
   Acceptable result:
 
@@ -319,9 +319,9 @@ enablement as well. Do not let the installer terminate backups to make checks pa
 
 - [ ] Preview normal uninstall.
 
-  ```bash
-  sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
-  ```
+```bash
+sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
+```
 
   Acceptable result:
 
@@ -331,9 +331,9 @@ enablement as well. Do not let the installer terminate backups to make checks pa
 
 - [ ] Apply normal uninstall.
 
-  ```bash
-  sudo /opt/vaultkeep/current/src/install.sh uninstall
-  ```
+```bash
+sudo /opt/vaultkeep/current/src/install.sh uninstall
+```
 
   Acceptable result:
 
@@ -346,10 +346,10 @@ enablement as well. Do not let the installer terminate backups to make checks pa
 
 - [ ] Reinstall, then apply purge uninstall.
 
-  ```bash
-  sudo ./install.sh install
-  sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
-  ```
+```bash
+sudo ./install.sh install
+sudo /opt/vaultkeep/current/src/install.sh uninstall --purge
+```
 
   Acceptable result:
 
@@ -401,9 +401,9 @@ For each combination, create a fixture containing:
 
 - [ ] Validate the job.
 
-  ```bash
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml validate
-  ```
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml validate
+```
 
   Acceptable result:
 
@@ -412,9 +412,9 @@ For each combination, create a fixture containing:
 
 - [ ] Run the backup.
 
-  ```bash
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml run
-  ```
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml run
+```
 
   Acceptable result:
 
@@ -426,10 +426,10 @@ For each combination, create a fixture containing:
 
 - [ ] Verify and list through the public CLI.
 
-  ```bash
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml verify
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml list
-  ```
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml verify
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml list
+```
 
   Acceptable result:
 
@@ -441,17 +441,17 @@ For each combination, create a fixture containing:
 
   For `.tar.zst`:
 
-  ```bash
-  mkdir -p /tmp/vaultkeep-restore
-  zstd -q -d -c /path/to/archive.tar.zst | tar --extract --file=- --directory=/tmp/vaultkeep-restore
-  ```
+```bash
+mkdir -p /tmp/vaultkeep-restore
+zstd -q -d -c /path/to/archive.tar.zst | tar --extract --file=- --directory=/tmp/vaultkeep-restore
+```
 
   For `.tar.7z`:
 
-  ```bash
-  mkdir -p /tmp/vaultkeep-restore
-  7z x -so -bd -p /path/to/archive.tar.7z | tar --extract --file=- --directory=/tmp/vaultkeep-restore
-  ```
+```bash
+mkdir -p /tmp/vaultkeep-restore
+7z x -so -bd -p /path/to/archive.tar.7z | tar --extract --file=- --directory=/tmp/vaultkeep-restore
+```
 
   Acceptable result:
 
@@ -472,14 +472,14 @@ Run after the installer gate on a systemd Debian host.
 - [ ] Install or update a timer for a disabled test job changed to
   `schedule.enabled: true`.
 
-  ```bash
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule install
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml status
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule next
-  sudo vaultkeep schedules list
-  sudo vaultkeep schedules validate
-  sudo vaultkeep schedules sync --dry-run
-  ```
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule install
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml status
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule next
+sudo vaultkeep schedules list
+sudo vaultkeep schedules validate
+sudo vaultkeep schedules sync --dry-run
+```
 
   Acceptable result:
 
@@ -492,10 +492,10 @@ Run after the installer gate on a systemd Debian host.
 
 - [ ] Disable and remove the timer.
 
-  ```bash
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule disable
-  sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule remove
-  ```
+```bash
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule disable
+sudo vaultkeep --config /etc/vaultkeep/jobs/<job-id>.yaml schedule remove
+```
 
   Acceptable result:
 
@@ -624,9 +624,9 @@ Acceptable result:
 
 - [ ] Build release artifacts from the candidate checkout.
 
-  ```bash
-  python -m hatchling build
-  ```
+```bash
+python -m hatchling build
+```
 
   Acceptable result:
 
@@ -636,39 +636,39 @@ Acceptable result:
 
 - [ ] Inspect source distribution contents.
 
-  ```bash
-  python - <<'PY'
-  import tarfile
-  from pathlib import Path
+```bash
+python - <<'PY'
+import tarfile
+from pathlib import Path
 
-  sdists = sorted(Path("dist").glob("vaultkeep-*.tar.gz"))
-  if len(sdists) != 1:
-      raise SystemExit(f"expected exactly one sdist, found {len(sdists)}")
-  with tarfile.open(sdists[0]) as archive:
-      names = set(archive.getnames())
-  required = [
-      "install.sh",
-      "requirements.lock",
-      "systemd/vaultkeep@.service",
-      "systemd/vaultkeep@.timer",
-      "systemd/vaultkeep-trigger-exec@.service",
-      "src/vaultkeep/trigger/cli.py",
-      "examples/vaultkeep-schedule.yaml",
-      "examples/electrum-trigger.yaml",
-      "examples/bisq-trigger.yaml",
-      "examples/wasabi-trigger.yaml",
-      "README.md",
-      "RELEASE.md",
-      "docs/design/architecture_and_design.md",
-  ]
-  root = sdists[0].name.removesuffix(".tar.gz")
-  for item in required:
-      candidate = f"{root}/{item}"
-      if candidate not in names:
-          raise SystemExit(f"missing from sdist: {item}")
-  print(sdists[0])
-  PY
-  ```
+sdists = sorted(Path("dist").glob("vaultkeep-*.tar.gz"))
+if len(sdists) != 1:
+    raise SystemExit(f"expected exactly one sdist, found {len(sdists)}")
+with tarfile.open(sdists[0]) as archive:
+    names = set(archive.getnames())
+required = [
+    "install.sh",
+    "requirements.lock",
+    "systemd/vaultkeep@.service",
+    "systemd/vaultkeep@.timer",
+    "systemd/vaultkeep-trigger-exec@.service",
+    "src/vaultkeep/trigger/cli.py",
+    "examples/vaultkeep-schedule.yaml",
+    "examples/electrum-trigger.yaml",
+    "examples/bisq-trigger.yaml",
+    "examples/wasabi-trigger.yaml",
+    "README.md",
+    "RELEASE.md",
+    "docs/design/architecture_and_design.md",
+]
+root = sdists[0].name.removesuffix(".tar.gz")
+for item in required:
+    candidate = f"{root}/{item}"
+    if candidate not in names:
+        raise SystemExit(f"missing from sdist: {item}")
+print(sdists[0])
+PY
+```
 
   Acceptable result:
 
@@ -677,14 +677,14 @@ Acceptable result:
 
 - [ ] Verify wheel console script.
 
-  ```bash
-  tmp="$(mktemp -d)"
-  python -m venv "$tmp/venv"
-  "$tmp/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r requirements.lock
-  "$tmp/venv/bin/python" -m pip install --no-deps --no-index --find-links dist vaultkeep
-  "$tmp/venv/bin/vaultkeep" --version
-  rm -rf "$tmp"
-  ```
+```bash
+tmp="$(mktemp -d)"
+python -m venv "$tmp/venv"
+"$tmp/venv/bin/python" -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+"$tmp/venv/bin/python" -m pip install --no-deps --no-index --find-links dist vaultkeep
+"$tmp/venv/bin/vaultkeep" --version
+rm -rf "$tmp"
+```
 
   Acceptable result:
 

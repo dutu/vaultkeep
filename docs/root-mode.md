@@ -30,10 +30,10 @@ paths below and repeat installer overrides for updates or uninstall.
 
 1. Copy an installed example without overwriting an existing job, then edit as root:
 
-   ```bash
-   sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example /etc/vaultkeep/jobs/app.yaml
-   sudo nano /etc/vaultkeep/jobs/app.yaml
-   ```
+```bash
+sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example /etc/vaultkeep/jobs/app.yaml
+sudo nano /etc/vaultkeep/jobs/app.yaml
+```
 
 2. Set `job.id: app` to match `app.yaml`, replace source/destination paths, and review
    retention. Keep `schedule.enabled: false` and `trigger.enabled: false` for the

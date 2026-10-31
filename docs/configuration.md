@@ -472,27 +472,27 @@ destination:
 
 1. Inspect the filesystem from the environment running Vaultkeep:
 
-   ```sh
-   findmnt --uniq --target /mnt/backups/app --output TARGET,SOURCE,FSTYPE
-   ```
+```sh
+findmnt --uniq --target /mnt/backups/app --output TARGET,SOURCE,FSTYPE
+```
 
    Confirm the intended device or share and filesystem. Subdirectory mounts are
    supported; mounts nested inside the destination are rejected for mutation.
 
 2. Create the marker only after confirming that destination:
 
-   ```sh
-   touch /mnt/backups/app/.vaultkeep-destination
-   ```
+```sh
+touch /mnt/backups/app/.vaultkeep-destination
+```
 
    Keep the marker absent from any underlying fallback directory.
 
 3. Validate the job, then execute it to check mutation-time locking:
 
-   ```sh
-   sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
-   sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml run
-   ```
+```sh
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml validate
+sudo vaultkeep --config /etc/vaultkeep/jobs/app.yaml run
+```
 
 Filesystem type checks use `findmnt` from the required `util-linux` package and
 recognize bind mounts in the running process's mount namespace. Failed, unavailable,
@@ -806,10 +806,10 @@ including indirect calls. Validation never inserts settings or rewrites hooks.
    From the job's execution account, verify access using the hook search path
    (replace `telegram-notify` when using another provider):
 
-   ```sh
-   env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-     /bin/sh -c 'command -v vaultkeep telegram-notify logger'
-   ```
+```sh
+env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  /bin/sh -c 'command -v vaultkeep telegram-notify logger'
+```
 
    Expect a path for each command. Hooks have a fixed environment and do not inherit
    interactive shell settings. `logger` provides system-log warnings from hooks.
@@ -828,17 +828,17 @@ including indirect calls. Validation never inserts settings or rewrites hooks.
    the supplied configuration path. Test manually without backup runtime
    requirements, putting Vaultkeep options before the command:
 
-   ```sh
-   vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml notify --level info "Test notification"
-   ```
+```sh
+vaultkeep --user --config ~/.config/vaultkeep/jobs/app.yaml notify --level info "Test notification"
+```
 
    Use the real job path; omit `--user` and use `sudo` for root-mode manual calls.
    An explicit `--config` overrides `VAULTKEEP_CONFIG`. Delivery failures warn on
    stderr. Hook failures to deliver are also logged with the `vaultkeep` tag:
 
-   ```sh
-   journalctl -t vaultkeep -n 50 --no-pager
-   ```
+```sh
+journalctl -t vaultkeep -n 50 --no-pager
+```
 
    Use `sudo` if required to read the journal. System logging is best-effort and
    requires `logger` and a working system log service. Hook stderr follows normal
