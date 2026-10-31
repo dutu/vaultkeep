@@ -1671,28 +1671,70 @@ printf '\\nResult: INSTALLED\\n' >&3
 
 
 def test_redirected_progress_is_live_and_has_elapsed_heartbeat(tmp_path):
+    import re
     import select
 
     log_path = tmp_path / "progress.log"
+    script = progress_script(log_path, 0).replace("sleep 0", "read -r response")
     with subprocess.Popen(
-        ["bash", "-c", progress_script(log_path, 11), "install.sh", "install"],
+        ["bash", "-c", script, "install.sh", "install"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     ) as process:
-        assert select.select([process.stdout], [], [], 3)[0], "stage start was not immediate"
-        first = process.stdout.readline()
-        assert "Python environment" in first and "RUNNING... (0s)" in first
-        assert process.poll() is None
-        out, err = process.communicate(timeout=15)
-    output = first + out
+        try:
+            assert select.select([process.stdout], [], [], 3)[0], "stage start was not immediate"
+            first = process.stdout.readline()
+            assert "Python environment" in first and "RUNNING... (0s)" in first
+            assert process.poll() is None
+            assert select.select([process.stdout], [], [], 20)[0], "heartbeat was not emitted"
+            heartbeat = process.stdout.readline()
+            # Finish only after the heartbeat, so scheduler delays cannot race
+            # the end of a fixed-duration stage.
+            out, err = process.communicate(input="finish\n", timeout=10)
+        finally:
+            if process.poll() is None:
+                process.kill()
+    output = first + heartbeat + out
     assert process.returncode == 0, err
-    assert "RUNNING... (10s)" in output
+    heartbeats = re.findall(r"RUNNING\.\.\. \((\d+)s\)", output)
+    assert any(int(elapsed) >= 10 for elapsed in heartbeats), output
     assert (
         output.index("Python environment") < output.index("Application") < output.index("Result:")
     )
     assert len([line for line in output.splitlines() if " OK (" in line]) == 2
     assert "\033" not in output and "\r" not in output
+
+
+def test_redirected_heartbeat_reports_after_skipped_deadlines():
+    definitions = INSTALLER.read_text().partition("\nSOURCE_DIR=$(script_dir)")[0]
+    script = (
+        definitions
+        + """
+# Disable Bash's ticking clock and simulate delayed heartbeat wake-ups.
+unset SECONDS
+SECONDS=0
+STAGE_STARTED=0
+CURRENT_STAGE='Python environment'
+ticks=(1 9 11 12 19 21 30 31 45 46)
+tick=0
+sleep() { :; }
+wait() {
+    if ((tick == ${#ticks[@]})); then exit 0; fi
+    SECONDS=${ticks[tick]}
+    tick=$((tick + 1))
+}
+start_heartbeat
+builtin wait "$HEARTBEAT_PID"
+"""
+    )
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=10, check=True
+    )
+    assert result.stdout.splitlines() == [
+        f"  {'Python environment':<23} RUNNING... ({elapsed}s)" for elapsed in (11, 21, 30, 45)
+    ]
 
 
 @pytest.mark.parametrize("no_color", [False, True])

@@ -199,6 +199,7 @@ start_heartbeat() {
     # ordinary lines; no terminal control sequences or subprocess chatter.
     (
         timer=""
+        next_report=10
         trap '[[ -z "$timer" ]] || kill "$timer" 2>/dev/null; exit 0' TERM INT HUP
         while kill -0 "$$" 2>/dev/null; do
             sleep 1 &
@@ -206,8 +207,11 @@ start_heartbeat() {
             wait "$timer"
             timer=""
             elapsed=$((SECONDS - STAGE_STARTED))
-            if [[ -t 3 && "${TERM:-dumb}" != dumb ]] || ((elapsed % 10 == 0)); then
+            if [[ -t 3 && "${TERM:-dumb}" != dumb ]] || ((elapsed >= next_report)); then
                 stage_line "$CURRENT_STAGE" RUNNING... "$elapsed"
+                # A delayed wake-up can skip a second; report once and advance
+                # to the next interval instead of requiring an exact multiple.
+                next_report=$(((elapsed / 10 + 1) * 10))
             fi
         done
     ) 9>&- &
