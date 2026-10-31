@@ -663,6 +663,10 @@ The installer installs the selected checkout; it does not fetch source. For chan
 source with the **same version**, use `install --dry-run`, then `install` instead of
 `update`. Exact version/source matches perform idempotent verification.
 
+Refreshing older user schedules also removes private temporary-directory isolation
+that can cause hook ownership failures. See [scheduled hook ownership recovery](docs/troubleshooting.md#scheduled-hook-ownership-failures)
+to verify a backup through systemd after upgrading.
+
 <a id="pause-and-resume-for-maintenance"></a>
 Maintenance pauses launchers and refuses active backups, workers, queued work, held
 locks, or inconclusive activity; it never stops running backups. Preserve recovery

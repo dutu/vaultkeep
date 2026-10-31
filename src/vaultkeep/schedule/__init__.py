@@ -783,6 +783,8 @@ class TimerManager:
             raise TimerError(str(error)) from error
         condition = str(resolved).replace("%", "%%")
         if self.user_mode:
+            # PrivateTmp implicitly enables PrivateUsers in a user manager,
+            # hiding root ownership from hook and other runtime safety checks.
             content = (
                 "[Unit]\n"
                 f"Description=Vaultkeep user backup job {instance}\n"
@@ -791,7 +793,6 @@ class TimerManager:
                 "Type=oneshot\n"
                 f"ExecStart={command}\n"
                 "UMask=0077\n"
-                "PrivateTmp=true\n"
                 "LimitCORE=0\n"
                 "KillMode=control-group\n"
                 "TimeoutStopSec=5min\n"

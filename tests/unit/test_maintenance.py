@@ -335,6 +335,45 @@ def test_refresh_migrates_default_schedule_binary_to_custom_layout(
     assert service.read_bytes() == original
 
 
+@pytest.mark.parametrize("params", [None, {"repo": "nas"}])
+def test_refresh_removes_legacy_user_schedule_private_tmp(
+    tmp_path, valid_config, monkeypatch, params
+):
+    spec, paths, _ = scheduled_job(tmp_path, valid_config, monkeypatch, user=True, params=params)
+    service = next(paths.units_root.glob("*.service"))
+    expected = service.read_text()
+    service.write_text(expected.replace("UMask=0077\n", "UMask=0077\nPrivateTmp=true\n"))
+    original = service.read_bytes(), service.stat().st_mtime_ns
+
+    plan = maintenance.plan(spec)
+    assert (service.read_bytes(), service.stat().st_mtime_ns) == original
+    maintenance.apply(plan)
+    assert service.read_text() == expected
+    maintenance.plan(spec)
+    maintenance.apply(plan, restore=True)
+    assert (service.read_bytes(), service.stat().st_mtime_ns) == original
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ("UMask=0077", "UMask=0022"),
+        ("PrivateTmp=true", "PrivateTmp=false"),
+        ("PrivateTmp=true", "PrivateTmp=true\nPrivateTmp=true"),
+    ],
+)
+def test_refresh_refuses_edits_to_legacy_user_schedule(tmp_path, valid_config, monkeypatch, edit):
+    spec, paths, _ = scheduled_job(tmp_path, valid_config, monkeypatch, user=True)
+    service = next(paths.units_root.glob("*.service"))
+    legacy = service.read_text().replace("UMask=0077\n", "UMask=0077\nPrivateTmp=true\n")
+    service.write_text(legacy.replace(*edit))
+    original = service.read_bytes()
+
+    with pytest.raises(ValueError, match="locally modified"):
+        maintenance.plan(spec)
+    assert service.read_bytes() == original
+
+
 def test_refresh_migrates_default_monitor_binary_to_custom_layout(
     tmp_path, valid_config, monkeypatch
 ):

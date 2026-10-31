@@ -17,7 +17,7 @@ from vaultkeep.backup.paths import WorkflowPaths
 from vaultkeep.errors import LockError
 from vaultkeep.locking import deployment_lock
 from vaultkeep.maintenance import command_selection
-from vaultkeep.schedule import TimerManager, TimerPaths
+from vaultkeep.schedule import SERVICE_TEMPLATE, TimerManager, TimerPaths
 from vaultkeep.trigger.config import load_config
 from vaultkeep.trigger.service import render_service
 
@@ -134,6 +134,18 @@ def test_schedule_uses_literal_custom_binary_and_config(tmp_path, monkeypatch, u
     monkeypatch.setenv("VAULTKEEP_BIN_LINK", str(binary))
     content = TimerManager(user_mode=user)._service_content(config, "app", {"repo": "nas"})
     assert command_selection(content, monitor=False, user=user) == (config, {"repo": "nas"})
+
+
+@pytest.mark.parametrize("params", [{}, {"repo": "nas"}])
+def test_user_schedule_keeps_host_ownership_visible(tmp_path, params):
+    content = TimerManager(user_mode=True)._service_content(tmp_path / "app.yaml", "app", params)
+
+    assert "PrivateTmp=" not in content
+    assert "PrivateUsers=" not in content
+    # Root services can isolate temporary files without implicit user namespaces.
+    assert "\nPrivateTmp=true\n" in SERVICE_TEMPLATE
+    template = Path(__file__).resolve().parents[2] / "systemd/vaultkeep@.service"
+    assert "\nPrivateTmp=true\n" in template.read_text()
 
 
 def test_parser_accepts_legacy_default_and_rejects_unrelated_executable(monkeypatch):

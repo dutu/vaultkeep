@@ -455,8 +455,15 @@ def _plan(
             if service_content is not None:
                 if rendered_service is None:
                     raise ValueError(f"unexpected service override requires review: {service}")
+                expected_service = rendered_service
+                if user and "\nPrivateTmp=true\n" in service_content:
+                    # Accept only the exact legacy generated layout; retain all
+                    # other checks for local edits when removing PrivateTmp.
+                    expected_service = rendered_service.replace(
+                        "UMask=0077\n", "UMask=0077\nPrivateTmp=true\n"
+                    )
                 require_generated(
-                    service_content, rendered_service, variable=("ExecStart",), path=service
+                    service_content, expected_service, variable=("ExecStart",), path=service
                 )
             change(timer, rendered_timer, timer_snapshot)
             change(service, rendered_service, service_snapshot)

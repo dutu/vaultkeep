@@ -104,6 +104,27 @@ def resources(tmp_path, monkeypatch, valid_config):
     )
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_schedule_update_removes_private_tmp_and_preserves_enablement(
+    resources, monkeypatch, enabled
+):
+    manager = resources.manager
+    service_path = manager._service_drop_in_path("app")
+    expected = service_path.read_text()
+    service_path.write_text(expected.replace("UMask=0077\n", "UMask=0077\nPrivateTmp=true\n"))
+    resources.document["trigger"]["enabled"] = False
+    resources.document["schedule"]["enabled"] = True
+    resources.path.write_text(json.dumps(resources.document))
+    monkeypatch.setattr(manager, "_is_enabled", lambda _: enabled)
+
+    manager.update(resources.path)
+
+    assert service_path.read_text() == expected
+    assert ("daemon-reload",) in resources.commands
+    assert (("restart", resources.timer) in resources.commands) == enabled
+    assert not any(command[0] in {"enable", "disable"} for command in resources.commands)
+
+
 def invalidate(resources):
     resources.document["future_settings"] = {"notifications": True}
     resources.path.write_text(json.dumps(resources.document))

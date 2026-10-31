@@ -46,6 +46,41 @@ Parameterized jobs have distinct unit names; inspect `status --verbose` or
 `schedules list` rather than guessing. For Trigger use its
 [specialist diagnosis](trigger/troubleshooting.md) and [recovery](trigger/recovery.md).
 
+## Scheduled hook ownership failures
+
+If a user-mode manual backup succeeds but its scheduled run reports
+`Hook path must be owned by 1000: /bin` (with your account's UID), inspect the
+installed service with `systemctl --user cat vaultkeep@app.service`. Older generated
+user services set `PrivateTmp=true`. In a systemd user service this implicitly
+enables `PrivateUsers`, leaving host root unmapped, so root-owned paths appear
+owned by an unmapped UID. See the [systemd namespace documentation](https://www.freedesktop.org/software/systemd/man/257/systemd.exec.html#PrivateUsers=).
+
+1. Have the administrator [install the corrected source](../README.md#update-the-application).
+   For changed source with the same version, use the documented reinstall procedure.
+   Installer refresh removes the old generated `PrivateTmp` setting automatically;
+   locally edited units still require review.
+2. If an existing schedule still needs refreshing, run as its owner:
+
+   ```bash
+   vaultkeep --user --config /absolute/path/app.yaml schedule update
+   systemctl --user cat vaultkeep@app.service
+   ```
+
+   The regenerated user service should have no `PrivateTmp=true` setting. Include
+   the original `--param` selections for parameterized jobs and inspect
+   `schedules list` for their unit names.
+3. Test through systemd, then inspect the backup result:
+
+   ```bash
+   systemctl --user start vaultkeep@app.service
+   vaultkeep --user --config /absolute/path/app.yaml status --verbose
+   ```
+
+Do not change ownership of `/bin` or relax hook ownership checks. User services
+share normal temporary directories; root schedule services retain `PrivateTmp`.
+If the service still fails, inspect its journal and drop-ins for other namespace
+settings or container restrictions.
+
 ## Destination, mount, or permission errors
 
 The destination must already exist and be accessible as the job owner. Mount the

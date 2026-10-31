@@ -113,6 +113,14 @@ Bulk schedule commands operate only on this user's jobs. Use
 `vaultkeep --user schedules list` or preview with `vaultkeep --user schedules sync --dry-run`.
 Read [bulk behavior](cli.md#manage-all-job-timers) before applying synchronization.
 
+User schedule services share the normal `/tmp` and `/var/tmp` directories. They do
+not request `PrivateTmp` isolation: in a systemd user service it implicitly enables
+a user namespace that hides host root ownership and breaks runtime safety checks.
+This avoids that namespace dependency on physical hosts, VMs, and LXC containers;
+automatic backups still require a working systemd user manager. Root schedule
+services retain private temporary directories. For an older installed schedule,
+see [scheduled hook ownership failures](troubleshooting.md#scheduled-hook-ownership-failures).
+
 ## Password-protected user-mode backups
 
 Follow the [password-file setup](configuration.md#create-a-password-file) for a
