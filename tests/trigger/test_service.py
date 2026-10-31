@@ -9,10 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.trigger.conftest import FakeController, FakeRunner, make_config
+from tests.helpers.trigger import FakeController, FakeRunner, config, make_config
 from vaultkeep.cli import main
 from vaultkeep.trigger import service
-from vaultkeep.trigger.config import load_config
 from vaultkeep.trigger.errors import BlockedError, ConfigurationError
 from vaultkeep.trigger.executor import WorkerResult
 from vaultkeep.trigger.models import AttemptOutcome, new_uuid
@@ -39,18 +38,6 @@ def isolated_services(tmp_path, monkeypatch):
             "NeedDaemonReload": "no",
         },
     )
-
-
-def config(tmp_path: Path, valid_config: dict):
-    valid_config["application"] = {
-        "name": "electrum",
-        "data_dir": "/home/user/.electrum",
-        "matcher": {"entrypoints": [{"kind": "script", "value": "/opt/electrum"}]},
-    }
-    valid_config["trigger"] = {"enabled": True}
-    path = tmp_path / "app.yaml"
-    path.write_text(json.dumps(valid_config))
-    return load_config(path)
 
 
 @pytest.mark.parametrize("loaded_units_fail", [False, True])

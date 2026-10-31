@@ -5,15 +5,15 @@ from dataclasses import replace
 
 import pytest
 
-from tests.trigger.conftest import (
+from tests.helpers.trigger import (
     FakeController,
     FakeProvider,
     RecordingNotifier,
+    _running_proc,
     make_config,
     make_instance,
     make_request,
 )
-from tests.trigger.test_monitor import _running_proc
 from vaultkeep.application import Observation
 from vaultkeep.cli import main
 from vaultkeep.trigger.models import (

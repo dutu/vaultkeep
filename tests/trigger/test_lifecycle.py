@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from tests.trigger.conftest import make_instance, make_request
+from tests.helpers.trigger import make_instance, make_request
 from vaultkeep.application import DetectionResult, Observation
 from vaultkeep.trigger.lifecycle import ExecutionContext, progress
 from vaultkeep.trigger.models import InstanceState

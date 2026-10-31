@@ -1,4 +1,4 @@
-"""Opt-in release gates for Debian/systemd and shared destination locking validation."""
+"""Opt-in Debian/systemd host checks and local destination locking smoke tests."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def test_release_host_is_supported_debian_systemd_root() -> None:
         assert shutil.which(command) is not None
 
 
-def test_release_host_supports_shared_destination_locking(tmp_path: Path) -> None:
+def test_release_host_excludes_local_destination_alias(tmp_path: Path) -> None:
     from vaultkeep.errors import LockError
     from vaultkeep.locking import destination_lock
 

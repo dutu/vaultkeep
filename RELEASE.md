@@ -207,7 +207,9 @@ sudo env \
   - Release-gate tests are collected and run.
   - No release-gate test is skipped.
   - The host check confirms Debian, root, systemd, and required tools.
-  - The locking check confirms exclusion through a physical destination alias.
+  - The locking smoke check confirms exclusion through a local destination alias.
+    It does not validate network-server or cross-machine locking; run the
+    separate network destination checks below for deployed shares.
   - Installer dry-runs complete or report the explicitly accepted clean-host
     update precondition.
 

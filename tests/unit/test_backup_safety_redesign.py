@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit import test_workflow_cleanup as cleanup_fixtures
+from tests.helpers.backup import configure, offline, run
+from tests.helpers.backup import job as job
 from vaultkeep.application import resolve_application
 from vaultkeep.backup import workflow
 from vaultkeep.backup.status import backup_status
@@ -35,37 +36,6 @@ from vaultkeep.errors import (
 from vaultkeep.locking import destination_lock
 from vaultkeep.sources.hashing import calculate_config_fingerprint, calculate_source_digest
 from vaultkeep.state.identity import job_identity_hash
-
-job = cleanup_fixtures.job
-
-
-def run(job):
-    return workflow.run_backup(
-        job,
-        paths=workflow.WorkflowPaths(
-            job.parent / "state", job.parent / "cache", job.parent / "locks"
-        ),
-        user_mode=True,
-    )
-
-
-def configure(job, **changes):
-    document = json.loads(job.read_text())
-    document.update(changes)
-    job.write_text(json.dumps(document))
-    return workflow.load_validated_config(job)
-
-
-def offline(job):
-    return configure(
-        job,
-        consistency={"mode": "application_offline"},
-        application={
-            "name": "bisq",
-            "data_dir": str(job.parent / "source"),
-            "matcher": {"entrypoints": [{"kind": "java_main", "value": "test.App"}]},
-        },
-    )
 
 
 def test_policy_configuration_matrix(valid_config):

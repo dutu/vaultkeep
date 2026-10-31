@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.trigger.conftest import FakeProvider, FakeRunner, child_result
+from tests.helpers.trigger import FakeProvider, FakeRunner, child_result
 from vaultkeep.application import ProcessInfo
 from vaultkeep.trigger.errors import IntegrationError, StateError
 from vaultkeep.trigger.executor import exec_worker

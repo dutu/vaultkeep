@@ -15,14 +15,13 @@ import psutil
 import pytest
 from ruamel.yaml import YAML
 
-from tests.unit import test_workflow_cleanup as cleanup
+from tests.helpers.backup import job as job
+from tests.helpers.backup import run
 from vaultkeep import hooks
 from vaultkeep.backup import workflow
 from vaultkeep.cli import main
 from vaultkeep.cli.parser import create_parser
 from vaultkeep.notifications import external
-
-job = cleanup.job
 
 
 def _tool(path: Path, body: str) -> None:
@@ -223,7 +222,7 @@ def test_delivery_failure_in_real_success_hook_preserves_backup_success(job, too
     }
     job.write_text(json.dumps(document))
 
-    result = cleanup._run(job)
+    result = run(job)
 
     assert result.result == "created"
     assert result.archive_path.is_file()
@@ -238,20 +237,29 @@ def test_sample_hook_commands_use_valid_helper_arguments():
     root = Path(__file__).resolve().parents[2]
     yaml = YAML(typ="safe")
     for path in sorted((root / "examples").glob("*.yaml")):
-        section = (
-            path.read_text()
-            .split("## Lifecycle hooks", 1)[1]
-            .split("## Desktop notifications", 1)[0]
-        )
-        text = "\n".join(line.removeprefix("# ") for line in section.splitlines()[1:])
-        for config in yaml.load(text)["hooks"].values():
+        contents = path.read_text()
+        configs = yaml.load(contents).get("hooks") or {}
+        if "## Lifecycle hooks" in contents:
+            section = contents.split("## Lifecycle hooks", 1)[1].split(
+                "## Desktop notifications", 1
+            )[0]
+            text = "\n".join(line.removeprefix("# ") for line in section.splitlines()[1:])
+            configs.update(yaml.load(text)["hooks"])
+        checked = 0
+        for config in configs.values():
+            if config is None:
+                continue
             hook = hooks.HookContext("app", path)
             command, _ = hooks.render_hook_command(config["command"], hook)
             arguments = shlex.split(command)
+            if arguments[:1] != ["vaultkeep"]:
+                continue
             assert arguments[0:2] == ["vaultkeep", "notify"]
             parsed = create_parser().parse_args(arguments[1:])
             assert parsed.arguments
             assert config["timeout_seconds"] > 15 + 4
+            checked += 1
+        assert checked > 0, path
 
 
 def test_explicit_configuration_overrides_hook_environment(tools, capsys):

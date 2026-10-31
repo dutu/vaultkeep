@@ -11,8 +11,8 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from tests.integration import test_archive_tools as archive_fixtures
-from tests.unit import test_network_locking as network_fixtures
+from tests.helpers.destination import reject_native_noreplace
+from tests.helpers.destination import share as share
 from vaultkeep.archive import ArchiveTools
 from vaultkeep.archive import passwords as passwords_module
 from vaultkeep.backup import workflow
@@ -20,13 +20,14 @@ from vaultkeep.destination.suspect import mark_backup_suspect
 from vaultkeep.errors import DestinationError, LockError
 from vaultkeep.locking import DESTINATION_LOCK_NAME, destination_lock
 
-share = network_fixtures.share
-archive_tool_deadline = archive_fixtures.archive_tool_deadline
 TOOLS = ArchiveTools()
-pytestmark = pytest.mark.skipif(
-    not all(tool.is_file() for tool in (TOOLS.tar, TOOLS.zstd, TOOLS.seven_zip)),
-    reason="Real archive tools are unavailable",
-)
+pytestmark = [
+    pytest.mark.usefixtures("archive_tool_deadline"),
+    pytest.mark.skipif(
+        not all(tool.is_file() for tool in (TOOLS.tar, TOOLS.zstd, TOOLS.seven_zip)),
+        reason="Real archive tools are unavailable",
+    ),
+]
 
 
 def _job(tmp_path, root, valid_config, backup_mode="combined", archive_format="tar.zst"):
@@ -66,7 +67,7 @@ def test_network_backup_verify_replacement_and_prune(
     share.filesystem = filesystem
     if filesystem == "nfs4":
         # Exercise the Linux NFS rejection while keeping real atomic os.rename.
-        network_fixtures.reject_native_noreplace(monkeypatch)
+        reject_native_noreplace(monkeypatch)
     monkeypatch.setattr(
         passwords_module, "_validate_password_path", lambda path, **kw: path.lstat()
     )

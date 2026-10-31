@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from tests.trigger.conftest import FakeProvider, make_matcher
+from tests.helpers.trigger import FakeProvider, make_matcher
 from vaultkeep import application as process_module
 from vaultkeep.application import (
     Entrypoint,

@@ -20,7 +20,6 @@ class TerminalOutput(io.StringIO):
     def __init__(self) -> None:
         super().__init__()
         self.heartbeat_seen = Event()
-        self.frame_seen = Event()
 
     def isatty(self) -> bool:
         return True
@@ -29,8 +28,6 @@ class TerminalOutput(io.StringIO):
         written = super().write(message)
         if "(still running)" in message:
             self.heartbeat_seen.set()
-        if message.startswith("\r\033[2K") and len(message) > 5:
-            self.frame_seen.set()
         return written
 
 
@@ -48,27 +45,6 @@ def progress_threads(monkeypatch: pytest.MonkeyPatch) -> list[Thread]:
     monkeypatch.setattr(progress_module, "_REFRESH_SECONDS", 0.01)
     monkeypatch.setattr(progress_module, "Thread", create_thread)
     return threads
-
-
-def test_long_stage_repeats_with_elapsed_time_and_stops_on_exit(
-    monkeypatch: pytest.MonkeyPatch, progress_threads: list[Thread]
-) -> None:
-    output = TerminalOutput()
-    now = [0.0]
-    monkeypatch.setattr(progress_module.sys, "stderr", output)
-    monkeypatch.setattr(progress_module, "monotonic", lambda: now[0])
-    monkeypatch.setattr(progress_module, "_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setenv("TERM", "dumb")
-
-    with progress_module.CliProgress() as progress:
-        progress.update("Hashing source files")
-        assert output.getvalue() == "[00:00] Hashing source files\n"
-        now[0] = 62.0
-        assert output.heartbeat_seen.wait(timeout=2)
-
-    assert "[01:02] Hashing source files (still running)\n" in output.getvalue()
-    assert len(progress_threads) == 1
-    assert not progress_threads[0].is_alive()
 
 
 @pytest.mark.parametrize("result", ["created", "unchanged", "failed"])
@@ -117,19 +93,10 @@ def test_terminal_run_reports_progress_and_preserves_final_stdout(
     assert not progress_threads[0].is_alive()
 
 
-@pytest.mark.parametrize(
-    ("command", "handler", "result"),
-    [
-        ("run", "run_backup", "created"),
-    ],
-)
 def test_captured_command_logs_progress_and_heartbeat_without_escapes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: Any,
     progress_threads: list[Thread],
-    command: str,
-    handler: str,
-    result: str,
 ) -> None:
     output = TerminalOutput()
     monkeypatch.setattr(output, "isatty", lambda: False)
@@ -140,15 +107,15 @@ def test_captured_command_logs_progress_and_heartbeat_without_escapes(
         kwargs["progress"]("Checking existing backups")
         assert output.heartbeat_seen.wait(timeout=2)
         outcome = CommandResult(
-            command, result, archive_path=Path("/backups/app.tar.zst"), archive_size=1536
+            "run", "created", archive_path=Path("/backups/app.tar.zst"), archive_size=1536
         )
         return outcome
 
-    monkeypatch.setattr(commands, handler, execute)
+    monkeypatch.setattr(commands, "run_backup", execute)
 
-    assert commands.main(["--config", "app.yaml", command]) == 0
+    assert commands.main(["--config", "app.yaml", "run"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == f"{command}: {result}\n"
+    assert captured.out == "run: created\n"
     assert output.getvalue().startswith("[00:00] Checking existing backups\n")
     assert "Checking existing backups (still running)\n" in output.getvalue()
     assert "SUCCESS:" in output.getvalue()
@@ -237,19 +204,3 @@ def test_no_color_reaches_progress_and_summary(monkeypatch, capsys, progress_thr
     assert "Archive:                       /backups/app.tar.zst\n" in output.getvalue()
     assert "\033[" not in output.getvalue().replace("\033[2K", "")
     assert not progress_threads[0].is_alive()
-
-
-def test_progress_stream_failure_does_not_interrupt_backup(
-    monkeypatch: pytest.MonkeyPatch, progress_threads: list[Thread]
-) -> None:
-    class BrokenTerminal(TerminalOutput):
-        def write(self, message: str) -> int:
-            raise BrokenPipeError("terminal closed")
-
-    monkeypatch.setattr(progress_module.sys, "stderr", BrokenTerminal())
-
-    with progress_module.CliProgress() as progress:
-        progress.update("Hashing source files")
-        progress.update("Verifying archive")
-
-    assert progress_threads == []

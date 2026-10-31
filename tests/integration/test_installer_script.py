@@ -29,7 +29,7 @@ def executable(path: Path, content: str) -> None:
 
 
 @pytest.fixture
-def host(tmp_path: Path) -> dict[str, str]:
+def host(tmp_path: Path, frozen_source: Path) -> dict[str, str]:
     """Fake service managers/ownership; use real Python, pip, rsync and filesystem."""
     fake = tmp_path / "host-bin"
     fake.mkdir()
@@ -150,28 +150,24 @@ else:
     return environment
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="module")
 def frozen_source(tmp_path_factory: pytest.TempPathFactory):
     # Tests keep one immutable candidate while docs or unrelated work may change.
     source = tmp_path_factory.mktemp("installer-source")
+    included = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["hatch"]["build"][
+        "targets"
+    ]["sdist"]["include"]
+    patterns = ["--include=/pyproject.toml", "--include=/examples/"]
+    for item in included:
+        suffix = "/***" if (ROOT / item.lstrip("/")).is_dir() else ""
+        patterns.append(f"--include={item}{suffix}")
     subprocess.run(
         [
             "rsync",
             "-a",
-            "--exclude=.git/",
-            "--exclude=.venv/",
             "--exclude=__pycache__/",
-            "--exclude=dist/",
-            "--exclude=.aws/",
-            "--exclude=.codex/",
-            "--exclude=.agents/",
-            "--include=/examples/",
-            "--include=/examples/vaultkeep-schedule.yaml",
-            "--include=/examples/bisq-schedule.yaml",
-            "--include=/examples/bisq-trigger.yaml",
-            "--include=/examples/electrum-trigger.yaml",
-            "--include=/examples/wasabi-trigger.yaml",
-            "--exclude=/examples/*",
+            *patterns,
+            "--exclude=*",
             f"{ROOT}/",
             str(source),
         ],
@@ -183,6 +179,7 @@ def frozen_source(tmp_path_factory: pytest.TempPathFactory):
     # Simulate system execution credentials only in its private candidate copy;
     # production scope rejection is exercised by the application tests.
     application = source / "src/vaultkeep/application.py"
+    assert application.read_text().count("    uid = os.geteuid()\n") == 1
     application.write_text(
         application.read_text().replace(
             "    uid = os.geteuid()\n", "    uid = os.geteuid() if user_mode else 0\n", 1
@@ -190,6 +187,8 @@ def frozen_source(tmp_path_factory: pytest.TempPathFactory):
     )
     # Offline account discovery must not inspect or refresh the developer's jobs.
     helper = source / "scripts/install_maintenance.py"
+    assert helper.read_text().count("for entry in pwd.getpwall():") == 1
+    assert helper.read_text().count("home = Path(entry.pw_dir)") == 1
     helper.write_text(
         helper.read_text()
         .replace("for entry in pwd.getpwall():", "for entry in ():")
@@ -1664,12 +1663,29 @@ def test_installer_levels_and_no_color_reach_helper(host, no_color):
     assert not Path(host["VAULTKEEP_INSTALL_PREFIX"]).exists()
 
 
-def progress_script(log_path: Path, duration: float) -> str:
+def progress_script(log_path: Path, duration: float, *, fast_clock: bool = False) -> str:
     import shlex
 
     definitions = INSTALLER.read_text().partition("\nSOURCE_DIR=$(script_dir)")[0]
+    # Accelerate only the test clock; retain the real background writer and pipes.
+    clock = (
+        """
+unset SECONDS
+SECONDS=0
+sleep() { command sleep 0.01; }
+wait() {
+    local status=0
+    builtin wait "$@" || status=$?
+    SECONDS=$((SECONDS + 10))
+    return "$status"
+}
+"""
+        if fast_clock
+        else ""
+    )
     return (
         definitions
+        + clock
         + f"""
 parse_args "$@"
 INSTALL_LOG={shlex.quote(str(log_path))}
@@ -1690,7 +1706,9 @@ def test_redirected_progress_is_live_and_has_elapsed_heartbeat(tmp_path):
     import select
 
     log_path = tmp_path / "progress.log"
-    script = progress_script(log_path, 0).replace("sleep 0", "read -r response")
+    script = progress_script(log_path, 0, fast_clock=True).replace(
+        "sleep 0\n", "read -r response\n"
+    )
     with subprocess.Popen(
         ["bash", "-c", script, "install.sh", "install"],
         stdin=subprocess.PIPE,
@@ -1703,7 +1721,7 @@ def test_redirected_progress_is_live_and_has_elapsed_heartbeat(tmp_path):
             first = process.stdout.readline()
             assert "Python environment" in first and "RUNNING... (0s)" in first
             assert process.poll() is None
-            assert select.select([process.stdout], [], [], 20)[0], "heartbeat was not emitted"
+            assert select.select([process.stdout], [], [], 3)[0], "heartbeat was not emitted"
             heartbeat = process.stdout.readline()
             # Finish only after the heartbeat, so scheduler delays cannot race
             # the end of a fixed-duration stage.

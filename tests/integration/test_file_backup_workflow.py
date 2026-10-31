@@ -91,7 +91,7 @@ def test_damaged_wallet_backup_is_replaced_with_a_restorable_archive(file_job: P
 
 
 def test_per_file_notifications_report_one_job_result_with_partial_failure(file_job, monkeypatch):
-    from tests.trigger.conftest import RecordingNotifier
+    from tests.helpers.trigger import RecordingNotifier
 
     document = json.loads(file_job.read_text())
     document["desktop_notifications"] = {"backup": {"enabled": True}}

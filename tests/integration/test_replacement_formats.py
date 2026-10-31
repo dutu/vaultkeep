@@ -6,18 +6,19 @@ import json
 
 import pytest
 
-from tests.integration import test_archive_tools as archive_fixtures
 from vaultkeep.archive import ArchiveTools, PasswordSecret, verify_tar_7z, verify_tar_zstd
 from vaultkeep.archive import passwords as passwords_module
 from vaultkeep.backup.workflow import WorkflowPaths, run_backup
 from vaultkeep.destination.suspect import mark_backup_suspect
 
-archive_tool_deadline = archive_fixtures.archive_tool_deadline
 TOOLS = ArchiveTools()
-pytestmark = pytest.mark.skipif(
-    not all(tool.is_file() for tool in (TOOLS.tar, TOOLS.zstd, TOOLS.seven_zip)),
-    reason="Real archive tools are unavailable",
-)
+pytestmark = [
+    pytest.mark.usefixtures("archive_tool_deadline"),
+    pytest.mark.skipif(
+        not all(tool.is_file() for tool in (TOOLS.tar, TOOLS.zstd, TOOLS.seven_zip)),
+        reason="Real archive tools are unavailable",
+    ),
+]
 
 
 @pytest.mark.parametrize("initial_format", ["tar.zst", "tar.7z"])

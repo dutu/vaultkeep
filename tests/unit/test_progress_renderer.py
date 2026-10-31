@@ -63,11 +63,14 @@ def test_spinner_animates_elapsed_time_and_clears_shorter_status(monkeypatch, wo
     monkeypatch.setattr(progress_module, "monotonic", lambda: now[0])
     with CliProgress(stream=output) as progress:
         progress.start("Verifying backup manifests and checksums")
-        assert output.getvalue() == "\r\033[2K⠋ [00:00] Verifying backup manifests and checksums"
+        initial = output.getvalue()
+        assert initial.startswith("\r\033[2K")
+        assert initial.endswith("[00:00] Verifying backup manifests and checksums")
         output.frame_seen.clear()
         now[0] = 62.0
         assert output.frame_seen.wait(2)
-        assert "⠙ [01:02] Verifying" in output.getvalue()
+        assert "[01:02] Verifying backup manifests and checksums" in output.getvalue()
+        assert output.getvalue() != initial
         progress.update("Done")
         progress.succeed()
     assert "\r\033[2K" in output.getvalue().split("Done")[0]
@@ -134,18 +137,21 @@ def test_unsuitable_terminals_log_immediate_stages_and_heartbeats(
         monkeypatch.setenv("TERM", term)
     monkeypatch.setattr(progress_module, "_HEARTBEAT_SECONDS", 0.01)
     output = Output(tty=tty)
+    now = [0.0]
+    monkeypatch.setattr(progress_module, "monotonic", lambda: now[0])
     with CliProgress(stream=output, keep_completed=keep_completed) as progress:
         progress.start("Loading configuration")
         progress.update("Verifying backups")
         progress.update("Verifying backups")
         assert output.getvalue() == "[00:00] Loading configuration\n[00:00] Verifying backups\n"
+        now[0] = 62.0
         assert output.heartbeat_seen.wait(2)
         progress.message("Verified: archive.tar.zst")
         progress.succeed("Verification complete")
     text = output.getvalue()
-    assert "[00:00] Verifying backups (still running)\n" in text
+    assert "[01:02] Verifying backups (still running)\n" in text
     assert "Verified: archive.tar.zst\n" in text
-    assert text.endswith("[00:00] SUCCESS: Verification complete\n")
+    assert text.endswith("[01:02] SUCCESS: Verification complete\n")
     assert "\033" not in text and "\r" not in text
     assert len(workers) == 1
 

@@ -103,6 +103,9 @@ addopts = [
     "--cov-report=term-missing",
 ]
 testpaths = ["tests"]
+# Successful installer tests create large disposable virtual environments.
+# Keep failed cases for diagnosis without retaining every successful deployment.
+tmp_path_retention_policy = "failed"
 markers = [
     "release_gate: tests that require an explicit release-validation environment",
 ]

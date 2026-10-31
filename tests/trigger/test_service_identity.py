@@ -8,8 +8,13 @@ from dataclasses import replace
 
 import pytest
 
-from tests.trigger.conftest import FakeController, FakeProvider, RecordingNotifier, make_request
-from tests.trigger.test_service import config
+from tests.helpers.trigger import (
+    FakeController,
+    FakeProvider,
+    RecordingNotifier,
+    config,
+    make_request,
+)
 from vaultkeep.backup.paths import user_workflow_paths
 from vaultkeep.cli import main
 from vaultkeep.config.identity import JobIdentity

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.trigger.conftest import make_request
+from tests.helpers.trigger import make_request
 from vaultkeep.backup.execution import Execution
 from vaultkeep.backup.paths import user_workflow_paths
 from vaultkeep.cli import main

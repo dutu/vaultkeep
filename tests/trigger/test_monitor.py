@@ -7,15 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from tests.trigger.conftest import (
+from tests.helpers.trigger import (
     FakeController,
     FakeProvider,
     RecordingNotifier,
+    _running_proc,
     make_config,
     make_instance,
     make_request,
 )
-from vaultkeep.application import Observation, ProcessInfo
+from vaultkeep.application import Observation
 from vaultkeep.notifications.notifier import NotificationConfig
 from vaultkeep.trigger.activity import application_status
 from vaultkeep.trigger.errors import BlockedError
@@ -33,15 +34,6 @@ from vaultkeep.trigger.state import StateStore
 from vaultkeep.trigger.systemd import SubmissionClass, SubmissionResult, UnitState
 
 RUN_APP = "/opt/app/run_app"
-
-
-def _running_proc() -> ProcessInfo:
-    return ProcessInfo(
-        pid=99,
-        create_time=1.0,
-        exe_realpath="/usr/bin/python3",
-        cmdline=(RUN_APP, "--dir", "/home/user/.electrum"),
-    )
 
 
 def _monitor(store: StateStore, provider, controller, notifier, instance) -> Monitor:

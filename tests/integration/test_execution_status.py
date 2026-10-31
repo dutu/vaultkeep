@@ -13,8 +13,7 @@ from dataclasses import replace
 
 import pytest
 
-from tests.trigger.conftest import FakeController, FakeProvider, make_request
-from tests.trigger.test_monitor import _running_proc
+from tests.helpers.trigger import FakeController, FakeProvider, _running_proc, make_request
 from vaultkeep.backup.paths import user_workflow_paths
 from vaultkeep.backup.status import backup_status
 from vaultkeep.config import JobConfig

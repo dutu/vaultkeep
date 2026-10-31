@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from vaultkeep.trigger.environment import build_child_environment
@@ -50,4 +49,6 @@ def test_runtime_dir_validation(tmp_path: Path, monkeypatch) -> None:
     assert runtime_dir() == tmp_path
     monkeypatch.setenv("XDG_RUNTIME_DIR", "not-absolute")
     assert runtime_dir() is None
-    assert os.geteuid() == Path(tmp_path).stat().st_uid
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr("vaultkeep.trigger.paths.os.geteuid", lambda: tmp_path.stat().st_uid + 1)
+    assert runtime_dir() is None

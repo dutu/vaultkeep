@@ -5,16 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from tests.trigger.conftest import (
+from tests.helpers.trigger import (
     FakeController,
     FakeProvider,
     FakeRunner,
     RecordingNotifier,
+    _running_proc,
     child_result,
     make_config,
     make_instance,
 )
-from tests.trigger.test_monitor import _running_proc
 from vaultkeep.trigger.errors import BlockedError, ConfigurationError
 from vaultkeep.trigger.monitor import Monitor
 from vaultkeep.trigger.preflight import runtime_preflight, validate_jobs

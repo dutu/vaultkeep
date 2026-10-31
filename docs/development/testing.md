@@ -64,9 +64,36 @@ errors, failure warnings, process-group termination, system-log failures, and a
 failed delivery inside a successful backup hook. Package checks exercise the helper
 through the wheel-installed CLI.
 
-Root pytest runs backup, unified status, Trigger, Schedule, installer, and installed-worker contract tests in
-one process. Trigger fixtures live under `tests/trigger/` with explicit package
-imports, so test modules do not collide.
+Root pytest runs backup, unified status, Trigger, Schedule, installer, and installed-worker
+contract tests in one process. Shared builders and fakes live under `tests/helpers/`;
+pytest fixtures remain in the relevant `conftest.py` or are imported explicitly from
+helper modules. Test modules do not import other test modules.
+
+Run `pytest --no-cov -q tests/unit tests/trigger` for focused feedback without the
+installer transactions and other integration suites. The complete suite remains the
+validation command above. Executed installer transactions live in
+`tests/integration/test_installer_script.py`; each uses an independent disposable
+installation. Successful `tmp_path` directories are removed after each test, while
+failed cases are retained under pytest's normal retention count for diagnosis. This
+prevents accumulated virtual environments from filling temporary storage. The
+installer source copy is prepared only for tests that need a fake host; display and
+shell-only checks do not copy the repository. It uses the source-package include
+list to exclude local virtual environments, caches and private examples.
+Private candidate isolation patches
+check their source anchors before applying them. The redirected heartbeat test uses
+an accelerated test clock with real background output; terminal smoke tests still
+exercise real time.
+
+For timing comparisons, use the same interpreter, dependencies, tools, environment,
+and pytest options, and run suites sequentially:
+
+```sh
+time pytest --no-cov -q -ra --durations=25 --junitxml=/tmp/vaultkeep-tests.xml
+```
+
+Compare pass/failure/skip counts alongside elapsed time. A run with timeouts or
+resource failures is not a clean performance baseline. Release and live-network
+gates remain opt-in; a normal timing run does not certify them.
 
 Installer tests execute `install.sh` with temporary prefix/config/state/bin/systemd
 roots, controlled service-manager responses, real venvs, hash-locked wheel installs
@@ -98,7 +125,7 @@ unsafe TAR paths, and preservation of backup and state files.
 
 `check_packages.py` builds the unified wheel and source archive, independently
 rebuilds the extracted archive, checks the single entry point and bundled Trigger
-modules, installs into an isolated environment, validates all four job examples and
+modules, installs into an isolated environment, validates all shipped job examples and
 previews installation without touching services.
 
 ## Dependency locks

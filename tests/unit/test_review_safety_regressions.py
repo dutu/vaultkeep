@@ -9,8 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.trigger.conftest import RecordingNotifier
-from tests.unit import test_backup_safety_redesign as safety
+from tests.helpers import backup as safety
+from tests.helpers.backup import job as job
+from tests.helpers.trigger import RecordingNotifier
 from vaultkeep.backup import workflow
 from vaultkeep.backup.status import backup_status
 from vaultkeep.cli import status
@@ -24,8 +25,6 @@ from vaultkeep.destination.suspect import (
 )
 from vaultkeep.errors import ArchiveChecksumMismatchError, DestinationError, PruneError
 from vaultkeep.state.identity import job_identity_hash
-
-job = safety.job
 
 
 def _paths(job):

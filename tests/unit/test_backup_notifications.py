@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from tests.trigger.conftest import RecordingNotifier
+from tests.helpers.trigger import RecordingNotifier
 from vaultkeep.backup.execution import Execution
 from vaultkeep.backup.notifications import BackupNotifications
 from vaultkeep.backup.paths import WorkflowPaths

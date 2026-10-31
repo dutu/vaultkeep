@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tests.trigger.conftest import make_request
+from tests.helpers.trigger import make_request
 from vaultkeep.application import Observation
 from vaultkeep.cli import main
 from vaultkeep.cli.status import collect_status

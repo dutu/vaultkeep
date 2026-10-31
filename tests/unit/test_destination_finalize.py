@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.destination import _staging
 from vaultkeep.destination import finalize as finalize_module
 from vaultkeep.destination import finalize_backup_directory, probe_destination_writability
 from vaultkeep.errors import (
@@ -110,15 +111,6 @@ def test_destination_probe_never_removes_an_existing_rename_target(
 
     assert set(tmp_path.iterdir()) == {*collisions, tmp_path / DESTINATION_LOCK_NAME}
     assert (collisions[0] / "operator-data").read_bytes() == b"preserve"
-
-
-def _staging(tmp_path: Path) -> Path:
-    staging = tmp_path / "~$.partial-vaultkeep-app-abc"
-    staging.mkdir()
-    (staging / "archive.tar.zst").write_bytes(b"archive")
-    (staging / "archive.tar.zst.sha256").write_text("checksum", encoding="utf-8")
-    (staging / "backup.json").write_text("{}", encoding="utf-8")
-    return staging
 
 
 def test_finalize_atomically_moves_complete_staging_directory(tmp_path: Path) -> None:

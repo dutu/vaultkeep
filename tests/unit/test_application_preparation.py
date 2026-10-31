@@ -15,7 +15,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from tests.unit import test_backup_safety_redesign as safety
+from tests.helpers import backup as safety
+from tests.helpers.backup import job as job
 from vaultkeep import application as identities
 from vaultkeep import maintenance, validation
 from vaultkeep.application import (
@@ -35,8 +36,6 @@ from vaultkeep.errors import ApplicationIdentityError, SourceDiscoveryError
 from vaultkeep.schedule import TimerManager, TimerPaths
 from vaultkeep.sources.hashing import calculate_config_fingerprint
 from vaultkeep.trigger.config import from_prepared_job
-
-job = safety.job
 
 
 def raw_application(directory="~/wallet", *, name="bisq", user=None):
