@@ -54,6 +54,7 @@ Both categories work independently. Backup alerts work for manual, scheduled, an
 triggered executions, including jobs with no automatic initiation enabled. Trigger
 alerts require the job's monitor to be active, and work with Backup alerts disabled.
 Schedule only arranges execution; it has no separate notification category.
+Backup alert bodies show the job ID on the first line and the message on the next line.
 
 ## Enable notifications
 

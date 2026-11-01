@@ -106,22 +106,22 @@ trigger:
 ## See docs/configuration.md#external-notifications for setup and diagnostics.
 # hooks:
 #   before_check:
-#     command: 'vaultkeep notify --level info "Checking backup sources for {job} on {hostname}"'
+#     command: "vaultkeep notify --level info \"Checking backup sources for\n{job} on {hostname}\""
 #     timeout_seconds: 60                # Allowed: 1–3600 (default 300)
 #   before_archive:
-#     command: 'vaultkeep notify --level info "Creating backup for {job} on {hostname}"'
+#     command: "vaultkeep notify --level info \"Creating backup for\n{job} on {hostname}\""
 #     timeout_seconds: 60
 #   after_archive:
-#     command: 'vaultkeep notify --level info "Finished reading backup sources for {job} on {hostname}"'
+#     command: "vaultkeep notify --level info \"Finished reading backup sources for\n{job} on {hostname}\""
 #     timeout_seconds: 60
 #   on_success:
-#     command: 'vaultkeep notify --level info "Backup completed for {job} on {hostname}"'
+#     command: "vaultkeep notify --level info \"Backup completed for\n{job} on {hostname}\""
 #     timeout_seconds: 60
 #   on_failure:
-#     command: 'vaultkeep notify --level error "Backup failed for {job} on {hostname}: $VAULTKEEP_ERROR"'
+#     command: "vaultkeep notify --level error \"Backup failed for\n{job} on {hostname}: $VAULTKEEP_ERROR\""
 #     timeout_seconds: 60
 #   on_unchanged:
-#     command: 'vaultkeep notify --level info "Backup sources unchanged for {job} on {hostname}"'
+#     command: "vaultkeep notify --level info \"Backup sources unchanged for\n{job} on {hostname}\""
 #     timeout_seconds: 60
 
 ## Desktop notifications (backup and trigger are independent)

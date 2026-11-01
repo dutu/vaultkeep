@@ -41,7 +41,7 @@ class BackupNotifications:
         try:
             self._notifier.notify(
                 f"VaultKeep: Backup {title}",
-                f"job {self._job_id}: {body}",
+                f"job {self._job_id}:\n{body}",
                 key=key,
                 finished=finished,
                 replace_pending=replace_pending,

@@ -172,10 +172,10 @@ hooks:
       test -s /home/user/.local/share/Bisq/btc_mainnet/wallet/bisq_BSQ.wallet
     timeout_seconds: 60
   on_success:
-    command: 'vaultkeep notify --level info "Live backup completed for {job}"'
+    command: "vaultkeep notify --level info \"Live backup completed for\n{job}\""
     timeout_seconds: 60
   on_failure:
-    command: 'vaultkeep notify --level error "Live backup failed for {job}: $VAULTKEEP_ERROR"'
+    command: "vaultkeep notify --level error \"Live backup failed for\n{job}: $VAULTKEEP_ERROR\""
     timeout_seconds: 60
   # No on_unchanged hook: avoids hourly Telegram messages when nothing changed.
 

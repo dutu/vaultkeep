@@ -54,7 +54,7 @@ def execution(tmp_path, recorder):
 def test_execution_messages_follow_the_authoritative_result(execution, recorder, outcome, text):
     assert not recorder.calls
     with execution:
-        assert recorder.calls[0] == ("VaultKeep: Backup started", "job app: execution started")
+        assert recorder.calls[0] == ("VaultKeep: Backup started", "job app:\nexecution started")
         execution.report("Verifying archive")
         if outcome:
             execution.complete(
@@ -155,18 +155,18 @@ def test_phase_changes_and_elapsed_refresh_are_throttled(recorder, monkeypatch):
         seconds[0] = value
         notifications.heartbeat()
     assert [body for title, body in recorder.calls if "running" in title] == [
-        "job app: Checking existing backups",
-        "job app: Checking existing backups (10s)",
-        "job app: Checking existing backups (20s)",
+        "job app:\nChecking existing backups",
+        "job app:\nChecking existing backups (10s)",
+        "job app:\nChecking existing backups (20s)",
     ]
     seconds[0] = 25
     notifications.report("Verifying archive")
     seconds[0] = 34
     notifications.heartbeat()
-    assert recorder.calls[-1][1] == "job app: Verifying archive"
+    assert recorder.calls[-1][1] == "job app:\nVerifying archive"
     seconds[0] = 35
     notifications.heartbeat()
-    assert recorder.calls[-1][1] == "job app: Verifying archive (10s)"
+    assert recorder.calls[-1][1] == "job app:\nVerifying archive (10s)"
 
 
 def test_per_file_updates_share_one_stream_and_cap_phase_changes(recorder, monkeypatch):
@@ -183,7 +183,7 @@ def test_per_file_updates_share_one_stream_and_cap_phase_changes(recorder, monke
     assert len(recorder.calls) == 1
     seconds[0] = 10
     notifications.heartbeat()
-    assert recorder.calls[-1][1] == "job app: Verifying archive (10s)"
+    assert recorder.calls[-1][1] == "job app:\nVerifying archive (10s)"
     assert {key for key, _ in recorder.options} == {"backup:exec"}
 
 
