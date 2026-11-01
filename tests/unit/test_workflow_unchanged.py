@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from vaultkeep import hooks
 from vaultkeep.archive import ArchiveArtifact, ArchiveBuildRequest, checksums
 from vaultkeep.backup import workflow
+from vaultkeep.backup.results import failure_exit_code
 from vaultkeep.destination.suspect import SUSPECT_MARKER_NAME, mark_backup_suspect
-from vaultkeep.errors import ArchiveVerificationError, DestinationError
+from vaultkeep.errors import (
+    ArchiveChecksumMismatchError,
+    ArchiveVerificationError,
+    DestinationError,
+    HookError,
+)
 from vaultkeep.state.models import LocalState
 
 
@@ -100,7 +109,7 @@ def test_unchanged_reads_only_latest_archive(
         )
     if older_corrupted:
         archives[0].write_bytes(b"corrupted older archive")
-    original_open = Path.open
+    original_open = checksums._open_regular_file
     opened = []
 
     def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
@@ -109,7 +118,7 @@ def test_unchanged_reads_only_latest_archive(
             opened.append(path)
         return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(checksums, "_open_regular_file", guarded_open)
 
     result = _run(job)
 
@@ -147,14 +156,14 @@ def test_corrupt_latest_archive_creates_replacement_and_cleans_suspect(
         original_hook(phase, *args, **kwargs)
 
     monkeypatch.setattr(workflow, "_run_configured_hook", hook)
-    original_open = Path.open
+    original_open = checksums._open_regular_file
 
     def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
         assert path not in archives[:-1], "Replacement must not read older archive contents"
         return original_open(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "open", guarded_open)
+        patch.setattr(checksums, "_open_regular_file", guarded_open)
         result = _run(job)
 
     assert result.result == "created"
@@ -281,18 +290,30 @@ def test_damage_persistence_failure_preserves_backups_and_retries(
     assert _run(job).result == "unchanged"
 
 
+@pytest.mark.parametrize("after_archive", [False, True])
+@pytest.mark.parametrize("on_success", [False, True])
 @pytest.mark.parametrize("older_corrupted", [False, True])
 def test_creation_verifies_new_archive_without_reading_existing_archive_contents(
-    history: tuple[Path, list[Path]], monkeypatch: pytest.MonkeyPatch, older_corrupted: bool
+    history: tuple[Path, list[Path]],
+    monkeypatch: pytest.MonkeyPatch,
+    older_corrupted: bool,
+    after_archive: bool,
+    on_success: bool,
 ) -> None:
     job, archives = history
+    document = json.loads(job.read_text())
+    for phase, enabled in (("after_archive", after_archive), ("on_success", on_success)):
+        document["hooks"][phase] = {"command": "true"} if enabled else None
+    job.write_text(json.dumps(document))
+    monkeypatch.setattr(workflow, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
     if older_corrupted:
         archives[0].write_bytes(b"corrupted older archive")
     # Matching an older backup still requires creation when the latest differs.
     (job.parent / "source" / "data").write_text("0")
     original_build = workflow.build_archive
     original_calculate = checksums.calculate_archive_sha256
-    original_open = Path.open
+    original_open = checksums._open_regular_file
     hashed = []
 
     def build(backup: ArchiveBuildRequest, **kwargs: Any) -> ArchiveArtifact:
@@ -307,17 +328,28 @@ def test_creation_verifies_new_archive_without_reading_existing_archive_contents
         assert path not in archives, "Creation and retention must not read existing archives"
         return original_open(path, *args, **kwargs)
 
+    original_hook = workflow._run_configured_hook
+
+    def hook(phase: str, *args: Any, **kwargs: Any) -> None:
+        if phase == "on_success" and on_success:
+            assert len(hashed) == 1 + after_archive, "Success-hook check must follow the hook"
+        original_hook(phase, *args, **kwargs)
+
+    monkeypatch.setattr(workflow, "_run_configured_hook", hook)
     monkeypatch.setattr(workflow, "build_archive", build)
     monkeypatch.setattr(checksums, "calculate_archive_sha256", calculate)
-    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(checksums, "_open_regular_file", guarded_open)
 
     result = _run(job)
 
     assert result.result == "created"
     created = result.files[0].archive_path if result.files else result.archive_path
     assert created is not None
-    assert created in hashed
+    assert (created in hashed) == on_success
+    assert all(path.name == created.name for path in hashed)
     assert all(path not in archives for path in hashed)
+    # One initial digest, plus one integrity check after each configured hook.
+    assert len(hashed) == 1 + after_archive + on_success
 
 
 def test_run_retention_prunes_older_archives_without_reading_contents(
@@ -328,13 +360,13 @@ def test_run_retention_prunes_older_archives_without_reading_contents(
     document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
     job.write_text(json.dumps(document))
     (job.parent / "source" / "data").write_text("changed source")
-    original_open = Path.open
+    original_open = checksums._open_regular_file
 
     def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
         assert path not in archives, "Retention must not open older archive contents"
         return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(checksums, "_open_regular_file", guarded_open)
 
     result = _run(job)
 
@@ -351,7 +383,10 @@ def test_corrupt_finalized_archive_fails_before_retention(
     job, archives = history
     document = json.loads(job.read_text())
     document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
+    document["hooks"]["on_success"] = {"command": "true"}
     job.write_text(json.dumps(document))
+    monkeypatch.setattr(workflow, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
     (job.parent / "source" / "data").write_text("changed source")
     original_commit = workflow.commit_archive_artifact
 
@@ -371,4 +406,284 @@ def test_corrupt_finalized_archive_fails_before_retention(
     (state_path,) = (job.parent / "state").rglob("state.json")
     state = LocalState.model_validate_json(state_path.read_bytes())
     assert state.last_run.result == "failed"
-    assert state.last_successful_backup.backup_path == str(archives[-1])
+    assert state.last_successful_backup.backup_path != str(archives[-1])
+    assert list((job.parent / "backups").rglob(SUSPECT_MARKER_NAME))
+
+
+@pytest.mark.parametrize("phase", ["after_archive", "on_success"])
+@pytest.mark.parametrize("artifact", ["archive", "checksum", "all"])
+def test_hook_artifact_corruption_blocks_retention(
+    history: tuple[Path, list[Path]],
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    artifact: str,
+) -> None:
+    job, archives = history
+    document = json.loads(job.read_text())
+    document["hooks"][phase] = {"command": "true"}
+    document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
+    job.write_text(json.dumps(document))
+    (job.parent / "source" / "data").write_text("changed source")
+    original_hook = workflow._run_configured_hook
+    monkeypatch.setattr(workflow, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+
+    def hook(hook_phase: str, *args: Any, **kwargs: Any) -> None:
+        original_hook(hook_phase, *args, **kwargs)
+        if hook_phase == phase:
+            (created,) = (
+                path for path in (job.parent / "backups").rglob("*.tar.zst") if path not in archives
+            )
+            if artifact == "archive":
+                created.write_bytes(b"corrupted by hook")
+            elif artifact == "checksum":
+                sidecar = Path(str(created) + ".sha256")
+                sidecar.write_text("0" * 64 + "  " + created.name + "\n")
+            else:
+                # Even a self-consistent rewritten archive/sidecar/manifest must
+                # not override the digest established before the hook.
+                created.write_bytes(b"corrupted by hook")
+                digest = checksums.calculate_archive_sha256(created)
+                Path(str(created) + ".sha256").write_text(digest + "  " + created.name + "\n")
+                if phase == "on_success":
+                    (manifest_path,) = created.parent.glob("*.json")
+                    manifest = json.loads(manifest_path.read_text())
+                    manifest["archive_digest"] = "sha256:" + digest
+                    manifest_path.write_text(json.dumps(manifest))
+
+    monkeypatch.setattr(workflow, "_run_configured_hook", hook)
+
+    if document["backup_mode"] == "combined":
+        with pytest.raises((ArchiveVerificationError, DestinationError)):
+            _run(job)
+    else:
+        assert _run(job).result == "failed"
+    assert all(archive.is_file() for archive in archives)
+    if phase == "on_success" and artifact in {"archive", "all"}:
+        assert list((job.parent / "backups").rglob(SUSPECT_MARKER_NAME))
+
+
+@pytest.mark.parametrize(
+    "archive_status", ["valid", "corrupt", "missing", "manifest_missing", "unreadable"]
+)
+def test_failed_success_hook_still_checks_integrity_and_blocks_retention(
+    history: tuple[Path, list[Path]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    archive_status: str,
+) -> None:
+    job, archives = history
+    document = json.loads(job.read_text())
+    document["hooks"]["on_success"] = {"command": "exit 9"}
+    document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
+    job.write_text(json.dumps(document))
+    (job.parent / "source" / "data").write_text("changed source")
+    monkeypatch.setattr(workflow, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    original_hook = workflow._run_configured_hook
+    original_verify = workflow.verify_backup_checksum
+    original_open = checksums._open_regular_file
+    phases = []
+    checked = []
+    created_archive = None
+
+    def hook(phase: str, *args: Any, **kwargs: Any) -> None:
+        nonlocal created_archive
+        phases.append(phase)
+        try:
+            original_hook(phase, *args, **kwargs)
+        finally:
+            if phase == "on_success":
+                (created_archive,) = (
+                    path
+                    for path in (job.parent / "backups").rglob("*.tar.zst")
+                    if path not in archives
+                )
+                if archive_status == "corrupt":
+                    created_archive.write_bytes(b"corrupted by failing hook")
+                elif archive_status == "missing":
+                    created_archive.unlink()
+                elif archive_status == "manifest_missing":
+                    (manifest,) = created_archive.parent.glob("*.json")
+                    manifest.unlink()
+
+    def verify(backup: Any, **kwargs: Any) -> None:
+        checked.append(backup.archive_path)
+        original_verify(backup, **kwargs)
+
+    def open_archive(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if archive_status == "unreadable" and path == created_archive:
+            raise PermissionError("archive read denied")
+        return original_open(path, *args, **kwargs)
+
+    def prune(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Retention must not run after hook or integrity failure")
+
+    monkeypatch.setattr(workflow, "_run_configured_hook", hook)
+    monkeypatch.setattr(workflow, "verify_backup_checksum", verify)
+    monkeypatch.setattr(workflow, "execute_prune_plan", prune)
+    monkeypatch.setattr(checksums, "_open_regular_file", open_archive)
+
+    if document["backup_mode"] == "combined":
+        with pytest.raises(HookError, match="on_success hook exited with status 9") as raised:
+            _run(job)
+        assert failure_exit_code(raised.value) == 11
+        message = str(raised.value)
+    else:
+        result = _run(job)
+        assert result.result == "failed"
+        message = result.files[0].error
+    assert ("post-hook backup integrity check failed" in message) == (archive_status != "valid")
+    assert "on_success hook failed:" in caplog.text
+    assert ("Post-hook backup integrity check failed:" in caplog.text) == (
+        archive_status != "valid"
+    )
+    assert checked == [created_archive]
+    assert "on_failure" not in phases
+    assert all(archive.is_file() for archive in archives)
+    markers = list((job.parent / "backups").rglob(SUSPECT_MARKER_NAME))
+    assert bool(markers) == (archive_status == "corrupt")
+    (state_path,) = (job.parent / "state").rglob("state.json")
+    state = LocalState.model_validate_json(state_path.read_bytes())
+    assert state.last_run.result == "failed"
+    assert state.last_run.hooks[-1].phase == "on_success"
+    assert state.last_run.hooks[-1].exit_code == 9
+
+
+@pytest.fixture
+def checksum_read_deadline():
+    """Make an accidentally blocking FIFO regression fail instead of hanging pytest."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+    def expired(signum, frame):
+        pytest.fail("Checksum verification blocked while reading an unsafe artifact")
+
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, 5)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+@pytest.mark.usefixtures("checksum_read_deadline")
+@pytest.mark.parametrize("hook_fails", [False, True])
+@pytest.mark.parametrize("artifact", ["archive", "checksum"])
+@pytest.mark.parametrize("replacement", ["fifo", "symlink", "directory_symlink"])
+def test_post_hook_rejects_unsafe_artifacts_without_blocking(
+    history: tuple[Path, list[Path]],
+    monkeypatch: pytest.MonkeyPatch,
+    hook_fails: bool,
+    artifact: str,
+    replacement: str,
+) -> None:
+    job, archives = history
+    document = json.loads(job.read_text())
+    document["hooks"]["on_success"] = {"command": "exit 9" if hook_fails else "true"}
+    document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
+    job.write_text(json.dumps(document))
+    (job.parent / "source" / "data").write_text("changed source")
+    monkeypatch.setattr(workflow, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    original_hook = workflow._run_configured_hook
+
+    def hook(phase: str, *args: Any, **kwargs: Any) -> None:
+        try:
+            original_hook(phase, *args, **kwargs)
+        finally:
+            if phase == "on_success":
+                (created,) = (
+                    path
+                    for path in (job.parent / "backups").rglob("*.tar.zst")
+                    if path not in archives
+                )
+                target = created if artifact == "archive" else Path(str(created) + ".sha256")
+                if replacement == "directory_symlink":
+                    moved = job.parent / "moved-backup"
+                    created.parent.rename(moved)
+                    created.parent.symlink_to(moved, target_is_directory=True)
+                else:
+                    payload = target.read_bytes()
+                    target.unlink()
+                    if replacement == "fifo":
+                        os.mkfifo(target)
+                    else:
+                        regular = job.parent / "hook-target"
+                        regular.write_bytes(payload)
+                        target.symlink_to(regular)
+
+    def prune(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unsafe artifacts must block retention")
+
+    monkeypatch.setattr(workflow, "_run_configured_hook", hook)
+    monkeypatch.setattr(workflow, "execute_prune_plan", prune)
+    if document["backup_mode"] == "combined":
+        with pytest.raises(HookError if hook_fails else ArchiveVerificationError) as raised:
+            _run(job)
+        message = str(raised.value)
+        assert failure_exit_code(raised.value) == (11 if hook_fails else 7)
+    else:
+        result = _run(job)
+        assert result.result == "failed"
+        message = result.files[0].error
+    assert "checksum" in message.lower()
+    assert all(archive.is_file() for archive in archives)
+    assert not list((job.parent / "backups").rglob(SUSPECT_MARKER_NAME))
+
+
+@pytest.mark.parametrize("hook_fails", [False, True])
+def test_checksum_failure_survives_suspect_marker_write_failure(
+    history: tuple[Path, list[Path]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    hook_fails: bool,
+) -> None:
+    job, archives = history
+    document = json.loads(job.read_text())
+    document["hooks"]["on_success"] = {"command": "exit 9" if hook_fails else "true"}
+    document["retention"] = dict(hourly=1, daily=0, weekly=0, monthly=0, yearly=0)
+    job.write_text(json.dumps(document))
+    (job.parent / "source" / "data").write_text("changed source")
+    monkeypatch.setattr(workflow, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    monkeypatch.setattr(hooks, "validate_hook_shell", lambda **kwargs: Path("/bin/sh"))
+    original_hook = workflow._run_configured_hook
+
+    def hook(phase: str, *args: Any, **kwargs: Any) -> None:
+        try:
+            original_hook(phase, *args, **kwargs)
+        finally:
+            if phase == "on_success":
+                (created,) = (
+                    path
+                    for path in (job.parent / "backups").rglob("*.tar.zst")
+                    if path not in archives
+                )
+                created.write_bytes(b"corrupted by hook")
+
+    def mark(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError("marker write denied")
+
+    def prune(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Checksum mismatch must block retention even without a suspect marker")
+
+    monkeypatch.setattr(workflow, "_run_configured_hook", hook)
+    monkeypatch.setattr(workflow, "mark_backup_suspect", mark)
+    monkeypatch.setattr(workflow, "execute_prune_plan", prune)
+    if document["backup_mode"] == "combined":
+        with pytest.raises(HookError if hook_fails else ArchiveChecksumMismatchError) as raised:
+            _run(job)
+        message = str(raised.value)
+        assert failure_exit_code(raised.value) == (11 if hook_fails else 7)
+    else:
+        result = _run(job)
+        assert result.result == "failed"
+        message = result.files[0].error
+    assert "Archive checksum does not match archive content" in message
+    assert "cannot record SUSPECT marker:" in message
+    assert "marker write denied" in caplog.text
+    assert ("on_success hook exited with status 9" in message) == hook_fails
+    assert "Cannot record SUSPECT marker after checksum failure:" in caplog.text
+    assert "Post-hook backup integrity check failed: Archive checksum does not match" in caplog.text
+    assert all(archive.is_file() for archive in archives)

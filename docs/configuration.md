@@ -706,11 +706,16 @@ Available phases:
 - `before_check`: prepare dumps or source material before discovery;
 - `before_archive`: quiesce an application after changes are detected;
 - `after_archive`: release quiescing or cleanup after source reads;
-- `on_success`: required hook after archive commit and state persistence, before recording suspect replacements and running cleanup;
+- `on_success`: required hook after archive commit and state persistence, before final checksum verification, recording suspect replacements, and cleanup; a later verification failure still fails the run and prevents cleanup;
 - `on_failure`: notification after a workflow failure;
 - `on_unchanged`: notification after an unchanged run.
 
-Hook failures stop the current workflow phase. If `before_check` fails, source discovery does not start. If `before_archive` fails, archive creation does not start; Vaultkeep still attempts `after_archive` so partially applied quiescing can be released, then runs `on_failure`. If archive creation fails after `before_archive` succeeds, Vaultkeep also attempts `after_archive` and then runs `on_failure`.
+Hook failures stop the current workflow phase. After `on_success` fails, Vaultkeep
+still attempts the committed archive's integrity check before returning the hook
+failure. If that check also fails, both errors are reported; neither failure permits
+retention. A hook failure alone does not mark the archive SUSPECT.
+
+If `before_check` fails, source discovery does not start. If `before_archive` fails, archive creation does not start; Vaultkeep still attempts `after_archive` so partially applied quiescing can be released, then runs `on_failure`. If archive creation fails after `before_archive` succeeds, Vaultkeep also attempts `after_archive` and then runs `on_failure`.
 
 The external notification examples use [best-effort delivery](#external-notifications). Other hooks can use any installed command. Commands without an absolute path are found using the fixed `PATH` of `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`.
 

@@ -133,9 +133,10 @@ def _patch_creation_workflow(
     monkeypatch.setattr(workflow, "destination_lock", lambda root: nullcontext())
     monkeypatch.setattr(workflow, "_active_history", lambda history, config, **kwargs: history)
     monkeypatch.setattr(workflow, "verify_backup_checksum", lambda *args, **kwargs: None)
+    monkeypatch.setattr(workflow, "verify_checksum_sidecar", lambda *args, **kwargs: "0" * 64)
     record = _record()
     backup = SimpleNamespace(
-        manifest=SimpleNamespace(backup_id=record.backup_id),
+        manifest=SimpleNamespace(backup_id=record.backup_id, archive_digest="sha256:" + "0" * 64),
         state_record=record,
         suspect_reason=None,
     )
@@ -170,7 +171,6 @@ def _patch_creation_workflow(
     monkeypatch.setattr(
         workflow, "discover_backups", lambda *args, **kwargs: next(discovered, final_discovery)
     )
-    monkeypatch.setattr(workflow, "verify_checksum_sidecar", lambda *args, **kwargs: "0" * 64)
     monkeypatch.setattr(
         workflow,
         "reconcile_local_state",

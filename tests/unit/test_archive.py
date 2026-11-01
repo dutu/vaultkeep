@@ -834,6 +834,13 @@ def test_build_archive_completes_checksum_workflow(
 
     monkeypatch.setattr(builder_module, "create_tar_zstd", fake_create)
     monkeypatch.setattr(builder_module, "verify_tar_zstd", lambda *args, **kwargs: None)
+    hashed = []
+
+    def calculate(path: Path) -> str:
+        hashed.append(path)
+        return calculate_archive_sha256(path)
+
+    monkeypatch.setattr(builder_module, "calculate_archive_sha256", calculate)
 
     artifact = build_archive(
         request,
@@ -841,6 +848,7 @@ def test_build_archive_completes_checksum_workflow(
         progress=stages.append,
     )
 
+    assert hashed == [request.archive_path]
     assert artifact.sha256 == calculate_archive_sha256(request.archive_path)
     assert artifact.size == len(b"verified archive")
     assert verify_checksum_sidecar(request.archive_path, request.checksum_path) == artifact.sha256
@@ -849,8 +857,37 @@ def test_build_archive_completes_checksum_workflow(
         "Rechecking source files for changes",
         "Verifying archive",
         "Calculating archive checksum",
-        "Verifying archive checksum",
+        "Checking checksum file",
     ]
+
+
+@pytest.mark.parametrize("sidecar_contents", [b"invalid", b"0" * 64])
+def test_build_archive_rejects_damaged_checksum_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sidecar_contents: bytes,
+) -> None:
+    request = _request(tmp_path)
+
+    def create(*args: Any, **kwargs: Any) -> None:
+        request.archive_path.write_bytes(b"archive")
+
+    def write(archive: Path, sidecar: Path, digest: str) -> None:
+        write_checksum_sidecar(archive, sidecar, digest)
+        payload = sidecar_contents
+        if len(payload) == 64:
+            payload += b"  " + archive.name.encode() + b"\n"
+        sidecar.write_bytes(payload)
+
+    monkeypatch.setattr(builder_module, "create_tar_zstd", create)
+    monkeypatch.setattr(builder_module, "verify_tar_zstd", lambda *args, **kwargs: None)
+    monkeypatch.setattr(builder_module, "write_checksum_sidecar", write)
+
+    with pytest.raises(ArchiveVerificationError):
+        build_archive(request, source_digest_calculator=lambda snapshot: SOURCE_DIGEST)
+
+    assert not request.archive_path.exists()
+    assert not request.checksum_path.exists()
 
 
 def test_build_archive_source_change_removes_partial_artifacts(
@@ -898,7 +935,7 @@ def test_build_archive_preserves_interruptions_during_cleanup(
 
     monkeypatch.setattr(builder_module, "create_tar_zstd", create_archive)
     monkeypatch.setattr(builder_module, "verify_tar_zstd", lambda *args, **kwargs: None)
-    monkeypatch.setattr(builder_module, "verify_checksum_sidecar", interrupt)
+    monkeypatch.setattr(builder_module, "read_checksum_sidecar", interrupt)
     monkeypatch.setattr(builder_module, "private_inner_tar_path", lambda **kwargs: inner)
     monkeypatch.setattr(
         builder_module, "prepare_private_workspace", lambda path: path.parent.mkdir()
@@ -1021,7 +1058,7 @@ def test_encrypted_build_cleans_plaintext_before_return(
         "Verifying encrypted archive",
         "Removing private TAR archive",
         "Calculating archive checksum",
-        "Verifying archive checksum",
+        "Checking checksum file",
     ]
 
 
@@ -1101,7 +1138,14 @@ def test_checksum_byte_progress_survives_unknown_total(tmp_path, monkeypatch, si
     archive.write_bytes(b"x" * size)
     events = []
 
+    original_fstat = checksums.os.fstat
+    calls = 0
+
     def unavailable(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original_fstat(fd)  # File-type validation must still succeed.
         raise OSError("size unavailable")
 
     monkeypatch.setattr(checksums.os, "fstat", unavailable)

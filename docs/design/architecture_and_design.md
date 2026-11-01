@@ -970,7 +970,26 @@ Temporary and final directories are on the same destination filesystem. Local/CI
 
 After writing files, Vaultkeep flushes file data and directory metadata. Durability remains subject to the filesystem and storage device, and to the server honoring flush requests for network shares. Flush errors remain failures.
 
-The archive builder accepts already allocated staging archive and checksum paths, produces and verifies those two artifacts, and leaves manifest creation to the destination commit layer. The directory finalizer is implemented independently and commits a complete staging directory only after the caller has added the manifest.
+The archive builder accepts already allocated staging archive and checksum paths,
+verifies archive structure, calculates SHA-256 once, and validates the written
+sidecar against that digest without rereading the archive. Manifest creation
+belongs to the destination commit layer. After a configured `after_archive` hook,
+the workflow verifies staging against the original digest before committing.
+Finalization flushes artifacts and atomically renames the directory without changing
+archive bytes, so it requires no repeated checksum read. After a configured
+`on_success` hook, the committed archive is checked before retention against the
+original builder digest held in memory as well as its sidecar and manifest.
+Hook-writable metadata cannot replace that trusted digest. Absent hooks require
+no additional checksum reads. These SHA-256 checks establish byte integrity and
+do not repeat archive-structure verification. Checksum failures fail the run and
+block retention; committed archives with demonstrated mismatches are marked SUSPECT.
+Checksum reads pin the artifact directory, use nonblocking no-follow file opens,
+and require a regular file on the opened descriptor before reading. Checksum
+sidecar reads are bounded to the expected payload length plus one byte. A failed
+SUSPECT marker write is reported alongside the original checksum mismatch without
+replacing that mismatch as the primary integrity error.
+The directory finalizer is implemented independently and commits a complete staging
+directory only after the caller has added the manifest.
 
 ---
 
@@ -1404,7 +1423,7 @@ The workflow captures the hostname once per run and uses it for hook templates, 
   - releases a quiesced application or removes temporary preparation state before destination commit.
 
 - `on_success`
-  - runs after commitment, committed-archive verification, and required successful state persistence, before any replacement references or retention deletion.
+  - runs after commitment, committed metadata validation, and required successful state persistence; its output is checksum-checked against the original archive digest before any replacement references or retention deletion.
 
 - `on_failure`
   - runs once after a caught workflow failure when hook lifecycle execution has started;
@@ -1483,7 +1502,7 @@ Hook command strings and arguments are visible through the operating-system proc
 - A non-zero exit, timeout, signal, or launch failure from `before_check` or `before_archive` fails the pre-commit workflow with hook exit code `11`.
 - `after_archive` failure fails the pre-commit workflow with exit code `11` when no earlier error exists. When an earlier error exists, that error and its exit code remain primary and the cleanup-hook failure is reported as secondary.
 - `on_failure` failure never replaces the primary workflow error or triggers another hook.
-- `on_success` failure preserves the committed backup and every older backup, records a post-commit hook failure, and returns exit code `11`.
+- `on_success` failure preserves the committed backup and every older backup, records a post-commit hook failure, and returns exit code `11`. Post-hook integrity verification is still attempted using pre-hook artifact paths and trusted metadata. A verification failure is reported independently alongside the hook error without changing the hook exit code. A valid archive is not marked SUSPECT merely because the hook failed; demonstrated checksum mismatches are marked SUSPECT, while inaccessible artifacts are reported as verification errors. Neither failure permits retention.
 - `on_unchanged` failure leaves the last successful backup state unchanged, records an unchanged-result hook failure, and returns exit code `11`.
 - Failure of `on_success` or `on_unchanged` does not invoke `on_failure`.
 
@@ -2326,10 +2345,13 @@ parse CLI
 → build archive, rehash sources, verify structure/stream/checksums, remove private TAR
 → final offline check after every source read
 → attempt after_archive exactly once; only backup artifact reads follow
-→ verify staging integrity; commit immutable manifest and archive atomically
-→ rediscover and verify committed archive
+→ validate staging layout; verify original checksum after a configured after_archive hook
+→ commit immutable manifest and archive atomically
+→ rediscover committed archive metadata
 → persist required successful backup state
-→ run on_success
+→ run configured on_success; attempt checksum verification even if the hook fails
+→ fail before cleanup on hook or integrity failure; report both when both fail
+→ persist successful hook outcome
 → record compatible suspect replacement relationships
 → rediscover, plan and validate complete per-history cleanup
 → guarded suspect cleanup and ordinary retention with replacement dependencies

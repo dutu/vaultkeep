@@ -68,6 +68,7 @@ from vaultkeep.errors import (
     ArchiveCorruptionError,
     ArchiveVerificationError,
     DestinationError,
+    HookError,
     LockError,
     PruneError,
     RetentionError,
@@ -1132,9 +1133,11 @@ def _run_single_backup(
             allocated.checksum_path.name,
         }:
             raise DestinationError("Release hook left unexpected staging artifacts")
-        staged_digest = verify_checksum_sidecar(allocated.archive_path, allocated.checksum_path)
-        if staged_digest != artifact.sha256:
-            raise ArchiveChecksumMismatchError("Release hook changed staged archive artifacts")
+        if config.hooks.after_archive is not None:
+            report("Checking staged backup after release hook")
+            staged_digest = verify_checksum_sidecar(allocated.archive_path, allocated.checksum_path)
+            if staged_digest != artifact.sha256:
+                raise ArchiveChecksumMismatchError("Release hook changed staged archive artifacts")
         report("Finalizing backup")
         manifest = commit_archive_artifact(
             allocated,
@@ -1147,7 +1150,7 @@ def _run_single_backup(
             replacement_identity=replacement_identity(config, application=application),
         )
         staging_path = None
-        report("Checking finalized backup")
+        report("Checking finalized backup metadata")
         committed = _active_history(
             discover_backups(config, runtime_params=parameters, metadata_only=True),
             config,
@@ -1162,11 +1165,6 @@ def _run_single_backup(
             raise DestinationError("Committed archive cannot be rediscovered unambiguously")
         created = candidates[0]
         record = created.state_record
-        try:
-            verify_backup_checksum(created)
-        except ArchiveChecksumMismatchError as error:
-            mark_backup_suspect(created.directory, str(error))
-            raise
         from vaultkeep.state.atomic import write_local_state
 
         latest_state = state_after_created(
@@ -1184,15 +1182,67 @@ def _run_single_backup(
             latest_state,
         )
         terminal_hook_failed = True
-        _run_configured_hook(
-            "on_success",
-            config,
-            config_path,
-            replace(hook_context, result="created"),
-            hook_outcomes,
-            **hook_kwargs,
-        )
-        terminal_hook_failed = False
+        success_hook_error: HookError | None = None
+        try:
+            _run_configured_hook(
+                "on_success",
+                config,
+                config_path,
+                replace(hook_context, result="created"),
+                hook_outcomes,
+                **hook_kwargs,
+            )
+        except HookError as error:
+            success_hook_error = error
+            logging.getLogger(__name__).error("on_success hook failed: %s", error)
+        terminal_hook_failed = success_hook_error is not None
+        try:
+            if config.hooks.on_success is not None:
+                report("Checking backup after on_success hook")
+                try:
+                    # Use the pre-hook paths and manifest: hook-writable metadata
+                    # must not redefine the digest established during creation.
+                    if created.manifest.archive_digest != f"sha256:{artifact.sha256}":
+                        raise ArchiveChecksumMismatchError("Committed archive digest changed")
+                    verify_backup_checksum(created)
+                except ArchiveChecksumMismatchError as error:
+                    try:
+                        mark_backup_suspect(created.directory, str(error))
+                    except (VaultkeepError, OSError) as marker_error:
+                        logging.getLogger(__name__).error(
+                            "Cannot record SUSPECT marker after checksum failure: %s", marker_error
+                        )
+                        raise ArchiveChecksumMismatchError(
+                            f"{error}; cannot record SUSPECT marker: {marker_error}"
+                        ) from error
+                    raise
+            committed = _active_history(
+                discover_backups(config, runtime_params=parameters, metadata_only=True),
+                config,
+                application=application,
+            )
+            candidates = tuple(
+                backup
+                for backup in committed.backups
+                if backup.manifest.backup_id == record.backup_id
+            )
+            if len(candidates) != 1 or candidates[0].suspect_reason is not None:
+                raise DestinationError(
+                    "Newly committed backup is ambiguous, unavailable or SUSPECT "
+                    "after success hooks"
+                )
+        except (VaultkeepError, OSError) as integrity_error:
+            logging.getLogger(__name__).error(
+                "Post-hook backup integrity check failed: %s", integrity_error
+            )
+            if success_hook_error is not None:
+                raise HookError(
+                    f"{success_hook_error}; "
+                    f"post-hook backup integrity check failed: {integrity_error}"
+                ) from integrity_error
+            raise
+        if success_hook_error is not None:
+            raise success_hook_error
         latest_state = state_after_created(
             job_id=config.job.id,
             identity_hash=identity,
@@ -1204,24 +1254,6 @@ def _run_single_backup(
         )
         report("Saving backup state")
         write_local_state(state_path, latest_state)
-        committed = _active_history(
-            discover_backups(config, runtime_params=parameters, metadata_only=True),
-            config,
-            application=application,
-        )
-        candidates = tuple(
-            backup for backup in committed.backups if backup.manifest.backup_id == record.backup_id
-        )
-        if len(candidates) != 1 or candidates[0].suspect_reason is not None:
-            raise DestinationError(
-                "Newly committed backup is ambiguous, unavailable or SUSPECT after success hooks"
-            )
-        current = candidates[0]
-        try:
-            verify_backup_checksum(current)
-        except ArchiveChecksumMismatchError as error:
-            mark_backup_suspect(current.directory, str(error))
-            raise
         cleanup_errors: tuple[str, ...] = ()
         removed: tuple[Path, ...] = ()
         try:

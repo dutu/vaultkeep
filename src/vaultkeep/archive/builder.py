@@ -10,7 +10,7 @@ from pathlib import Path
 from vaultkeep.archive.base import ArchiveArtifact, ArchiveBuildRequest
 from vaultkeep.archive.checksums import (
     calculate_archive_sha256,
-    verify_checksum_sidecar,
+    read_checksum_sidecar,
     write_checksum_sidecar,
 )
 from vaultkeep.archive.passwords import PasswordSecret
@@ -109,8 +109,9 @@ def build_archive(
         digest = calculate_archive_sha256(request.archive_path)
         write_checksum_sidecar(request.archive_path, request.checksum_path, digest)
         checksum_created = True
-        report("Verifying archive checksum")
-        verified_digest = verify_checksum_sidecar(request.archive_path, request.checksum_path)
+        report("Checking checksum file")
+        if read_checksum_sidecar(request.archive_path, request.checksum_path) != digest:
+            raise ArchiveVerificationError("Written checksum sidecar differs from archive digest")
         try:
             size = request.archive_path.stat().st_size
         except OSError as error:
@@ -121,7 +122,7 @@ def build_archive(
             archive_format=request.archive_format,
             archive_path=request.archive_path,
             checksum_path=request.checksum_path,
-            sha256=verified_digest,
+            sha256=digest,
             size=size,
             source_digest=source_digest,
         )

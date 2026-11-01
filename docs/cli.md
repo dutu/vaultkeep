@@ -291,6 +291,25 @@ Possible successful results:
 - `created`: a new backup was finalized;
 - `unchanged`: the current source and backup-relevant configuration match the last successful backup.
 
+During creation, Vaultkeep verifies archive structure, calculates SHA-256 once,
+and checks the written checksum file without rereading archive contents. A configured
+`after_archive` hook is followed by a staging checksum check before commit. Atomic
+finalization preserves archive bytes and does not require another checksum pass.
+A configured `on_success` hook is followed by a checksum check before retention,
+even when the hook fails. Hook failure still fails the run and blocks retention;
+if the integrity check also fails, both failures are reported. An inaccessible
+archive is reported as a verification error rather than assumed to be corrupt.
+Each hook check compares against the original digest held in memory, so rewriting
+checksum files and manifests cannot replace the expected digest. With neither hook,
+there are no additional hook-related archive reads. SHA-256 checks establish byte
+integrity; they do not repeat decompression or archive-structure verification.
+Checksum failures fail the run and prevent retention, preserving older backups;
+committed archives with demonstrated checksum mismatches are marked SUSPECT.
+If writing the SUSPECT marker fails, the checksum mismatch remains the primary
+integrity error and the marker-write failure is also reported. Checksum reads
+reject FIFOs, symbolic links, and other non-regular artifacts before reading them.
+Progress timestamps show total elapsed runtime when each stage completes.
+
 An unchanged run does not create an archive or apply retention.
 Change detection validates backup metadata and compares the sources against the
 newest matching backup, ordered by manifest UTC creation time and then backup ID.

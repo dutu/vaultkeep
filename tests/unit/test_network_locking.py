@@ -234,9 +234,16 @@ def test_nfs_probe_and_commit_fallback_hold_shared_lock(
     finalize_module.probe_destination_writability(share.root)
     staging = _staging(share.root)
     final = share.root / "backup"
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_dev, path.stat().st_ino)
+        for path in staging.iterdir()
+    }
     with locking.destination_lock(share.root):
         finalize_module.finalize_backup_directory(staging, final)
-    assert (final / "archive.tar.zst").read_bytes() == b"archive"
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_dev, path.stat().st_ino)
+        for path in final.iterdir()
+    } == before
     assert not staging.exists() and len(calls) == no_nfs_noreplace.calls == 2
     assert set(share.root.iterdir()) == {final, share.root / locking.DESTINATION_LOCK_NAME}
 

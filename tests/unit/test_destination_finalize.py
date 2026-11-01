@@ -116,11 +116,18 @@ def test_destination_probe_never_removes_an_existing_rename_target(
 def test_finalize_atomically_moves_complete_staging_directory(tmp_path: Path) -> None:
     staging = _staging(tmp_path)
     final = tmp_path / "backup-app-id"
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_dev, path.stat().st_ino)
+        for path in staging.iterdir()
+    }
 
     finalize_backup_directory(staging, final)
 
     assert not staging.exists()
-    assert (final / "archive.tar.zst").read_bytes() == b"archive"
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_dev, path.stat().st_ino)
+        for path in final.iterdir()
+    } == before
 
 
 def test_finalize_never_overwrites_existing_final_directory(tmp_path: Path) -> None:

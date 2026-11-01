@@ -573,14 +573,14 @@ def test_discovery_progress_tracks_backups_bytes_and_manifest_failure(
     archives = {next(directory.glob("*.tar.zst")) for directory in directories[:2]}
     events: list[VerificationProgress] = []
     reads: list[Path] = []
-    original_open = Path.open
+    original_open = checksums_module._open_regular_file
 
     def track(path: Path, *args: Any, **kwargs: Any) -> Any:
         if path in archives:
             reads.append(path)
         return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", track)
+    monkeypatch.setattr(checksums_module, "_open_regular_file", track)
     monkeypatch.setattr(checksums_module, "_CHUNK_SIZE", 3)
     discovered = discover_backups(config, on_progress=events.append)
 
