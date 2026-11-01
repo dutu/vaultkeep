@@ -66,7 +66,7 @@ successful archive verification do not establish application-level consistency.
   Subdirectory mounts are supported; mounts nested inside a destination remain unsupported.
 
 The installer provides Debian Python 3.13+, `python3-venv`, GNU TAR, Zstandard,
-Debian `7zip`, `rsync`, and mount utilities including `util-linux`. It does not use
+Debian `7zip`, `rsync`, `dbus-user-session`, and mount utilities including `util-linux`. It does not use
 legacy `p7zip-full`. User automation needs a reachable systemd user manager;
 Trigger also needs a private account-owned `XDG_RUNTIME_DIR`.
 

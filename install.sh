@@ -358,7 +358,7 @@ install_dependencies() {
         return
     fi
     run apt-get update
-    run apt-get install -y python3 python3-venv tar zstd rsync util-linux mount 7zip
+    run apt-get install -y python3 python3-venv tar zstd rsync util-linux mount 7zip dbus-user-session
 }
 
 verify_executables() {
