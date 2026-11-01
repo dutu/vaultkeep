@@ -218,6 +218,7 @@ def _dispatch(
                     manager.disable(namespace.config, runtime_params=runtime_params)
                 else:
                     manager.remove(namespace.config, runtime_params=runtime_params)
+                    output.fields([("Schedule remove", "OK")])
                 if namespace.action in ("install", "update"):
                     output.print(f"schedule {namespace.action}: completed")
                 return 0

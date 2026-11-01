@@ -325,7 +325,7 @@ def test_user_workflow_paths_use_xdg_locations(
 
 @pytest.mark.parametrize("user_mode", [False, True])
 @pytest.mark.parametrize("action", ["install", "update", "next", "disable", "remove"])
-def test_schedule_dispatches_global_job_selection(monkeypatch, tmp_path, user_mode, action):
+def test_schedule_dispatches_global_job_selection(monkeypatch, tmp_path, user_mode, action, capsys):
     from vaultkeep.cli import commands
 
     config = tmp_path / "app.yaml"
@@ -361,6 +361,41 @@ def test_schedule_dispatches_global_job_selection(monkeypatch, tmp_path, user_mo
         == 0
     )
     assert calls == [user_mode, "environment", (action, config, {"repo": "nas-a"})]
+    if action == "remove":
+        assert capsys.readouterr().out == "Schedule remove:  OK\n"
+
+
+@pytest.mark.parametrize("user_mode", [False, True])
+def test_schedule_remove_failure_has_no_success_message(monkeypatch, tmp_path, capsys, user_mode):
+    from vaultkeep.cli import commands
+    from vaultkeep.errors import TimerError
+
+    class Manager:
+        def __init__(self, *, user_mode):
+            pass
+
+        def require_environment(self):
+            pass
+
+        def remove(self, path, *, runtime_params):
+            raise TimerError("Cannot verify timer ownership registry")
+
+    monkeypatch.setattr(commands, "TimerManager", Manager)
+    assert (
+        main(
+            [
+                *(["--user"] if user_mode else []),
+                "--config",
+                str(tmp_path / "app.yaml"),
+                "schedule",
+                "remove",
+            ]
+        )
+        != 0
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Cannot verify timer ownership registry" in captured.err
 
 
 @pytest.mark.parametrize("action", ["list", "validate", "sync"])

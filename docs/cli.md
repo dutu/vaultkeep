@@ -619,6 +619,9 @@ vaultkeep [--user] --config <job.yaml> schedule remove
 
 `schedule remove` disables and stops the timer, removes the per-job systemd drop-in, reloads the appropriate systemd manager, and unregisters the timer from Vaultkeep's timer ownership registry. It does not delete the job YAML file, local job state, or backup archives.
 
+Successful removal prints `Schedule remove:  OK`, including when the schedule is
+already absent.
+
 `schedule update` preserves timer enablement. `schedule disable` stops/disables
 future starts and clears persistent timer timestamps; `remove` also unregisters the
 managed instance. Neither stops a backup already running. For a temporary pause,
