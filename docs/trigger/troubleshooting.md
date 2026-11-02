@@ -28,6 +28,19 @@ A successful `status` exit does not mean the monitor or backups are healthy. Chi
 diagnostics under the fixed state root can contain job output; review/redact them
 before sharing. Preserve requests/receipts when investigating uncertain execution.
 
+## Electrum reports inspection unavailable after starting
+
+Run `vaultkeep --user --config /absolute/path/job.yaml status --verbose` while
+Electrum is running. `Observation reason: data directory metadata is not readable`
+can mean Electrum's memory hardening prevents reading its environment.
+
+Launch Electrum with an explicit absolute `-D` or `--dir` path matching
+`application.data_dir`. Vaultkeep uses this argument before `ELECTRUMDIR` and does
+not need environment access unless the matcher also declares `env_eq` predicates.
+Older Vaultkeep versions read the environment first even with `-D`; update
+Vaultkeep if this failure persists with an explicit directory argument. Keep
+Electrum's hardening enabled. See the [Electrum guide](apps/electrum.md#data-directory-identity).
+
 ## No monitor services are installed
 
 An empty `systemctl --user list-unit-files 'vaultkeep-trigger@*.service'` listing

@@ -84,11 +84,17 @@ checking the exact installed command line.
 
 Trigger resolves the effective data directory in this order:
 
-1. `ELECTRUMDIR`
-2. `-D` or `--dir`
+1. `-D` or `--dir`
+2. `ELECTRUMDIR` when no explicit directory argument is present
 
 Both separate arguments and `--dir=/path` are accepted. The resolved directory
 is canonicalized and compared with `application.data_dir`.
+
+An explicit directory argument takes precedence over `ELECTRUMDIR`, matching
+Electrum's behavior. Prefer an absolute `-D` or `--dir` path: Electrum's memory
+hardening can prevent the monitor from reading its environment. With an explicit
+directory, no environment read is needed unless `matcher.env_eq` requires one.
+Keep Electrum's hardening enabled.
 
 If Electrum uses its default directory without exposing one of those values,
 launch it with an explicit `--dir` argument or configure `ELECTRUMDIR` for the

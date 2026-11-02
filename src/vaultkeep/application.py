@@ -515,6 +515,12 @@ def _resolve_directory(
         directory = provider.resolve_directory(proc.pid, value)
         return (directory, "resolved") if directory is not None else (None, "inaccessible")
 
+    value = _option_value(proc.cmdline, _DIRECTORY_OPTIONS.get(app, ()))
+    # Electrum's explicit electrum_path overrides user_dir()/ELECTRUMDIR.
+    # Its memory hardening can make the environment unreadable even to its owner.
+    if app == "electrum" and value:
+        return resolve(value)
+
     env_key = _DIRECTORY_ENV_KEY.get(app)
     if env_key is not None:
         env = provider.read_env(proc.pid, [env_key])
@@ -523,7 +529,6 @@ def _resolve_directory(
         if env.get(env_key):
             return resolve(env[env_key])
 
-    value = _option_value(proc.cmdline, _DIRECTORY_OPTIONS.get(app, ()))
     if value:
         return resolve(value)
     return None, "unresolved"

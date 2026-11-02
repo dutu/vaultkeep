@@ -60,16 +60,18 @@ The effective directory is resolved and compared with `application.data_dir` (bo
 
 | App | Sources consulted |
 | --- | --- |
-| Electrum | `ELECTRUMDIR`, then `-D`/`--dir` |
+| Electrum | `-D`/`--dir`, then `ELECTRUMDIR` |
 | Wasabi | `WASABI_DATADIR`, then `--datadir` |
 | Bisq | `--appDataDir` |
 
 A directory token alone is insufficient without application identity. Directory values
 can be separate option/value tokens or `--option=value`; the first recognized option
 wins. Trigger does not infer a wallet's default directory or read its application
-configuration files. For Electrum/Wasabi, the allowed directory environment key is
-read before argv fallback; unreadable environment evidence blocks detection even when
-a directory option is present.
+configuration files. Electrum's explicit directory argument overrides `ELECTRUMDIR`
+and avoids reading the environment unless `matcher.env_eq` requires it. Without
+an explicit argument, unreadable environment evidence blocks detection. Wasabi's
+allowed directory environment key is read before argv fallback; unreadable
+environment evidence blocks detection even when a directory option is present.
 
 Process-reported `~/` paths use the configured application owner's account home;
 relative paths use that process's working directory. Neither uses the backup

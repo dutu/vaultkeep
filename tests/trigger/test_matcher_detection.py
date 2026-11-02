@@ -188,7 +188,10 @@ def test_detect_ambiguous_when_dir_unresolved() -> None:
 
 
 def test_detect_stopped_when_dir_differs() -> None:
-    provider = FakeProvider([_proc()], env={100: {"ELECTRUMDIR": "/home/other/.app"}})
+    provider = FakeProvider(
+        [_proc(cmdline=("/opt/app/run_app",))],
+        env={100: {"ELECTRUMDIR": "/home/other/.app"}},
+    )
     result = detect_spec(
         app="electrum",
         data_dir="/home/user/.app",
@@ -196,6 +199,79 @@ def test_detect_stopped_when_dir_differs() -> None:
         provider=provider,
     )
     assert result.observation is Observation.STOPPED
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("-D", "/home/user/.app"),
+        ("--dir", "/home/user/.app"),
+        ("--dir=/home/user/.app",),
+    ],
+)
+@pytest.mark.parametrize("env_readable", [False, True])
+def test_electrum_explicit_directory_does_not_read_environment(
+    monkeypatch, arguments, env_readable
+) -> None:
+    provider = FakeProvider(
+        [_proc(exe=None, cmdline=("/opt/app/run_app", *arguments))],
+        env={100: {"ELECTRUMDIR": "/home/other/.app"}},
+        env_readable=env_readable,
+    )
+
+    def unexpected_read(*_args):
+        raise AssertionError("explicit Electrum directory requires no environment read")
+
+    monkeypatch.setattr(provider, "read_env", unexpected_read)
+    result = detect_spec(
+        app="electrum", data_dir="/home/user/.app", matcher=make_matcher(), provider=provider
+    )
+    assert result.observation is Observation.RUNNING
+    assert (
+        detect_spec(
+            app="electrum", data_dir="/home/other/.app", matcher=make_matcher(), provider=provider
+        ).observation
+        is Observation.STOPPED
+    )
+
+
+def test_electrum_explicit_directory_keeps_required_environment_predicate() -> None:
+    result = detect_spec(
+        app="electrum",
+        data_dir="/home/user/.app",
+        matcher=make_matcher(env_key="ELECTRUMDIR", env_value="/home/user/.app"),
+        provider=FakeProvider([_proc()], env_readable=False),
+    )
+    assert result.observation is Observation.INSPECTION_UNAVAILABLE
+
+
+def test_electrum_relative_directory_does_not_fall_back_to_environment() -> None:
+    result = detect_spec(
+        app="electrum",
+        data_dir="/home/user/.app",
+        matcher=make_matcher(),
+        provider=FakeProvider(
+            [_proc(cmdline=("/opt/app/run_app", "-D", ".app"))],
+            env={100: {"ELECTRUMDIR": "/home/user/.app"}},
+        ),
+    )
+    assert result.observation is Observation.INSPECTION_UNAVAILABLE
+
+
+@pytest.mark.parametrize("env_readable", [False, True])
+def test_wasabi_directory_still_requires_environment_before_arguments(env_readable) -> None:
+    result = detect_spec(
+        app="wasabi",
+        data_dir="/home/user/.app",
+        matcher=make_matcher(),
+        provider=FakeProvider(
+            [_proc(cmdline=("/opt/app/run_app", "--datadir", "/home/user/.app"))],
+            env={100: {"WASABI_DATADIR": "/home/other/.app"}},
+            env_readable=env_readable,
+        ),
+    )
+    expected = Observation.STOPPED if env_readable else Observation.INSPECTION_UNAVAILABLE
+    assert result.observation is expected
 
 
 def test_detect_inspection_unavailable_when_env_unreadable() -> None:
