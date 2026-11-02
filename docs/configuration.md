@@ -230,10 +230,27 @@ New files are included automatically. Unchanged files create no archive; changes
 to permissions, ownership, or backup-relevant configuration can also require a
 backup. An empty selection finishes as `unchanged` without creating an archive.
 
-Each file has its own destination folder, local state, and retention history. A
-folder is named `file-<readable-name>-<sha256-of-original-filename>` so names remain
-distinct on case-insensitive shares. Inside it, backups use the usual timestamped
-directories and three artifacts. Each archive contains just `wallets/<filename>`
+Each file has its own destination folder, local state, and retention history.
+Folder names use the filename lowercased, with runs of characters outside ASCII
+letters and digits replaced by hyphens, trimmed and truncated to 40 characters
+(or `file` if empty). There is no fixed prefix or hash suffix. Collisions receive
+numeric suffixes starting at `-2`; for example, `Wallet.dat` and `wallet_dat` use
+`wallet-dat` and `wallet-dat-2`. Windows device names such as `con` also receive
+a suffix. Existing unindexed entries, including case variants, are left untouched
+and their names are skipped.
+
+The destination root contains `.vaultkeep-files.json`, a JSON object mapping each
+assigned directory name to its exact original source filename, including extension
+and capitalization. Backup runs add missing assignments before backing up each
+file, using the parent destination lock and atomic writes. Assignments remain even
+if a backup fails or its source is deleted or excluded; they are never reassigned.
+Keep this index with the backup data: `list`, `verify`, and `prune` discover histories
+through it without needing the sources. Missing indexes mean no registered histories;
+invalid indexes stop operations and are never automatically replaced. Do not delete
+or manually edit the index. Old hash-named directories are not imported or discovered.
+
+Inside each file folder, backups use the usual timestamped directories and three
+artifacts. Each archive contains just `wallets/<filename>`
 with the configuration above. Existing `tar.zst` and `tar.7z` formats apply; ZIP is
 not supported.
 
@@ -371,7 +388,8 @@ checks, marker updates, and cleanup, then release it before proceeding. A job
 targeting that child directly uses the same lock. Busy or failed histories are
 reported while independent siblings continue; the overall command reports failure.
 The batch does not reserve all children together. The parent directory's writable
-probe uses a short-lived parent lock and does not reserve its child histories.
+probe and per-file index updates use short-lived parent locks and do not reserve
+child histories.
 
 Vaultkeep creates `.vaultkeep.lock` when absent, with permissions subject to the
 creating process's umask. The history directory must permit creation, or an

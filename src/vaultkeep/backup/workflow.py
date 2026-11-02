@@ -76,9 +76,10 @@ from vaultkeep.errors import (
     VaultkeepError,
 )
 from vaultkeep.file_backups import (
+    destination_config,
     file_config,
     file_destinations,
-    file_key,
+    read_file_index,
     require_file_directory,
     select_files,
 )
@@ -758,13 +759,14 @@ def _run_file_backups(
     cleanup_errors: list[str] = []
     archive_size = 0
     require_application_offline(config, application=application)
+    read_file_index(Path(config.destination.root))
     report("Discovering files for independent backups")
     for source in select_files(config):
         report(f"Backing up {source.name!r}")
         try:
             # Recheck the parent share and marker before creating each namespace.
             _validate_runtime(config, require_sources=False, require_writable_destination=False)
-            child = file_config(config, source)
+            child = file_config(config, source, create=True)
             require_file_directory(Path(child.destination.root), create=True)
             _validate_runtime(child, require_sources=False, require_writable_destination=False)
             with destination_lock(Path(child.destination.root)):
@@ -775,7 +777,7 @@ def _run_file_backups(
                     paths=paths,
                     user_mode=user_mode,
                     progress=progress,
-                    source_file_key=file_key(source.name),
+                    source_file_key=Path(child.destination.root).name,
                     application=application,
                 )
             outcomes.append(FileBackupResult(source, result.result, result.archive_path))
@@ -1510,12 +1512,16 @@ def _active_history(
                     isinstance(backup, PendingBackup)
                     and not stat.S_ISREG(source_path.lstat().st_mode)
                 )
-                or backup.directory.parent.name != file_key(source_path.name)
+                or read_file_index(backup.directory.parent.parent).get(backup.directory.parent.name)
+                != source_path.name
                 or matcher.matches(source_path.name, is_directory=False)
             ):
                 return False
             return backup.manifest.replacement_identity == replacement_identity(
-                file_config(config, source_path), application=application
+                file_config(
+                    destination_config(config, backup.directory.parent.parent), source_path
+                ),
+                application=application,
             )
         except (ValueError, KeyError, IndexError, TypeError, OSError):
             return False
@@ -1527,10 +1533,11 @@ def _active_history(
         try:
             if stat.S_ISREG(source.lstat().st_mode):
                 # A derived single-file execution already selected this source.
-                orphans_active = root.name == file_key(source.name)
+                orphans_active = read_file_index(root.parent).get(root.name) == source.name
             else:
                 orphans_active = any(
-                    root.name == file_key(path.name) for path in select_files(config)
+                    read_file_index(root.parent).get(root.name) == path.name
+                    for path in select_files(config)
                 )
         except (SourceDiscoveryError, OSError):
             orphans_active = False

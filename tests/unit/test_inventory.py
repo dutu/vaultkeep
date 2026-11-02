@@ -67,7 +67,11 @@ def job(tmp_path, valid_config):
                 from vaultkeep.file_backups import file_key
 
                 if destination.name == file_key(filename):
-                    config = file_config(config, Path(config.sources[0].path) / filename)
+                    config = file_config(
+                        destination_config(config, root),
+                        Path(config.sources[0].path) / filename,
+                        create=True,
+                    )
                     config = config.model_copy(
                         update={
                             "destination": config.destination.model_copy(
@@ -383,7 +387,7 @@ def test_per_file_histories_share_parent_destination_and_sort_globally(job, caps
         str(item.directory.relative_to(job.root)) for item in (first, second)
     )
     assert out.index(second_path) < out.index(first_path)
-    assert "file-deleted-source-" in out and "Backups: 2" in out
+    assert "deleted-source/" in out and "Backups: 2" in out
 
 
 @pytest.mark.parametrize("encoding", ["ascii", "utf-8"])

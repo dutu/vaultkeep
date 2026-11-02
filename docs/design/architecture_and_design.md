@@ -472,15 +472,24 @@ hooks, encryption, and retention. The selected file is checked again after its
 `before_check` hook and must still be a single regular file. Directory enumeration
 precedes per-file hooks; no hooks run for an empty selection.
 
-The destination namespace is `file-<label>-<digest>` below the configured root.
-The label is the filename lowercased, with runs outside ASCII letters and digits
-replaced by hyphens, trimmed and truncated to 40 characters, or `file` if empty.
-The digest is the full SHA-256 of the original filename encoded with the lossless
-filesystem encoding. This bounds destination component length and distinguishes
-names that collide after sanitization or on case-insensitive shares. No mapping
-registry or additional destination metadata is needed. The job ID, name template,
-and manifest schema stay unchanged. `per_file` is included in the child
-configuration fingerprint; combined mode omits this field.
+The destination namespace uses the filename lowercased, with runs outside ASCII
+letters and digits replaced by hyphens, trimmed and truncated to 40 characters,
+or `file` if empty. No fixed prefix or hash suffix is added. Collisions use numeric
+suffixes starting at `-2`; Windows device names are skipped. Allocation also skips
+all existing destination entries case-insensitively, including files and symlinks.
+
+The parent `.vaultkeep-files.json` maps assigned directory names to exact original
+source filenames. Backup execution reserves missing assignments under the parent's
+shared destination lock, using atomic JSON replacement with file and directory
+fsync. Assignment precedes child directory creation and survives backup failures.
+Existing assignments are reused without rewriting the index. Entries remain after
+source deletion or exclusion and after retention removes backup artifacts. Index
+loading rejects duplicate keys, duplicate source assignments, unsafe names, links,
+and malformed data. Read-only operations never create or modify the index.
+History discovery uses only indexed directories, including deleted/excluded sources;
+legacy hash-named directories are not imported. The job ID, name template, and
+manifest schema stay unchanged. `per_file` is included in the child configuration
+fingerprint; combined mode omits this field.
 
 The original job lock covers selection and the complete batch. Each file's local
 identity additionally includes its destination key; this keeps its state, lock,

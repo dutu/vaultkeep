@@ -13,7 +13,15 @@ from pydantic import ValidationError
 from vaultkeep.backup import workflow
 from vaultkeep.config.models import JobConfig
 from vaultkeep.errors import DestinationError, SourceDiscoveryError
-from vaultkeep.file_backups import file_config, file_destinations, file_key, select_files
+from vaultkeep.file_backups import (
+    FILE_INDEX_NAME,
+    file_config,
+    file_destinations,
+    file_directory,
+    file_key,
+    read_file_index,
+    select_files,
+)
 from vaultkeep.state.identity import job_identity_hash
 
 
@@ -74,9 +82,9 @@ def test_source_must_be_a_real_accessible_directory(
 
 def test_names_remain_distinct_bounded_and_share_safe(tmp_path: Path) -> None:
     names = ("Wallet", "wallet", "wallet.", "CON", "duțu", "a" * 255, "a?b", "a:b")
-    keys = [file_key(name) for name in names]
+    keys = [file_directory(tmp_path, name, create=True) for name in names]
     assert len(set(keys)) == len(names)
-    assert all(re.fullmatch(r"file-[a-z0-9-]{1,40}-[0-9a-f]{64}", key) for key in keys)
+    assert all(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,59}", key) for key in keys)
     assert all(len(key) < 255 for key in keys)
     identities = {job_identity_hash(tmp_path / "app.yaml", "app", file_key=key) for key in keys}
     assert len(identities) == len(keys)
@@ -99,7 +107,8 @@ def test_child_config_preserves_file_name_and_parent_guards(
         }
     )
     source = tmp_path / "wallets" / "wallet A"
-    child = file_config(config, source)
+    (tmp_path / "backups").mkdir()
+    child = file_config(config, source, create=True)
     assert child.sources[0].path == str(source)
     assert child.sources[0].archive_prefix == (f"{prefix}/wallet A" if prefix else "wallet A")
     assert child.destination.root == str(tmp_path / "backups" / file_key("wallet A"))
@@ -122,7 +131,8 @@ def test_preserve_layout_keeps_absolute_source_path(
             ]
         }
     )
-    child = file_config(config, tmp_path / "wallets" / "wallet")
+    (tmp_path / "backups").mkdir()
+    child = file_config(config, tmp_path / "wallets" / "wallet", create=True)
     assert child.sources[0].archive_prefix is None
     assert child.sources[0].archive_path_mode == "preserve"
 
@@ -134,6 +144,7 @@ def test_discovery_ignores_unrelated_entries_and_refuses_managed_symlinks(
     (tmp_path / "unrelated").symlink_to(tmp_path, target_is_directory=True)
     (tmp_path / "file-looks-managed").touch()
     assert file_destinations(config) == ()
+    file_directory(tmp_path, "wallet", create=True)
     (tmp_path / file_key("wallet")).symlink_to(tmp_path, target_is_directory=True)
     from vaultkeep.destination.discovery import discover_backups
 
@@ -173,3 +184,103 @@ def test_early_file_failure_reports_failure_before_continuing(
     assert result.result == "failed"
     assert [outcome.result for outcome in result.files] == ["failed", "unchanged"]
     assert events[-2:] == [("Handling backup failure", error), ("Backing up 'b'", None)]
+
+
+def test_assignments_are_stable_and_never_reused(tmp_path):
+    first = file_directory(tmp_path, "Wallet.dat", create=True)
+    second = file_directory(tmp_path, "wallet_dat", create=True)
+    assert (first, second) == ("wallet-dat", "wallet-dat-2")
+    (tmp_path / first).mkdir()
+    (tmp_path / first).rmdir()
+    assert file_directory(tmp_path, "wallet.dat", create=True) == "wallet-dat-3"
+    assert file_directory(tmp_path, "Wallet.dat", create=True) == first
+    assert read_file_index(tmp_path) == {
+        "wallet-dat": "Wallet.dat",
+        "wallet-dat-2": "wallet_dat",
+        "wallet-dat-3": "wallet.dat",
+    }
+    before = (tmp_path / FILE_INDEX_NAME).stat()
+    file_directory(tmp_path, "wallet_dat", create=True)
+    after = (tmp_path / FILE_INDEX_NAME).stat()
+    assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+
+
+def test_unindexed_entries_are_not_adopted_even_with_case_differences(tmp_path):
+    (tmp_path / "WALLET-DAT").mkdir()
+    (tmp_path / "wallet-dat-2").touch()
+    (tmp_path / "wallet-dat-3").symlink_to(tmp_path / "missing")
+    assert file_directory(tmp_path, "Wallet.dat", create=True) == "wallet-dat-4"
+    assert read_file_index(tmp_path) == {"wallet-dat-4": "Wallet.dat"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{",
+        "[]",
+        '{"../escape": "wallet"}',
+        '{"Wallet": "wallet"}',
+        '{"wallet": "../source"}',
+        '{"wallet": 42}',
+        '{"one": "wallet", "two": "wallet"}',
+        '{"one": "a", "one": "b"}',
+        '{"con": "wallet"}',
+    ],
+)
+def test_invalid_index_is_preserved_and_blocks_new_assignments(tmp_path, payload):
+    index = tmp_path / FILE_INDEX_NAME
+    index.write_text(payload)
+    with pytest.raises(DestinationError, match="index"):
+        file_directory(tmp_path, "new", create=True)
+    assert index.read_text() == payload
+    assert not (tmp_path / "new").exists()
+
+
+def test_index_symlink_is_rejected_without_touching_target(tmp_path):
+    target = tmp_path / "outside"
+    target.write_text("{}")
+    (tmp_path / FILE_INDEX_NAME).symlink_to(target)
+    with pytest.raises(DestinationError, match="index"):
+        file_directory(tmp_path, "wallet", create=True)
+    assert target.read_text() == "{}"
+
+
+def test_index_allocation_uses_shared_parent_lock(tmp_path):
+    from vaultkeep.errors import LockError
+    from vaultkeep.locking import destination_lock
+
+    with destination_lock(tmp_path), pytest.raises(LockError):
+        file_directory(tmp_path, "wallet", create=True)
+    assert not (tmp_path / FILE_INDEX_NAME).exists()
+
+
+def test_failed_atomic_index_update_preserves_previous_assignments(tmp_path, monkeypatch):
+    from vaultkeep.state import atomic
+
+    file_directory(tmp_path, "a", create=True)
+    before = (tmp_path / FILE_INDEX_NAME).read_bytes()
+
+    def fail(*args):
+        raise OSError("disconnected")
+
+    monkeypatch.setattr(atomic.os, "replace", fail)
+    with pytest.raises(DestinationError, match="Cannot save per-file index"):
+        file_directory(tmp_path, "b", create=True)
+    assert (tmp_path / FILE_INDEX_NAME).read_bytes() == before
+    assert not list(tmp_path.glob(".state-*.tmp"))
+
+
+def test_read_only_resolution_and_discovery_never_create_an_index(tmp_path, valid_config):
+    config = _config(valid_config, tmp_path / "missing-source", tmp_path)
+    before = set(tmp_path.iterdir())
+    assert file_destinations(config) == ()
+    with pytest.raises(DestinationError, match="No per-file index assignment"):
+        file_config(config, tmp_path / "missing-source" / "wallet")
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_index_preserves_exact_filesystem_names(tmp_path):
+    names = ["duțu.dat", "Wallet.DAT", "raw-\udcff", "a\\b"]
+    for name in names:
+        key = file_directory(tmp_path, name, create=True)
+        assert read_file_index(tmp_path)[key] == name

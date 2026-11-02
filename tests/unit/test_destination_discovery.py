@@ -188,7 +188,10 @@ def test_verify_checks_all_archives_and_reports_all_failures(
     valid_config["backup_mode"] = backup_mode
     config = _config(tmp_path, valid_config)
     destinations = (
-        [file_config(config, Path("/missing-source") / name) for name in ("one", "two")]
+        [
+            file_config(config, Path("/missing-source") / name, create=True)
+            for name in ("one", "two")
+        ]
         if backup_mode == "per_file"
         else [config, config]
     )
@@ -248,7 +251,7 @@ def test_verify_loads_one_password_for_all_backups_and_always_clears_it(
     config = _config(tmp_path, valid_config)
     for number in (1, 2):
         destination = (
-            file_config(config, Path("/missing") / f"wallet-{number}")
+            file_config(config, Path("/missing") / f"wallet-{number}", create=True)
             if backup_mode == "per_file"
             else config
         )
@@ -302,7 +305,7 @@ def test_list_never_reads_archive_contents_but_verify_and_prune_still_check_them
     valid_config["backup_mode"] = backup_mode
     config = _config(tmp_path, valid_config)
     destination = (
-        file_config(config, tmp_path / "missing-source" / "wallet")
+        file_config(config, tmp_path / "missing-source" / "wallet", create=True)
         if backup_mode == "per_file"
         else config
     )
@@ -662,7 +665,7 @@ def test_verification_phase_totals_and_operation_failures(
     valid_config["backup_mode"] = backup_mode
     config = _config(tmp_path, valid_config)
     destinations = (
-        [file_config(config, Path("/missing") / name) for name in ("one", "two")]
+        [file_config(config, Path("/missing") / name, create=True) for name in ("one", "two")]
         if backup_mode == "per_file"
         else [config, config]
     )

@@ -23,7 +23,7 @@ from vaultkeep.errors import (
     TimerError,
     VaultkeepError,
 )
-from vaultkeep.file_backups import file_key, select_files
+from vaultkeep.file_backups import read_file_index, select_files
 from vaultkeep.schedule import TimerManager
 from vaultkeep.schedule.status import unit_properties as _unit_properties
 from vaultkeep.state.identity import job_identity_hash, job_state_path
@@ -305,11 +305,14 @@ def _backup_history(
     user_mode: bool,
 ) -> None:
     root = (user_workflow_paths() if user_mode else WorkflowPaths()).state_root
-    files: list[tuple[str | None, str | None]] = (
-        [(file_key(path.name), path.name) for path in select_files(config)]
-        if config.backup_mode == "per_file"
-        else [(None, None)]
-    )
+    files: list[tuple[str | None, str | None]] = [(None, None)]
+    if config.backup_mode == "per_file":
+        selected = {path.name for path in select_files(config)}
+        files = [
+            (key, name)
+            for key, name in read_file_index(Path(config.destination.root)).items()
+            if name in selected
+        ]
     recorded = False
     for key, name in files:
         identity = job_identity_hash(

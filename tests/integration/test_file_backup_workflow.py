@@ -431,6 +431,9 @@ def test_previous_fingerprint_requires_new_backup_with_existing_or_reconstructed
 def test_managed_destination_link_is_rejected_without_writing_through_it(file_job: Path) -> None:
     outside = file_job.parent / "outside"
     outside.mkdir()
+    from vaultkeep.file_backups import file_directory
+
+    file_directory(file_job.parent / "backups", "personal wallet", create=True)
     (file_job.parent / "backups" / file_key("personal wallet")).symlink_to(outside)
     result = _run(file_job)
     assert [outcome.result for outcome in result.files] == ["failed", "created"]
@@ -571,3 +574,55 @@ def test_child_lock_spans_discovery_and_mutation_and_releases_between_histories(
     if operation == "run":
         phases.add("cleanup")
     assert seen == {(history, phase) for history in histories for phase in phases}
+
+
+def test_colliding_names_keep_independent_histories_and_index(file_job):
+    from vaultkeep.file_backups import FILE_INDEX_NAME
+
+    source = Path(json.loads(file_job.read_text())["sources"][0]["path"])
+    for child in source.iterdir():
+        if child.is_file() and not child.is_symlink():
+            child.unlink()
+    (source / "Wallet.dat").write_text("first")
+    (source / "wallet_dat").write_text("second")
+    first = _run(file_job)
+    assert [item.result for item in first.files] == ["created", "created"]
+    root = file_job.parent / "backups"
+    index = root / FILE_INDEX_NAME
+    assert json.loads(index.read_text()) == {
+        "wallet-dat": "Wallet.dat",
+        "wallet-dat-2": "wallet_dat",
+    }
+    assert {item.archive_path.parent.parent.name for item in first.files} == {
+        "wallet-dat",
+        "wallet-dat-2",
+    }
+    before = index.read_bytes()
+    assert _run(file_job).result == "unchanged"
+    (source / "Wallet.dat").unlink()
+    assert _run(file_job).result == "unchanged"
+    assert index.read_bytes() == before
+    assert workflow.verify_backups(file_job, user_mode=True).backups == 2
+    inventory = workflow.list_backups(file_job, user_mode=True)
+    assert len(inventory.backups) == 2
+    assert index.read_bytes() == before
+
+
+@pytest.mark.parametrize("operation", ["run", "list", "verify", "prune"])
+def test_invalid_file_index_blocks_commands_without_replacing_it(file_job, operation):
+    from vaultkeep.file_backups import FILE_INDEX_NAME
+
+    assert _run(file_job).result == "created"
+    root = file_job.parent / "backups"
+    index = root / FILE_INDEX_NAME
+    index.write_text("{broken")
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    command = {
+        "run": _run,
+        "list": lambda job: workflow.list_backups(job, user_mode=True),
+        "verify": lambda job: workflow.verify_backups(job, user_mode=True),
+        "prune": lambda job: workflow.prune_backups(job, user_mode=True, dry_run=False),
+    }[operation]
+    with pytest.raises(DestinationError, match="Invalid per-file index"):
+        command(file_job)
+    assert {path: path.read_bytes() for path in root.rglob("*") if path.is_file()} == before

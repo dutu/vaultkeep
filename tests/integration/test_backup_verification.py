@@ -79,7 +79,7 @@ def _backup(
 ) -> Path:
     config = load_validated_config(job)
     if config.backup_mode == "per_file":
-        config = file_config(config, Path(config.sources[0].path) / f"wallet-{number}")
+        config = file_config(config, Path(config.sources[0].path) / f"wallet-{number}", create=True)
         Path(config.destination.root).mkdir()
     created = datetime(2026, 10, 24, number, tzinfo=UTC)
     paths = allocate_job_backup_paths(
@@ -211,7 +211,7 @@ def test_verify_real_archives_without_sources_preserves_backups_and_state(
         "Phase 2/2: Archive integrity"
     )
     assert len(tuple((job.parent / "backups").rglob(DESTINATION_LOCK_NAME))) == (
-        2 if backup_mode == "per_file" else 1
+        3 if backup_mode == "per_file" else 1
     )
     for number, archive in enumerate(archives, 1):
         assert f"2026-10-24 {number:02d}:00  OK        OK       OK" in output.out

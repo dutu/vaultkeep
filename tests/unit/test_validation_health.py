@@ -364,14 +364,14 @@ def test_corrupt_trigger_state_is_reported_without_repair(health_job, monkeypatc
 
 
 def test_per_file_failure_uses_file_identity_and_readable_name(health_job, capsys):
-    from vaultkeep.file_backups import file_key
+    from vaultkeep.file_backups import file_directory
 
     path = write_job(health_job)
     data = json.loads(path.read_text())
     data["backup_mode"] = "per_file"
     path.write_text(json.dumps(data))
     (path.parent / "source/wallet.dat").write_text("wallet")
-    key = file_key("wallet.dat")
+    key = file_directory(path.parent / "destination", "wallet.dat", create=True)
     state_path = job_state_path(
         path, "app", file_key=key, state_root=path.parent / "state/vaultkeep/jobs"
     )

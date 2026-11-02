@@ -203,6 +203,9 @@ sudo nano "$job_config"
    Vaultkeep creates a persistent `.vaultkeep.lock` in each destination history.
    Every backup account needs read/write access to that file. `per_file` jobs lock
    each child history separately; independent histories can run concurrently.
+   They also briefly lock the parent to update `.vaultkeep-files.json`, which maps
+   readable directory names to original filenames. Keep this index with the backups;
+   see [independent file backups](docs/configuration.md#back-up-directory-files-separately).
    Keep lock files in place, including after a crash.
 
    For CIFS/NFS, writers must reach the same remote lock file through the same
