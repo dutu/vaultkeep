@@ -65,6 +65,8 @@ def test_execution_messages_follow_the_authoritative_result(execution, recorder,
     assert "(local time)" in recorder.calls[-1][1]
     assert all(key == f"backup:{execution.execution_id}" for key, _ in recorder.options)
     assert recorder.options[-1][1]
+    assert all(recorder.persistence[:-1])
+    assert not recorder.persistence[-1]
     history = read_history(execution.directory / "execution.json", "app", "a" * 16)
     assert history.current is None
 

@@ -177,12 +177,12 @@ backup history, scheduling, or Trigger recovery state.
 
 With `notify-send`, including an absolute path ending in `notify-send`, Backup start,
 progress, and final-result messages share one replacement identity per execution.
-`--print-id` and `--replace-id` update the existing notification, and
-`--expire-time=0` requests that it remain until dismissed, including after completion.
-A later execution starts a new notification. Trigger uses separate identities for
-orchestration outcomes; its application and request alerts use the desktop's default
-expiration. The desktop controls actual visibility, expiration, and whether updates
-create another popup. Do Not Disturb can suppress popups.
+`--print-id` and `--replace-id` update the existing notification. Start and progress
+messages request that it stay visible until dismissed. The final result uses the
+desktop's default expiration. A later execution starts a new notification. Trigger
+uses separate identities for orchestration outcomes. Its application and request
+alerts use the desktop's default expiration. The desktop controls actual visibility,
+expiration, and whether updates create another popup. Do Not Disturb can suppress popups.
 
 Replacement IDs are process-local and cleared when the selected session bus changes.
 Queued progress can be replaced by newer progress or the final result so a slow

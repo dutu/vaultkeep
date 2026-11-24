@@ -30,12 +30,14 @@ def test_shutdown_delivers_final_after_inflight_start_without_obsolete_progress(
         for number in range(100):
             notifier.notify("Running", str(number), key="backup:exec", replace_pending=True)
         assert len(notifier._pending) == 1
-        notifier.notify("Completed", "created", key="backup:exec", finished=True)
+        notifier.notify("Completed", "created", key="backup:exec", finished=True, persistent=False)
     finally:
         release.set()
         notifier.close()
     assert [argv[-2] for argv in calls] == ["Started", "Completed"]
+    assert "--expire-time=0" in calls[0]
     assert "--replace-id=73" in calls[-1]
+    assert not any(arg.startswith("--expire-time=") for arg in calls[-1])
     assert not notifier._pending
     notifier.notify("Late", "ignored")
     assert len(calls) == 2

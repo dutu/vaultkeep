@@ -120,6 +120,7 @@ class RecordingNotifier:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.options: list[tuple[str | None, bool]] = []
+        self.persistence: list[bool] = []
 
     def notify(
         self,
@@ -129,9 +130,11 @@ class RecordingNotifier:
         key: str | None = None,
         finished: bool = False,
         replace_pending: bool = False,
+        persistent: bool = True,
     ) -> None:
         self.calls.append((title, body))
         self.options.append((key, finished))
+        self.persistence.append(persistent)
 
     def close(self) -> None:
         pass

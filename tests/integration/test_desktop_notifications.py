@@ -162,12 +162,14 @@ def test_real_notification_delivery_survives_desktop_session_replacement(monkeyp
             )  # Stale service environment.
             daemon, gui, _new_address = session(92)
             notifier.notify("Running", "Verifying archive checksum", key="job")
-            notifier.notify("Finished", "New archive created", key="job", finished=True)
+            notifier.notify(
+                "Finished", "New archive created", key="job", finished=True, persistent=False
+            )
             wait(notifier)
             records = [json.loads(line) for line in log.read_text().splitlines()]
             assert [record["replace"] for record in records] == [0, 81, 0, 81], records
             assert records[-1]["body"] == "New archive created"
-            assert all(record["expiration"] == 0 for record in records)
+            assert [record["expiration"] for record in records] == [0, 0, 0, -1], records
             assert not notifier._notification_ids
     finally:
         for process in reversed(processes):

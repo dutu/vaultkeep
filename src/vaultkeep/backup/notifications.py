@@ -45,6 +45,7 @@ class BackupNotifications:
                 key=key,
                 finished=finished,
                 replace_pending=replace_pending,
+                persistent=not finished,
             )
         except Exception as error:
             _LOG.warning("Backup notification unavailable: %s", error)

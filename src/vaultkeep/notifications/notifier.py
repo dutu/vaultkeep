@@ -31,6 +31,7 @@ class _Notification:
     key: str | None
     finished: bool
     replace_pending: bool
+    persistent: bool
 
 
 class Notifier(Protocol):
@@ -44,6 +45,7 @@ class Notifier(Protocol):
         key: str | None = None,
         finished: bool = False,
         replace_pending: bool = False,
+        persistent: bool = True,
     ) -> None:
         """Deliver a notification without raising on failure."""
 
@@ -62,6 +64,7 @@ class NullNotifier:
         key: str | None = None,
         finished: bool = False,
         replace_pending: bool = False,
+        persistent: bool = True,
     ) -> None:
         return None
 
@@ -91,6 +94,7 @@ class NotifySendNotifier:
         key: str | None = None,
         finished: bool = False,
         replace_pending: bool = False,
+        persistent: bool = True,
     ) -> None:
         if not self._config.enabled:
             return
@@ -103,7 +107,9 @@ class NotifySendNotifier:
                 self._pending = deque(
                     item for item in self._pending if item.key != key or not item.replace_pending
                 )
-            self._pending.append(_Notification(title, body, key, finished, replace_pending))
+            self._pending.append(
+                _Notification(title, body, key, finished, replace_pending, persistent)
+            )
             if self._worker is None:
                 self._worker = threading.Thread(target=self._drain, daemon=True)
                 try:
@@ -136,13 +142,12 @@ class NotifySendNotifier:
                     return
                 notification = self._pending.popleft()
             try:
-                self._deliver(
-                    notification.title, notification.body, notification.key, notification.finished
-                )
+                self._deliver(notification)
             except Exception as error:
                 _LOG.warning("Desktop notification delivery failed: %s", error)
 
-    def _deliver(self, title: str, body: str, key: str | None, finished: bool) -> None:
+    def _deliver(self, notification: _Notification) -> None:
+        key, finished = notification.key, notification.finished
         timeout = self._config.timeout_ms / 1000.0
         deadline = monotonic() + timeout
         with self._lock:
@@ -165,8 +170,10 @@ class NotifySendNotifier:
             argv.append("--print-id")
             if key in self._notification_ids:
                 argv.append(f"--replace-id={self._notification_ids[key]}")
-            argv.extend(["--expire-time=0", "--"])
-        argv.extend([title, body])
+            if notification.persistent:
+                argv.append("--expire-time=0")
+            argv.append("--")
+        argv.extend([notification.title, notification.body])
         remaining = deadline - monotonic()
         if remaining <= 0:
             _LOG.warning("Desktop notification delivery deadline exceeded")
