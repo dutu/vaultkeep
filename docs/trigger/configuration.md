@@ -27,8 +27,8 @@ trigger:
 
 This fragment supplements a complete job. Copy and customize one of the complete,
 disabled examples: [Electrum](../../examples/electrum-trigger.yaml),
-[Bisq](../../examples/bisq-trigger.yaml), or
-[Wasabi](../../examples/wasabi-trigger.yaml). Use the
+[Bisq](../../examples/bisq-trigger.yaml), [Wasabi](../../examples/wasabi-trigger.yaml),
+or [Monero](../../examples/monero-trigger.yaml). Use the
 [schedule example](../../examples/vaultkeep-schedule.yaml) for other jobs.
 Process support and directory-identification limitations are documented in
 [process detection](process-detection.md); examples do not certify installed app versions.
@@ -40,6 +40,7 @@ Application-specific setup and multiple-instance guidance:
 | Bisq 1 GUI/API daemon | [Bisq Trigger configuration](apps/bisq.md) |
 | Electrum | [Electrum Trigger configuration](apps/electrum.md) |
 | Wasabi GUI/daemon | [Wasabi Trigger configuration](apps/wasabi.md) |
+| Monero Wallet GUI/RPC | [Monero Trigger configuration](apps/monero.md) |
 
 ## Fields
 
@@ -73,7 +74,7 @@ entry point; there is no separately configured core executable.
 | `exe_realpath` | Optional absolute interpreter/executable identity. |
 | `argv_tokens` | Additional exact argv tokens; each 1–4096 characters. |
 | `cmdline_regex` | Optional valid regex, at most 200 characters. |
-| `env_eq` | Allowed environment predicates: Electrum `ELECTRUMDIR`, Wasabi `WASABI_DATADIR`; none for Bisq. |
+| `env_eq` | Allowed environment predicates: Electrum `ELECTRUMDIR` and Wasabi `WASABI_DATADIR`. |
 
 Each `entrypoints` item requires `kind` (`script`, `jar`, or `java_main`) and
 `value`. Entries are alternatives: any one can establish the application
@@ -85,6 +86,10 @@ start with `~/`. Home expansion uses the operating-system account record, not an
 arbitrary `HOME`. Shell expressions and environment-variable expansion are not
 performed. Executable identity alone is insufficient; at least one entrypoint is required.
 See [process detection](process-detection.md) for ambiguity and writer coverage.
+
+Monero requires `script` paths for both `monero-wallet-gui` and
+`monero-wallet-rpc`. List every installed path in use. Only `entrypoints` may
+constrain the Monero matcher so that both frontends remain covered by the guard.
 
 ## Parameters and identity
 

@@ -2186,6 +2186,7 @@ vaultkeep/
 │   ├── results.py     # common outcomes and error classification
 │   └── status.py      # read-only backup interpretation
 ├── application.py # shared application identity, detection and offline checks
+├── monero.py      # Monero Wallet GUI and RPC wallet selection
 ├── trigger/       # shutdown confirmation, dispatch and recovery
 ├── schedule/      # systemd timers and scheduler health
 ├── config/
@@ -2821,6 +2822,7 @@ vaultkeep/
 │   ├── vaultkeep-schedule.yaml
 │   ├── electrum-trigger.yaml
 │   ├── bisq-trigger.yaml
+│   ├── monero-trigger.yaml
 │   └── wasabi-trigger.yaml
 ├── systemd/
 │   ├── vaultkeep@.service

@@ -38,6 +38,7 @@ trigger:
   operator validation requirement.
   The `script` form also checks argv[0] and can identify a verified native binary whose
   absolute launch path appears there.
+  Monero uses the absolute executable path or absolute argv[0] only.
 - `cmdline_regex` is capped at 200 characters and must accompany strong identity.
   It uses Python `re.fullmatch` against each token. Configured `argv_tokens` have a
   4096-character cap, but actual process tokens and regex execution time are not
@@ -63,11 +64,11 @@ The effective directory is resolved and compared with `application.data_dir` (bo
 | Electrum | `-D`/`--dir`, then `ELECTRUMDIR` |
 | Wasabi | `WASABI_DATADIR`, then `--datadir` |
 | Bisq | `--appDataDir` |
+| Monero | Parent of the GUI-selected `wallet_path` or RPC-selected `wallet-file` |
 
-A directory token alone is insufficient without application identity. Directory values
-can be separate option/value tokens or `--option=value`; the first recognized option
-wins. Trigger does not infer a wallet's default directory or read its application
-configuration files. Electrum's explicit directory argument overrides `ELECTRUMDIR`
+A directory token alone is insufficient without application identity. Bisq,
+Electrum, and Wasabi accept separate option/value tokens or `--option=value` and
+use the first recognized option. Electrum's explicit directory argument overrides `ELECTRUMDIR`
 and avoids reading the environment unless `matcher.env_eq` requires it. Without
 an explicit argument, unreadable environment evidence blocks detection. Wasabi's
 allowed directory environment key is read before argv fallback; unreadable
@@ -84,6 +85,11 @@ Bisq has a single supported automatic directory source: the explicit
 Bisq instance must include it. `--userDataDir`, `--appName`, and
 `--configFile` are not inferred because config-file evidence is mutable and the
 default directory is not a unique instance identity.
+
+Monero reads GUI settings and explicit wallet RPC settings as described in the
+[Monero setup guide](apps/monero.md). A wallet selection in the watched directory
+arms the monitor. Every configured same-user frontend guards shutdown even if
+its selection changes or the settings become unreadable.
 
 Unresolved directory evidence or inaccessible relevant metadata blocks dispatch.
 Cross-job matcher overlap is **not** detected automatically: check that each
@@ -105,9 +111,17 @@ Examples must be disabled until locally verified. Do not present upstream argume
 - **Electrum hardening:** the reviewed `run_electrum` enables Linux memory hardening using `PR_SET_DUMPABLE=0`. Verify which metadata remains readable by the normal user; executable-path access may fail. Do not disable hardening, modify startup, or add elevated privileges to satisfy the detector. Use only verified accessible identity evidence and report unsupported identification when it is insufficient.
 - **Bisq:** validate desktop and daemon entry points, packaged launchers, JVM identity, and explicit `--appDataDir` evidence. One job may list both GUI and API-daemon identities; the selected canonical directory distinguishes instances. Bisq 2 has a different process/configuration model and is outside the initial scope.
 - **Wasabi:** validate GUI and daemon executable identities and auxiliary processes. Upstream documents `--datadir` and `WASABI_DATADIR`; only read explicitly allowed nonsecret environment keys if this is necessary and permitted.
+- **Monero:** as the wallet owner, verify every native Wallet GUI and wallet RPC launch path in use. Confirm the GUI's active settings source, including the `.portable` marker or legacy portable settings when applicable. For wallet RPC, check the direct `--wallet-file` option or the `wallet-file` entry in the explicit `--config-file`. Confirm that the selected wallet's canonical parent matches `application.data_dir` and that switching wallets or closing one frontend leaves the guard active until all configured frontends exit. [Monero setup guide](apps/monero.md)
 - **Related processes:** establish which processes can continue writing the selected sources. Parentage alone is insufficient once a child is reparented. Ignore unrelated helpers only when their role is verified.
 
 Source references: local Electrum `run_electrum`, `electrum/commands.py`, `electrum/daemon.py`, `electrum/simple_config.py`, `electrum/util.py`, and `electrum/harden_memory_linux.py`; upstream [Bisq configuration source](https://raw.githubusercontent.com/bisq-network/bisq/master/common/src/main/java/bisq/common/config/Config.java), [Wasabi startup parameters](https://docs.wasabiwallet.io/using-wasabi/StartupParameters.html), and [Linux executable-path access rules](https://man7.org/linux/man-pages/man5/proc_pid_exe.5.html).
+
+Monero upstream references cover the portable marker and legacy selection rules,
+as well as the RPC wallet and configuration-file options.
+[GUI portable marker](https://github.com/monero-project/monero-gui/blob/master/src/qt/PortableSettings.cpp#L186-L197),
+[GUI legacy settings](https://github.com/monero-project/monero-gui/blob/v0.18.5.4/src/qt/MoneroSettings.cpp#L168-L176),
+[RPC wallet selection](https://github.com/monero-project/monero/blob/v0.18.5.4/src/wallet/wallet_rpc_server.cpp#L4647-L4684),
+[RPC configuration-file parsing](https://github.com/monero-project/monero/blob/v0.18.5.4/src/wallet/wallet_args.cpp#L153-L167).
 
 The expected Electrum installation at `~/.local/opt/electrum/current` was not available
 at the source-review baseline. Installed Bisq and Wasabi behavior was not verified.
@@ -117,8 +131,8 @@ identity matches. Revalidate against the intended installed versions before enab
 automatic execution.
 
 Use the application-specific guides for complete working examples:
-[Bisq](apps/bisq.md), [Electrum](apps/electrum.md), and
-[Wasabi](apps/wasabi.md).
+[Bisq](apps/bisq.md), [Electrum](apps/electrum.md),
+[Wasabi](apps/wasabi.md), and [Monero](apps/monero.md).
 
 No automatic process-model validation command is provided. Keep the shipped
 [application job examples](../../README.md#configure-and-validate-trigger) disabled until these checks pass.

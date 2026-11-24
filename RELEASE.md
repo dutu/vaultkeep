@@ -657,6 +657,7 @@ required = [
     "src/vaultkeep/trigger/cli.py",
     "examples/vaultkeep-schedule.yaml",
     "examples/electrum-trigger.yaml",
+    "examples/monero-trigger.yaml",
     "examples/bisq-trigger.yaml",
     "examples/wasabi-trigger.yaml",
     "README.md",

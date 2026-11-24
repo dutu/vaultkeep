@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Annotated, Literal, Self
 
@@ -107,6 +108,7 @@ class ScheduleConfig(StrictConfigModel):
 
 
 TriggerSeconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+MONERO_EXECUTABLES = frozenset({"monero-wallet-gui", "monero-wallet-rpc"})
 
 
 class TriggerEntrypointConfig(StrictConfigModel):
@@ -159,6 +161,15 @@ class TriggerMatcherConfig(StrictConfigModel):
                 raise ValueError("matcher entrypoints must be unique")
             seen.add(identity)
         return self
+
+    def validate_monero(self) -> None:
+        names = {os.path.basename(entry.value) for entry in self.entrypoints}
+        if names != MONERO_EXECUTABLES or any(entry.kind != "script" for entry in self.entrypoints):
+            raise ValueError(
+                "Monero requires script paths for monero-wallet-gui and monero-wallet-rpc"
+            )
+        if self.exe_realpath is not None or self.argv_tokens or self.cmdline_regex or self.env_eq:
+            raise ValueError("Monero matcher does not allow additional process predicates")
 
 
 class NotificationCategoryConfig(StrictConfigModel):
@@ -230,7 +241,7 @@ class ConsistencyConfig(StrictConfigModel):
 class ApplicationConfig(StrictConfigModel):
     """Raw application settings, with an optional system-scope owner override."""
 
-    name: Literal["electrum", "bisq", "wasabi"]
+    name: Literal["electrum", "bisq", "wasabi", "monero"]
     user: NonEmptyString | None = None
     data_dir: NonEmptyString
     matcher: TriggerMatcherConfig
@@ -244,6 +255,9 @@ class ApplicationConfig(StrictConfigModel):
 
     @model_validator(mode="after")
     def _allowed_environment(self) -> Self:
+        if self.name == "monero":
+            self.matcher.validate_monero()
+            return self
         allowed = {"electrum": {"ELECTRUMDIR"}, "wasabi": {"WASABI_DATADIR"}, "bisq": set()}
         unknown = set(self.matcher.env_eq) - allowed[self.name]
         if unknown:

@@ -33,6 +33,7 @@ behavior is specified in its [execution boundary](../design/trigger.md#backup-ex
 | Electrum memory-hardening metadata access | Open | Same-user metadata sufficient for safe identification |
 | Bisq desktop/daemon identity and directories | Implemented; deployment validation open | GUI/daemon alternatives and explicit `--appDataDir` parsing are tested; verify installed launchers |
 | Wasabi GUI/daemon identity and directories | Open | Verified executable identity and directory resolution |
+| Monero Wallet GUI and wallet RPC | Native v0.18.5.4 smoke test passed in the Debian VM. Deployment validation open. | The VM covered normal and legacy portable GUI settings, a live wallet switch, and direct and config-file RPC launches. Automated regressions cover the `.portable` marker and conflicting RPC wallet paths. Verify installed versions, launch paths, settings, and related writers using the [process-detection checklist](../trigger/process-detection.md#validation-before-enabling). |
 | Related writer processes | Open | Establish all processes that can keep writing each instance's job sources |
 | Job scope and destination ownership | Open | One reviewed instance scope per job; distinct effective destinations and external-run review |
 | Installed VaultKeep contract/version | Open | Recheck installed version, exact CLI behavior, environment, and preflight limits |

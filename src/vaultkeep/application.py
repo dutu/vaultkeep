@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import pwd
 import re
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -13,8 +14,14 @@ from typing import Any, Protocol
 
 import psutil  # type: ignore[import-untyped]
 
-from vaultkeep.config.models import ApplicationConfig, JobConfig, TriggerMatcherConfig
+from vaultkeep.config.models import (
+    MONERO_EXECUTABLES,
+    ApplicationConfig,
+    JobConfig,
+    TriggerMatcherConfig,
+)
 from vaultkeep.errors import ApplicationIdentityError, SourceDiscoveryError, ValidationIssue
+from vaultkeep.monero import MoneroAdapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +190,18 @@ def resolve_application(
     )
     # model_copy does not copy update values; detach the entire finished snapshot.
     matcher = matcher.model_copy(deep=True)
+    if application.name == "monero":
+        try:
+            matcher.validate_monero()
+        except ValueError as error:
+            raise ApplicationIdentityError(
+                ValidationIssue(
+                    ("application", "matcher"),
+                    str(error),
+                    "application_path",
+                ),
+                config_path=config_path,
+            ) from error
     resolved = ResolvedApplication(
         name=application.name,
         user=account.pw_name,
@@ -223,9 +242,11 @@ class MatcherSpec:
         return payload
 
 
-def matcher_from_canonical(data: dict[str, Any]) -> MatcherSpec:
+def matcher_from_canonical(data: dict[str, Any], *, app: str | None = None) -> MatcherSpec:
     """Validate and rebuild a matcher from a frozen request snapshot."""
     raw = TriggerMatcherConfig.model_validate(data)
+    if app == "monero":
+        raw.validate_monero()
     entrypoints = tuple(Entrypoint(kind=item.kind, value=item.value) for item in raw.entrypoints)
     return MatcherSpec(
         exe_realpath=raw.exe_realpath,
@@ -369,12 +390,16 @@ class ProcessProvider(Protocol):
     def alive(self, pid: int, create_time: float) -> bool | None:
         """Return whether ``pid`` is still the same process (pid + create time)."""
 
+    def read_text_file(self, pid: int, path: str) -> tuple[str | None, str]:
+        """Read bounded regular UTF-8 process settings."""
+
 
 class PsutilProcessProvider:
     """Real process provider using psutil."""
 
-    def __init__(self, *, owner_uid: int | None = None) -> None:
+    def __init__(self, *, owner_uid: int | None = None, native_executable: bool = False) -> None:
         self.owner_uid = os.geteuid() if owner_uid is None else owner_uid
+        self._native_executable = native_executable
         self._last: dict[int, float] = {}
 
     def snapshot(self) -> list[ProcessInfo]:
@@ -399,7 +424,9 @@ class PsutilProcessProvider:
                 cmdline = ()
                 cmdline_available = False
             try:
-                exe = proc.exe()
+                # Monero uses the actual executable as positive identity.
+                # Read it fresh across exec() and preserve Linux's deletion marker.
+                exe = os.readlink(f"/proc/{pid}/exe") if self._native_executable else proc.exe()
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 exe = None
             if not self.alive(pid, float(create_time)):
@@ -470,6 +497,52 @@ class PsutilProcessProvider:
         except psutil.AccessDenied:
             return None
 
+    def read_text_file(self, pid: int, path: str) -> tuple[str | None, str]:
+        expected = self._last.get(pid)
+        # A root-mode offline check still sees the writer, but only its owner
+        # reads settings selected by that process.
+        if (
+            os.geteuid() != self.owner_uid
+            or expected is None
+            or not os.path.isabs(path)
+            or not self.alive(pid, expected)
+        ):
+            return None, "inaccessible"
+        limit = 1024 * 1024
+        opened = False
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            opened = True
+            with os.fdopen(descriptor, "rb") as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+                    return None, "unresolved"
+                data = stream.read(limit + 1)
+                after = os.fstat(stream.fileno())
+                current = os.stat(path)
+                if (
+                    len(data) > limit
+                    or _file_signature(before) != _file_signature(after)
+                    or _file_signature(after) != _file_signature(current)
+                ):
+                    return None, "unresolved"
+                text = data.decode("utf-8-sig")
+                if "\0" in text:
+                    return None, "unresolved"
+        except FileNotFoundError:
+            return None, "missing" if not opened and self.alive(pid, expected) else "inaccessible"
+        except UnicodeError:
+            return None, "unresolved"
+        except OSError:
+            return None, "inaccessible"
+        if not self.alive(pid, expected):
+            return None, "inaccessible"
+        return text, "resolved"
+
+
+def _file_signature(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
 
 _DIRECTORY_ENV_KEY: dict[str, str] = {
     "electrum": "ELECTRUMDIR",
@@ -480,6 +553,28 @@ _DIRECTORY_OPTIONS: dict[str, tuple[str, ...]] = {
     "wasabi": ("--datadir",),
     "bisq": ("--appDataDir",),
 }
+_MONERO = MoneroAdapter()
+
+
+def _monero_role(matcher: MatcherSpec, proc: ProcessInfo) -> tuple[str | None, bool]:
+    """Return the configured launch role and whether identity is unavailable."""
+    executable = proc.exe_realpath
+    argv0 = proc.cmdline[0] if proc.cmdline_available and proc.cmdline else None
+    paths = {_canonical(path) for path in (executable, argv0) if path and os.path.isabs(path)}
+    roles = {os.path.basename(entry.value) for entry in matcher.entrypoints if entry.value in paths}
+    if len(roles) == 1:
+        return roles.pop(), False
+    if len(roles) > 1 or not proc.cmdline_available:
+        return None, True
+    if not executable and argv0 and os.path.basename(argv0) in MONERO_EXECUTABLES:
+        # A bare or relative launch name without a readable executable could
+        # be a configured writer, but does not establish its path.
+        return None, True
+    if executable and executable.endswith(" (deleted)"):
+        deleted = _canonical(executable.removesuffix(" (deleted)"))
+        if any(entry.value == deleted for entry in matcher.entrypoints):
+            return None, True
+    return None, False
 
 
 @dataclass(frozen=True, slots=True)
@@ -559,12 +654,19 @@ def detect_spec(
             reason="process snapshot is not readable",
         )
 
-    identity_matches: list[ProcessInfo] = []
+    identity_matches: list[tuple[ProcessInfo, str | None]] = []
     ambiguous_reason: str | None = None
     unavailable_reason: str | None = None
 
     env_keys = required_env_keys(matcher)
     for proc in snapshot:
+        if app == "monero":
+            role, unavailable = _monero_role(matcher, proc)
+            if unavailable:
+                unavailable_reason = "Monero process identity metadata is not readable or conflicts"
+            if role is not None:
+                identity_matches.append((proc, role))
+            continue
         # Reject known unrelated identities before reading any environment.
         identity = match_identity(replace(matcher, env_eq={}), proc)
         if identity.unavailable:
@@ -581,14 +683,18 @@ def detect_spec(
         candidate = replace(proc, env=env)
         result: MatchResult = match_identity(matcher, candidate)
         if result.matched:
-            identity_matches.append(candidate)
+            identity_matches.append((candidate, None))
 
     resolved_matches: list[ProcessInfo] = []
-    for candidate in identity_matches:
+    for candidate, role in identity_matches:
         if not provider.alive(candidate.pid, candidate.create_time):
             unavailable_reason = "process identity changed before metadata inspection"
             continue
-        directory, status = _resolve_directory(app, candidate, provider)
+        directory, status = (
+            _MONERO.resolve_directory(role, candidate, provider)
+            if role is not None
+            else _resolve_directory(app, candidate, provider)
+        )
         if not provider.alive(candidate.pid, candidate.create_time):
             unavailable_reason = "process identity changed during metadata inspection"
             continue
@@ -600,6 +706,8 @@ def detect_spec(
             continue
         if directory == wanted_dir:
             resolved_matches.append(candidate)
+        elif role is not None:
+            ambiguous_reason = "another configured Monero wallet process is still running"
 
     # Re-validate identity immediately before reporting running.
     for candidate in resolved_matches:
@@ -667,7 +775,7 @@ def require_application_offline(
         app=app.name,
         data_dir=app.data_dir,
         matcher=matcher_from_canonical(app.matcher.model_dump()),
-        provider=PsutilProcessProvider(owner_uid=owner_uid),
+        provider=PsutilProcessProvider(owner_uid=owner_uid, native_executable=app.name == "monero"),
     )
     if result.observation is not Observation.STOPPED:
         raise SourceDiscoveryError(

@@ -150,7 +150,7 @@ automatic dispatch — see [process detection](process-detection.md).
 There is no directory-default inference or built-in writer discovery. Config checks
 cannot turn an illustrative matcher into a verified preset. Each job uses its own poll interval; synchronous service probes can add delays.
 See the application guides for [Bisq](apps/bisq.md),
-[Electrum](apps/electrum.md), and [Wasabi](apps/wasabi.md).
+[Electrum](apps/electrum.md), [Wasabi](apps/wasabi.md), and [Monero](apps/monero.md).
 
 ## Application status changes during shutdown
 

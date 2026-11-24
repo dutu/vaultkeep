@@ -22,8 +22,8 @@ The limitations noted below are not completed safety guarantees.
 
 ## Objective and boundaries
 
-The built-in Trigger feature monitors configured Electrum,
-Bisq desktop/daemon, and Wasabi GUI/daemon instances and invokes their VaultKeep jobs
+The built-in Trigger feature monitors configured Electrum, Bisq desktop/daemon,
+Wasabi GUI/daemon, and Monero Wallet GUI/RPC instances and invokes their VaultKeep jobs
 after confirmed process disappearance. Application-specific enablement still depends
 on installed process-model validation.
 
@@ -98,7 +98,7 @@ limitations are specified in [process detection](../trigger/process-detection.md
 The `matcher.entrypoints` list establishes identity when any configured entrypoint
 matches; all other matcher predicates remain mandatory. Application-specific guides
 under [docs/trigger/apps](../trigger/apps/) cover Bisq GUI/API daemon,
-Electrum, and Wasabi configuration.
+Electrum, Wasabi, and Monero configuration.
 
 ### Observation and lifecycle
 

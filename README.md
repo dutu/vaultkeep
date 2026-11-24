@@ -138,6 +138,7 @@ if needed.
    | Bisq 1 GUI/API daemon | [Bisq job](examples/bisq-trigger.yaml) | [Bisq guide](docs/trigger/apps/bisq.md); explicit `--appDataDir` required |
    | Bisq 1 scheduled live backup | [Bisq schedule job](examples/bisq-schedule.yaml) | Replace source and hook paths; selective live reads are not a consistent snapshot. Follow the Schedule workflow below. |
    | Wasabi GUI/daemon | [Wasabi job](examples/wasabi-trigger.yaml) | [Wasabi guide](docs/trigger/apps/wasabi.md) |
+   | Monero Wallet GUI/RPC | [Monero job](examples/monero-trigger.yaml) | [Monero guide](docs/trigger/apps/monero.md) |
 
    Repository examples use `.yaml`. The installer copies them into
    `/etc/vaultkeep/jobs/` as `.yaml.example` and overwrites those templates on each
@@ -157,7 +158,7 @@ nano "$job_config"
 ```
 
    For an application job, substitute `electrum-trigger.yaml`,
-   `bisq-trigger.yaml`, or `wasabi-trigger.yaml` and name the YAML
+   `bisq-trigger.yaml`, `wasabi-trigger.yaml`, or `monero-trigger.yaml` and name the YAML
    to match its `job.id`, such as `electrum-main.yaml`.
 
    For a **root-owned job**, use:
@@ -340,7 +341,8 @@ Trigger supports **non-root user mode only**. Run as the application owner with
 account-owned `XDG_RUNTIME_DIR`; a graphical desktop is optional.
 
 1. Prepare and manually test a job using the [Electrum](docs/trigger/apps/electrum.md),
-   [Bisq 1](docs/trigger/apps/bisq.md), or [Wasabi](docs/trigger/apps/wasabi.md) guide.
+   [Bisq 1](docs/trigger/apps/bisq.md), [Wasabi](docs/trigger/apps/wasabi.md), or
+   [Monero](docs/trigger/apps/monero.md) guide.
    Check that it identifies the correct application/data directory and covers every
    process that can write the selected files. Use one job/monitor per application
    directory and an independent destination. Examples must be verified locally;

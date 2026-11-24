@@ -31,6 +31,7 @@ include = [
     "/examples/bisq-schedule.yaml",
     "/examples/bisq-trigger.yaml",
     "/examples/electrum-trigger.yaml",
+    "/examples/monero-trigger.yaml",
     "/examples/vaultkeep-schedule.yaml",
     "/examples/wasabi-trigger.yaml",
     "/systemd",

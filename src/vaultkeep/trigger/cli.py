@@ -55,14 +55,18 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     from vaultkeep.trigger.service import require_monitor_identity
 
     validate_vaultkeep_executable(config)
-    if not config.enabled_instances():
+    enabled = config.enabled_instances()
+    if not enabled:
         raise SelectionError("monitoring requires trigger.enabled: true")
+    instance = enabled[0]
     require_monitor_identity(config, args.expected_identity)
     store = StateStore(state_root(config.scope))
     monitor = Monitor(
         config,
         store=store,
-        provider=PsutilProcessProvider(owner_uid=config.enabled_instances()[0].owner_uid),
+        provider=PsutilProcessProvider(
+            owner_uid=instance.owner_uid, native_executable=instance.app == "monero"
+        ),
         controller=RealSystemdController(),
         notifier=build_notifier(config.notifications),
     )

@@ -94,7 +94,9 @@ def exec_worker(
     if request is None:
         raise IntegrationError(f"no request found for attempt {attempt_id}")
     _validate_request(request, attempt_id)
-    provider = provider or PsutilProcessProvider(owner_uid=request.owner_uid)
+    provider = provider or PsutilProcessProvider(
+        owner_uid=request.owner_uid, native_executable=request.app == "monero"
+    )
 
     existing = store.read_receipt(attempt_id)
     if existing is not None:
@@ -110,7 +112,7 @@ def exec_worker(
     detection = detect_spec(
         app=request.app,
         data_dir=request.data_dir,
-        matcher=matcher_from_canonical(request.matcher),
+        matcher=matcher_from_canonical(request.matcher, app=request.app),
         provider=provider,
     )
     if detection.observation is not Observation.STOPPED:

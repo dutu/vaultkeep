@@ -62,8 +62,8 @@ Schedule disabled may use an independent filename; update the Trigger after chan
 sections; use the [configuration reference](configuration.md) for all settings.
 Examples under `/etc/vaultkeep/jobs` are administrator-owned; user jobs normally copy
 from `/opt/vaultkeep/current/src/examples`. For wallet Trigger jobs, use the complete
-[Electrum](trigger/apps/electrum.md), [Bisq 1](trigger/apps/bisq.md), or
-[Wasabi](trigger/apps/wasabi.md) guide instead.
+[Electrum](trigger/apps/electrum.md), [Bisq 1](trigger/apps/bisq.md),
+[Wasabi](trigger/apps/wasabi.md), or [Monero](trigger/apps/monero.md) guide.
 
 ## Validate and run manually
 

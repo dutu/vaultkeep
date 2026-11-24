@@ -7,7 +7,8 @@ data is consistent.
 ## What Trigger does not do
 
 - It does not change wallet applications or their startup procedures.
-- It does not read wallet secrets or inspect job contents.
+- Monero detection reads frontend settings to determine the selected wallet.
+  Diagnostics omit settings contents and process arguments.
 - It does not implement a backup engine, restore, or a network API.
 - It does not kill a running backup, delete its archive, or alter VaultKeep's state.
 

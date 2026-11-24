@@ -76,7 +76,7 @@ consistency:
 ## application_offline and an enabled Trigger require the application section.
 ## Electrum identity below is illustrative; see app-specific examples.
 # application:
-#   name: electrum                       # electrum | bisq | wasabi
+#   name: electrum                       # electrum | bisq | wasabi | monero
 #   data_dir: /home/user/.electrum       # Application data directory
 #   matcher:
 #     entrypoints:                      # At least one; script | jar | java_main

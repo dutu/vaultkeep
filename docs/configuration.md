@@ -134,7 +134,7 @@ application:
 
 `application` is required for offline policy or an enabled Trigger, and optional
 otherwise. A present identity requires `name`, `data_dir`, and `matcher`. Supported
-names are `bisq`, `electrum`, and `wasabi`: `name` selects the application's
+names are `bisq`, `electrum`, `wasabi`, and `monero`. The `name` selects the application's
 process-data-directory rules; `matcher` identifies its processes. The name cannot
 be inferred reliably from arbitrary script paths, JARs, or Java main classes.
 
@@ -153,6 +153,13 @@ The account must exist; its canonical data directory must be owned by that accou
 Home paths expand against the resolved account, including root backups targeting
 another user. The engine and Trigger share the same
 matcher and process provider. See [matcher options](trigger/configuration.md#matcher).
+
+For Monero, root-mode manual and scheduled offline backups with
+`application.user` can proceed once all configured Wallet GUI and wallet RPC
+processes owned by that user have exited. When a running process requires a
+settings-file read, Vaultkeep reports inspection unavailable because those
+settings are read only as the process owner. This blocks the backup until
+Vaultkeep can confirm the processes have stopped.
 
 Trigger settings contain only enablement, dispatch parameters, and monitoring timing.
 With `files`, Trigger still confirms shutdown before dispatch; the engine performs

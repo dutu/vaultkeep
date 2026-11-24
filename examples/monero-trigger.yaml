@@ -1,0 +1,57 @@
+# Monero Wallet GUI and RPC backup example (user mode).
+# Replace all example paths. See docs/trigger/apps/monero.md.
+# Example wallet file: /home/user/Monero/wallets/my-wallet/m-wallet
+config_version: 2
+job:
+  id: monero-main
+
+sources:
+  - path: /home/user/Monero/wallets/my-wallet
+    archive_path_mode: prefix
+    archive_prefix: monero
+
+source_options:
+  follow_symlinks: false
+  cross_filesystems: false
+  ignore_missing: false
+
+destination:
+  root: /mnt/backups/monero-main
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+
+archive:
+  format: tar.zst
+
+encryption:
+  mode: none
+
+retention:
+  hourly: 6
+  daily: 7
+  weekly: 8
+  monthly: 12
+  yearly: 3
+
+schedule:
+  enabled: false
+
+consistency:
+  mode: application_offline
+
+application:
+  name: monero
+  data_dir: /home/user/Monero/wallets/my-wallet
+  matcher:
+    entrypoints:
+      - kind: script
+        value: /opt/monero-gui/monero-wallet-gui
+      - kind: script
+        value: /opt/monero-cli/monero-wallet-rpc
+
+trigger:
+  enabled: false
+  poll_seconds: 2
+  confirm_seconds: 5
+
+logging:
+  level: info

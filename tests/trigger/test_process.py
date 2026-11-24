@@ -70,3 +70,19 @@ def test_root_provider_inspects_configured_owner_instead_of_executor(monkeypatch
     monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
     snapshot = PsutilProcessProvider(owner_uid=4242).snapshot()
     assert [proc.pid for proc in snapshot] == [42]
+
+
+def test_snapshot_refreshes_native_executable_and_preserves_deletion_marker(monkeypatch):
+    mine = _Process(42, os.geteuid())
+    targets = iter(["/opt/monero-wallet-gui", "/opt/monero-wallet-gui (deleted)"])
+
+    def readlink(path):
+        assert path == "/proc/42/exe"
+        return next(targets)
+
+    monkeypatch.setattr("vaultkeep.application.psutil.process_iter", lambda _attrs: [mine])
+    monkeypatch.setattr("vaultkeep.application.os.readlink", readlink)
+    monkeypatch.setattr(PsutilProcessProvider, "alive", lambda *args: True)
+    provider = PsutilProcessProvider(native_executable=True)
+    assert provider.snapshot()[0].exe_realpath == "/opt/monero-wallet-gui"
+    assert provider.snapshot()[0].exe_realpath == "/opt/monero-wallet-gui (deleted)"

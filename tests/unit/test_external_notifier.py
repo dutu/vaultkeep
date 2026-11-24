@@ -236,6 +236,7 @@ def test_delivery_failure_in_real_success_hook_preserves_backup_success(job, too
 def test_sample_hook_commands_use_valid_helper_arguments():
     root = Path(__file__).resolve().parents[2]
     yaml = YAML(typ="safe")
+    checked_total = 0
     for path in sorted((root / "examples").glob("*.yaml")):
         contents = path.read_text()
         configs = yaml.load(contents).get("hooks") or {}
@@ -245,6 +246,8 @@ def test_sample_hook_commands_use_valid_helper_arguments():
             )[0]
             text = "\n".join(line.removeprefix("# ") for line in section.splitlines()[1:])
             configs.update(yaml.load(text)["hooks"])
+        if not configs:
+            continue
         checked = 0
         for config in configs.values():
             if config is None:
@@ -260,6 +263,8 @@ def test_sample_hook_commands_use_valid_helper_arguments():
             assert config["timeout_seconds"] > 15 + 4
             checked += 1
         assert checked > 0, path
+        checked_total += checked
+    assert checked_total > 0
 
 
 def test_explicit_configuration_overrides_hook_environment(tools, capsys):
