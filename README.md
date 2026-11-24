@@ -2,7 +2,7 @@
 
 Vaultkeep creates independent archive backups on Debian 13, manually, on a systemd schedule, or after an application stops. Unchanged sources create no new archive. Each backup includes an archive, SHA-256 checksum and JSON manifest, and can be restored without Vaultkeep.
 
-[Installation](#1-installation) · [Configuration](#2-configuration) · [First backup](#3-first-backup) · [Automation](#4-automatic-backups) · [CLI](#5-cli-reference) · [Restore](#6-restore) · [Maintenance](#7-maintenance) · [Appendix](#appendix)
+[Installation](#1-installation) · [Configuration](#2-configuration) · [CLI](#3-cli-reference) · [Restore](#4-restore) · [Update](#5-update-or-reinstall) · [Uninstall](#6-uninstall) · [Appendix](#appendix)
 
 | Mode | User | Root | Behavior |
 | --- | --- | --- | --- |
@@ -14,24 +14,30 @@ Schedule and Trigger are mutually exclusive per job. Manual execution remains av
 
 ## 1. Installation
 
-**Requirements:** Debian 13 (amd64/arm64), active systemd 247+, root access for installation, network access to Debian repositories and the Python package index. The installer supplies runtime dependencies. Debian 12 users must retain version 0.1.0 until upgrading the OS.
+### Requirements
+
+ Debian 13 (amd64/arm64), active systemd 247+, root access for installation, network access to Debian repositories and the Python package index. The installer supplies runtime dependencies. Debian 12 users must retain version 0.1.0 until upgrading the OS.
+
+### Install Vaultkeep
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git nano
 git clone https://github.com/dutu/vaultkeep.git
 cd vaultkeep
-git checkout <release-tag-or-commit>
+# Replace with a published release tag or reviewed commit
+git checkout RELEASE_TAG_OR_COMMIT
 sudo ./install.sh install --dry-run
+# Review the dry run before installing
 sudo ./install.sh install
 vaultkeep --version
 ```
 
 Select a published release tag or reviewed commit before installing. Install once per machine; a fresh installation enables no jobs. The checkout can be removed afterwards. See [maintenance](docs/maintenance.md) for custom paths and installer diagnostics.
 
-## 2. Configuration
+### Initial setup
 
-### Choose execution scope
+#### Choose execution scope
 
 | | User (recommended for personal application data) | Root |
 | --- | --- | --- |
@@ -41,7 +47,7 @@ Select a published release tag or reviewed commit before installing. Install onc
 
 Configure and run each job as its owner. See [user mode](docs/user-mode.md) and [root mode](docs/root-mode.md).
 
-### Choose a template
+#### Choose a template
 
 | Job | YAML example | Setup guide |
 | --- | --- | --- |
@@ -60,9 +66,8 @@ Installed templates are also available in `/etc/vaultkeep/jobs/` with the suffix
 jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
 install -d -m 700 "$jobs_dir"
 job_config="$jobs_dir/app.yaml"
-if [ ! -e "$job_config" ]; then
-  install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
-fi
+# For a new job only; check that the YAML does not already exist
+install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
 nano "$job_config"
 ```
 
@@ -70,13 +75,14 @@ nano "$job_config"
 
 ```bash
 job_config=/etc/vaultkeep/jobs/app.yaml
+# For a new job only; do not overwrite an existing YAML
 sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example "$job_config"
 sudo nano "$job_config"
 ```
 
 For an application job, substitute the corresponding template and filename.
 
-### Configure the job
+#### Configure the job
 
 Edit these fields in the complete template; retain its other required sections:
 
@@ -104,7 +110,7 @@ trigger:
 
 Optional settings: [independent file backups](docs/configuration.md#back-up-directory-files-separately), [hooks](docs/configuration.md#lifecycle-hooks), [desktop notifications](docs/notifications.md#enable-notifications), [external notifications](docs/configuration.md#external-notifications).
 
-## 3. First backup
+#### Test the first backup
 
 Ensure the source is stable; stop applications and related writers if live reads would be inconsistent. Vaultkeep is not a filesystem snapshot system.
 
@@ -112,6 +118,7 @@ The following examples use the user scope and the `job_config` variable defined 
 
 ```bash
 vaultkeep --user --config "$job_config" validate
+# Continue only if validation succeeds
 vaultkeep --user --config "$job_config" run
 vaultkeep --user --config "$job_config" status
 vaultkeep --user --config "$job_config" list
@@ -120,11 +127,11 @@ vaultkeep --user --config "$job_config" verify
 
 Confirm `Result: OK`, `run: created` and `Result: VERIFIED`, with at least one verified archive for a nonempty first backup. `run: unchanged` creates no archive and performs no retention; an empty per-file selection may verify zero archives.
 
-## 4. Automatic backups
+#### Enable automatic backups (optional)
 
 Enable automation only after testing the manual backup. Editing YAML alone does not change installed automation.
 
-### Schedule
+##### Schedule
 
 Set the existing schedule block, keeping `trigger.enabled: false`:
 
@@ -138,6 +145,7 @@ schedule:
 
 ```bash
 vaultkeep --user --config "$job_config" validate
+# Fix validation failures other than the missing timer
 vaultkeep --user --config "$job_config" schedule install
 vaultkeep --user --config "$job_config" schedule next
 vaultkeep --user --config "$job_config" validate
@@ -147,7 +155,7 @@ Before installation, `Timer: NOT INSTALLED` and `SETUP INCOMPLETE` are expected;
 
 See [schedule settings](docs/configuration.md#schedule-settings) for weekly/monthly schedules and time windows. For user jobs that must run after logout, review [lingering](docs/user-mode.md#configure-user-mode-automatic-backups).
 
-### Trigger
+##### Trigger
 
 Run as the non-root application owner with a reachable systemd user manager and private, account-owned `XDG_RUNTIME_DIR`.
 
@@ -157,6 +165,7 @@ Run as the non-root application owner with a reachable systemd user manager and 
 
 ```bash
 vaultkeep --user --config "$job_config" validate
+# Fix validation failures other than the missing monitor
 vaultkeep --user --config "$job_config" trigger install
 vaultkeep --user --config "$job_config" status
 vaultkeep --user --config "$job_config" validate
@@ -168,18 +177,81 @@ Start the application, confirm `Application: RUNNING`, close it normally and che
 
 Trigger detection does not guarantee clean shutdown or prevent a restart during backup. See [consistency limits](docs/trigger/consistency.md).
 
-### Change or stop automation
+## 2. Configuration
 
-| Action | Schedule | Trigger |
-| --- | --- | --- |
-| `install` | Create and enable/start | Create and enable/start |
-| `update` | Refresh; preserve enablement | Refresh, enable and restart |
-| `disable` | Stop/disable timer; clear persistent timestamps | Stop/disable monitor |
-| `remove` | Also remove managed files/registration | Also remove generated monitor unit |
+Run commands as the job owner. Examples use user mode; for root jobs use `/etc/vaultkeep/jobs` and replace `vaultkeep --user` with `sudo vaultkeep`. Preserve the job's original `--param KEY=VALUE` selections.
 
-After editing YAML, validate, run `schedule update` or `trigger update` as applicable, then validate again. Disable the previous mechanism and drain workers/queued work before switching. Disable/remove preserve jobs, archives and state and do not stop running backups. Trigger may refuse unsafe stops; resolve the reported condition before retrying.
+```bash
+# Select the job to manage
+job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
+```
 
-## 5. CLI reference
+### Add a job
+
+Repeat [initial setup](#initial-setup) for each new job: select a template, choose a unique filename and `job.id`, configure an independent destination, and [test the backup](#test-the-first-backup). For automatic backups, follow either [Schedule](#schedule) or [Trigger](#trigger) installation. Manual-only jobs need neither.
+
+### Update a job
+
+Edit the YAML as its owner. If changing execution settings, ensure the job is idle before editing; editing YAML does not stop installed automation.
+
+```bash
+nano "$job_config"
+vaultkeep --user --config "$job_config" validate
+```
+
+For an installed Schedule:
+
+```bash
+vaultkeep --user --config "$job_config" schedule update
+vaultkeep --user --config "$job_config" schedule next
+```
+
+For an installed Trigger (when monitoring should resume):
+
+```bash
+vaultkeep --user --config "$job_config" trigger update
+```
+
+Manual-only jobs need no automation update. Check the result:
+
+```bash
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" status
+```
+
+Schedule update preserves enablement; Trigger update enables and restarts the monitor. New content/archive settings may require a new backup. Retention changes alone do not; preview with `prune --dry-run` before applying `prune`. See [configuration changes](docs/configuration.md#apply-configuration-changes).
+
+### Disable or remove a job
+
+Run only the commands applicable to the job. To stop automation temporarily, use `disable`; to remove its installed automation, use `remove` as well.
+
+**Schedule:**
+
+```bash
+vaultkeep --user --config "$job_config" schedule disable
+# Confirm active backups and queued work have finished before removal
+vaultkeep --user --config "$job_config" schedule remove
+```
+
+**Trigger:**
+
+```bash
+vaultkeep --user --config "$job_config" trigger disable
+# Resolve any reported recovery/safety condition and confirm workers have finished
+vaultkeep --user --config "$job_config" trigger remove
+```
+
+Both preserve YAML, archives and state; neither stops running backups. Schedule disable clears persistent timer timestamps. Trigger may refuse unsafe stops. Do not proceed until removal succeeds and all active or queued work has finished.
+
+To retire the job completely, move its YAML out of the jobs directory (or delete it if no longer needed). Keep the configuration and original encryption passphrases for recovery. Manual-only jobs need no automation removal. Do not delete backup archives or recovery evidence as part of job removal.
+
+### Switch between Schedule and Trigger
+
+Disable and remove the old automation, then wait for active backups, workers and queued work to finish. Edit the YAML to disable the old mechanism and enable the new one. Follow the applicable [Schedule](#schedule) or [Trigger](#trigger) installation steps. Trigger is available only in non-root user mode.
+
+Before moving a Trigger YAML, remove its old installation using the original canonical path. See [Trigger identity](#c-application-consistency-and-trigger-identity).
+
+## 3. CLI reference
 
 ```text
 vaultkeep [global options] <command> [command options]
@@ -226,7 +298,7 @@ Scope-wide commands do not use the per-job prefix:
 
 **Operational notes:** `status` exit 0 means the report was readable, not that the last backup succeeded. `list` is non-destructive; `ELIGIBLE` is not proof of archive integrity. Inspect warnings and `UNKNOWN` decisions before pruning. See [status meanings](docs/status.md).
 
-## 6. Restore
+## 4. Restore
 
 There is no Vaultkeep restore command. Verify before extraction, restore into an empty staging directory, inspect the files, and stop all application writers before replacing live data.
 
@@ -237,7 +309,9 @@ When the original job is available, prefer `verify` using its original parameter
 From the selected backup directory, substitute actual filenames. Stop if either verification fails.
 
 ```bash
-sha256sum --check backup.tar.zst.sha256 && zstd --test backup.tar.zst
+sha256sum --check backup.tar.zst.sha256
+# Continue only if the checksum reports OK
+zstd --test backup.tar.zst
 ```
 
 After successful verification:
@@ -253,7 +327,9 @@ mkdir -m 700 "$restore_dir" &&
 From the selected backup directory:
 
 ```bash
-sha256sum --check backup.tar.7z.sha256 && 7z t backup.tar.7z
+sha256sum --check backup.tar.7z.sha256
+# Continue only if the checksum reports OK
+7z t backup.tar.7z
 ```
 
 Proceed only after both checks succeed. 7-Zip prompts for the original passphrase. Substitute the inner TAR name (derived from `job.id`).
@@ -270,29 +346,30 @@ mkdir -m 700 "$restore_root" &&
 
 Remove the plaintext working TAR when no longer needed. Secure physical erasure is not guaranteed. Retain old passphrases; [password rotation requires a new namespace](docs/configuration.md#password-protected-backups).
 
-## 7. Maintenance
-
-### Update or reinstall
+## 5. Update or reinstall
 
 Read the [release notes](CHANGELOG.md) and [maintenance reference](docs/maintenance.md) first. When upgrading from ancestor-directory/share-root locking, stop automation and drain operations on **all writers** before upgrading every writer and resuming.
 
 ```bash
 cd /path/to/vaultkeep
 git fetch --tags --prune
-git checkout <new-release-tag-or-commit>
+# Replace with the intended release tag or reviewed commit
+git checkout NEW_RELEASE_TAG_OR_COMMIT
 sudo ./install.sh update --dry-run
+# Review the dry run before updating
 sudo ./install.sh update
 vaultkeep --version
 ```
 
 For changed source with the same version, use `install` instead of `update`, including the dry run. Existing managed automation is refreshed automatically; only previously active launchers resume. Validate and inspect affected jobs in their owning scopes.
 
-### Uninstall
+## 6. Uninstall
 
-Disable applicable timers/monitors in every owning account, including logged-out accounts. Let backups, workers and queued work finish; preserve unresolved recovery evidence. See the [unit checklist](docs/maintenance.md#uninstall-unit-checklist).
+[Disable applicable timers/monitors](#disable-or-remove-a-job) in every owning account, including logged-out accounts. Let backups, workers and queued work finish; preserve unresolved recovery evidence. See the [unit checklist](docs/maintenance.md#uninstall-unit-checklist).
 
 ```bash
 sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
+# Review the dry run before uninstalling
 sudo /opt/vaultkeep/current/src/install.sh uninstall
 ```
 
