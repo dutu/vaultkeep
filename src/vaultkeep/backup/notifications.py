@@ -40,7 +40,7 @@ class BackupNotifications:
             return
         try:
             self._notifier.notify(
-                f"VaultKeep: Backup {title}",
+                f"VaultKeep: {title}",
                 f"job {self._job_id}:\n{body}",
                 key=key,
                 finished=finished,
@@ -52,7 +52,7 @@ class BackupNotifications:
 
     def started(self) -> None:
         self._notified = monotonic()
-        self._send("started", "execution started", key=self._key)
+        self._send("Backup started", "execution started", key=self._key)
 
     def report(self, phase: str) -> None:
         if not self._enabled:
@@ -69,19 +69,19 @@ class BackupNotifications:
         self._notified = now
         elapsed = max(0, int(now - self._phase_started))
         body = phase if changed else f"{phase} ({elapsed}s)"
-        self._send("running", body, key=self._key, replace_pending=True)
+        self._send("Backup running", body, key=self._key, replace_pending=True)
 
     def heartbeat(self) -> None:
         if self._phase:
             self.report(self._phase)
 
     def completed(self, attempt: Attempt) -> None:
-        body = {
-            "SUCCESS": "new archive created",
-            "UNCHANGED": "sources unchanged; no new archive",
-            "FAILED": "failed",
-            "INTERRUPTED": "interrupted",
-            "UNKNOWN": "outcome unknown",
+        title, body = {
+            "SUCCESS": ("Backup completed", "new archive created"),
+            "UNCHANGED": ("No new backup", "sources unchanged; no new archive"),
+            "FAILED": ("❌ Backup failed", "failed"),
+            "INTERRUPTED": ("⚠ Backup interrupted", "interrupted"),
+            "UNKNOWN": ("⚠ Backup outcome unknown", "outcome unknown"),
         }[attempt.result or "UNKNOWN"]
         if attempt.reason:
             body += f": {concise(attempt.reason)}"
@@ -90,7 +90,7 @@ class BackupNotifications:
         ended = parse_utc(attempt.completed_at)
         local_time = ended.astimezone() if ended else datetime.now().astimezone()
         body += f"\n{local_time:%Y-%m-%d %H:%M:%S %Z} (local time)"
-        self._send("completed", body, key=f"backup:{attempt.execution_id}", finished=True)
+        self._send(title, body, key=f"backup:{attempt.execution_id}", finished=True)
 
     def close(self) -> None:
         try:

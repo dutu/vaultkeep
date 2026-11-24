@@ -43,15 +43,17 @@ def execution(tmp_path, recorder):
 
 
 @pytest.mark.parametrize(
-    "outcome, text",
+    "outcome, heading, text",
     [
-        ("created", "new archive created"),
-        ("unchanged", "sources unchanged"),
-        ("failed", "failed: file could not be read"),
-        (None, "outcome unknown"),
+        ("created", "Backup completed", "new archive created"),
+        ("unchanged", "No new backup", "sources unchanged"),
+        ("failed", "❌ Backup failed", "failed: file could not be read"),
+        (None, "⚠ Backup outcome unknown", "outcome unknown"),
     ],
 )
-def test_execution_messages_follow_the_authoritative_result(execution, recorder, outcome, text):
+def test_execution_messages_follow_the_authoritative_result(
+    execution, recorder, outcome, heading, text
+):
     assert not recorder.calls
     with execution:
         assert recorder.calls[0] == ("VaultKeep: Backup started", "job app:\nexecution started")
@@ -60,7 +62,7 @@ def test_execution_messages_follow_the_authoritative_result(execution, recorder,
             execution.complete(
                 outcome, errors=["file could not be read"] if outcome == "failed" else []
             )
-    assert recorder.calls[-1][0] == "VaultKeep: Backup completed"
+    assert recorder.calls[-1][0] == f"VaultKeep: {heading}"
     assert text in recorder.calls[-1][1]
     assert "(local time)" in recorder.calls[-1][1]
     assert all(key == f"backup:{execution.execution_id}" for key, _ in recorder.options)

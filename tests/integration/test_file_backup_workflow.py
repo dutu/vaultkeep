@@ -112,7 +112,16 @@ def test_per_file_notifications_report_one_job_result_with_partial_failure(file_
     assert _run(file_job).result == "failed"
     titles = [title for title, _ in notifier.calls]
     assert titles.count("VaultKeep: Backup started") == 3
-    assert titles.count("VaultKeep: Backup completed") == 3
+    results = [
+        title
+        for title in titles
+        if title not in ("VaultKeep: Backup started", "VaultKeep: Backup running")
+    ]
+    assert results == [
+        "VaultKeep: Backup completed",
+        "VaultKeep: No new backup",
+        "VaultKeep: ❌ Backup failed",
+    ]
     assert "failed: archive tool failed for personal wallet" in notifier.calls[-1][1]
     assert len({key for key, _ in notifier.options}) == 3
 

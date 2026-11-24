@@ -109,9 +109,7 @@ def test_full_lifecycle_dispatch_receipt_and_restart(store: StateStore, outcome)
     assert len(requested) == 1
     assert "dispatch requested" in requested[0][1]
     assert "starting" not in requested[0][1]
-    assert not any(
-        "Backup completed" in title or "backup finished" in title for title, _ in notifier.calls
-    )
+    assert not any(title.startswith("VaultKeep: ") for title, _ in notifier.calls)
 
     restarted, _, restarted_notifier = _make(store, provider, controller=controller)
     restarted._startup_reconcile()

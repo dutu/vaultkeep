@@ -109,9 +109,12 @@ Backup generates messages directly from its common execution lifecycle:
 - `VaultKeep: Backup running` on phase changes, using existing workflow phase names.
   Unchanged phases refresh on the ten-second execution heartbeat with elapsed time,
   such as `Checking existing backups (20s)`. The first phase update omits elapsed time.
-- `VaultKeep: Backup completed` with the execution result: new archive created,
-  sources unchanged, failed, interrupted, or outcome unknown. Failures include the
-  existing concise execution diagnostic. The result includes the local completion time.
+- `VaultKeep: Backup completed` when a new archive is created.
+- `VaultKeep: No new backup` when the sources are unchanged.
+- `VaultKeep: ❌ Backup failed`, `VaultKeep: ⚠ Backup interrupted`, or
+  `VaultKeep: ⚠ Backup outcome unknown` when the result calls for attention.
+
+The final message includes the local completion time and any available diagnostic.
 
 Per-file backups have one job-level start and result, rather than one stream per
 file. All their progress updates are limited to one per ten seconds because the

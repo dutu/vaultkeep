@@ -203,14 +203,14 @@ def test_triggered_backup_categories_are_independent(job, notification_log, back
         if notification_log.exists()
         else []
     )
-    backup_titles = [title for title, _ in messages if title.startswith("VaultKeep: Backup")]
+    backup_titles = [title for title, _ in messages if title.startswith("VaultKeep: ")]
     trigger_titles = [title for title, _ in messages if title.startswith("VaultKeep Trigger:")]
     assert bool(backup_titles) is backup
     assert bool(trigger_titles) is trigger
     if backup:
         assert backup_titles[0] == "VaultKeep: Backup started"
-        assert backup_titles[-1] == "VaultKeep: Backup completed"
-        assert backup_titles.count("VaultKeep: Backup completed") == 1
+        assert backup_titles[-1] == "VaultKeep: ❌ Backup failed"
+        assert backup_titles.count("VaultKeep: ❌ Backup failed") == 1
     if trigger:
         assert "VaultKeep Trigger: Dispatch requested" in trigger_titles
         assert not any("completed" in title or "finished" in title for title in trigger_titles)
@@ -267,10 +267,10 @@ def test_all_initiators_deliver_start_and_diagnostic_failure_before_exit(
         assert result.returncode == 5
     messages = [json.loads(line) for line in notification_log.read_text().splitlines()]
     assert messages[0][0] == "VaultKeep: Backup started"
-    assert messages[-1][0] == "VaultKeep: Backup completed"
+    assert messages[-1][0] == "VaultKeep: ❌ Backup failed"
     assert "failed: Destination root" in messages[-1][1]
     assert sum(title == "VaultKeep: Backup started" for title, _ in messages) == 1
-    assert sum(title == "VaultKeep: Backup completed" for title, _ in messages) == 1
+    assert sum(title == "VaultKeep: ❌ Backup failed" for title, _ in messages) == 1
     assert not any(title.startswith("VaultKeep Trigger:") for title, _ in messages)
 
 
@@ -306,9 +306,15 @@ raise SystemExit(main(['--user', '--config', sys.argv[1], 'run']))
         process.send_signal(signum)
         process.communicate(timeout=10)
         messages = [json.loads(line) for line in notification_log.read_text().splitlines()]
-        completed = [body for title, body in messages if title == "VaultKeep: Backup completed"]
+        completed = [
+            (title, body)
+            for title, body in messages
+            if title not in ("VaultKeep: Backup started", "VaultKeep: Backup running")
+        ]
         if signum == signal.SIGTERM:
-            assert len(completed) == 1 and "interrupted" in completed[0]
+            [(title, body)] = completed
+            assert title == "VaultKeep: ⚠ Backup interrupted"
+            assert "interrupted" in body
         else:
             assert not completed
     finally:
