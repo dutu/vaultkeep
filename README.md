@@ -1,167 +1,72 @@
 # Vaultkeep
 
-Vaultkeep creates independent archive backups on Debian 13. Jobs run manually,
-on a systemd schedule, or after a supported application stops. Unchanged sources
-create no new archive. Each backup contains an archive, SHA-256 checksum, and JSON
-manifest; standard tools can restore it without Vaultkeep.
+Vaultkeep creates independent archive backups on Debian 13, manually, on a systemd schedule, or after an application stops. Unchanged sources create no new archive. Each backup includes an archive, SHA-256 checksum and JSON manifest, and can be restored without Vaultkeep.
 
-## Table of contents
+[Installation](#1-installation) · [Configuration](#2-configuration) · [First backup](#3-first-backup) · [Automation](#4-automatic-backups) · [CLI](#5-cli-reference) · [Restore](#6-restore) · [Maintenance](#7-maintenance) · [Appendix](#appendix)
 
-- [Overview](#overview)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Create a backup job](#create-a-backup-job)
-- [Run and verify your first backup — Manual](#manual)
-- [Enable automatic backups](#enable-automatic-backups)
-  - [Schedule](#schedule)
-  - [Trigger](#trigger)
-  - [Change or stop automation safely](#change-or-stop-automation-safely)
-- [Check health and perform everyday operations](#check-health-and-perform-everyday-operations)
-- [Restore a backup](#restore-a-backup)
-- [Troubleshooting](#troubleshooting)
-- [Update or reinstall Vaultkeep](#update-the-application)
-- [Uninstall and optional data cleanup](#uninstall-the-application)
-- [Further references](#further-references)
+| Mode | User | Root | Behavior |
+| --- | --- | --- | --- |
+| Manual | Yes | Yes | Run on demand |
+| Schedule | Yes | Yes | systemd timer |
+| Trigger | Yes | No | Backup after confirmed application shutdown |
 
-<a id="what-vaultkeep-does"></a>
-<a id="operating-modes"></a>
-## Overview
+Schedule and Trigger are mutually exclusive per job. Manual execution remains available with either.
 
-Choose **execution scope** separately from **backup activation**:
+## 1. Installation
 
-| Execution scope | Use for | Commands and locations |
-| --- | --- | --- |
-| User | Files readable and destinations writable by the backup owner | `vaultkeep --user`; jobs under `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs` |
-| Root | System/protected data and administrator-managed jobs | `sudo vaultkeep`; jobs under `/etc/vaultkeep/jobs` |
-
-| Activation | Availability | Behavior |
-| --- | --- | --- |
-| Manual | User and root | `run` starts one backup immediately. |
-| Schedule | User and root | A per-job systemd timer starts backups. |
-| Trigger | Non-root user only | A per-job monitor requests a backup after confirmed application shutdown. |
-
-Schedule and Trigger cannot both be enabled for one job. Manual execution remains
-available with either. All use the same per-job backup lock. Scopes have independent
-configuration, state, and units; install Vaultkeep once, then configure each owner.
-See the [root](docs/root-mode.md) and [user](docs/user-mode.md) scope guides.
-
-<a id="how-a-backup-works"></a>
-<a id="important-boundaries"></a>
-Backups use `.tar.zst` (unencrypted) or `.tar.7z` (password-protected TAR) archives.
-Each job and machine needs its own destination namespace. Vaultkeep is not a
-filesystem snapshot system: provide stable application data through clean shutdown,
-application dumps, <a id="lifecycle-hooks"></a>[hooks](docs/configuration.md#lifecycle-hooks),
-or an external snapshot. Source-change checks and a
-successful archive verification do not establish application-level consistency.
-
-<a id="prerequisites"></a>
-## Requirements
-
-- Debian 13 `trixie`, amd64 or arm64, with systemd 247+ as the active manager.
-- Root access for installation, a trusted source checkout, and network access to
-  Debian repositories and the Python package index.
-- Git and a text editor. These procedures use `nano`; substitute your preferred editor.
-- Readable sources and an existing writable destination on a supported local Linux
-  filesystem or mounted CIFS/SMB or NFS share with server locking enabled.
-  Subdirectory mounts are supported; mounts nested inside a destination remain unsupported.
-
-The installer provides Debian Python 3.13+, `python3-venv`, GNU TAR, Zstandard,
-Debian `7zip`, `rsync`, `dbus-user-session`, and mount utilities including `util-linux`. It does not use
-legacy `p7zip-full`. User automation needs a reachable systemd user manager;
-Trigger also needs a private account-owned `XDG_RUNTIME_DIR`.
-
-Upgrade Debian 12 before installing current Vaultkeep. Until then, retain version
-0.1.0 and its installed uninstall script; the current installer is unsupported there.
-
-## Installation
-
-<a id="install-the-application"></a>
-1. Install the checkout and editing tools if they are not already available:
+**Requirements:** Debian 13 (amd64/arm64), active systemd 247+, root access for installation, network access to Debian repositories and the Python package index. The installer supplies runtime dependencies. Debian 12 users must retain version 0.1.0 until upgrading the OS.
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git nano
-```
-
-2. Replace `/path/to/vaultkeep` in both commands with your chosen local checkout
-   directory, and `<release-tag-or-commit>` with a published release tag or reviewed
-   commit. Then clone and select that version. A development commit is not a released version.
-
-```bash
-git clone https://github.com/dutu/vaultkeep.git /path/to/vaultkeep
-cd /path/to/vaultkeep
+git clone https://github.com/dutu/vaultkeep.git
+cd vaultkeep
 git checkout <release-tag-or-commit>
-```
-
-3. <a id="check-the-installed-version"></a>Preview and apply the installation:
-
-```bash
 sudo ./install.sh install --dry-run
 sudo ./install.sh install
 vaultkeep --version
 ```
 
-   Expect the selected version and commit hash (`unknown` if unavailable). Installation uses `/opt/vaultkeep/current` and
-   `/usr/local/bin/vaultkeep`. A fresh install starts no backups or monitors and
-   enables no jobs or lingering. Reinstallation/update automatically pauses,
-   refreshes, validates, and resumes previously active managed automation.
-   The success summary lists each refreshed timer or trigger monitor by owner and
-   job instance, showing whether it resumed or was left inactive. When none are
-   installed, it reports `No existing managed jobs to refresh.`
+Select a published release tag or reviewed commit before installing. Install once per machine; a fresh installation enables no jobs. The checkout can be removed afterwards. See [maintenance](docs/maintenance.md) for custom paths and installer diagnostics.
 
-   Both `install` and `update` check existing system and user jobs before activation
-   or changes to schedules. Invalid configurations abort installation and report
-   the YAML path and affected property when available. Correct the reported files
-   as their owner and rerun the same command. See
-   [configuration validation failures](docs/maintenance.md#configuration-validation-fails)
-   for account checks and [maintenance safety checks](docs/maintenance.md#pause-and-resume-for-maintenance)
-   for launcher and runtime failures.
+## 2. Configuration
 
-The checkout can be removed after installation; updates require another trusted
-checkout. Custom paths, installed files, and recovery are described in the
-[maintenance reference](docs/maintenance.md). Failed stages show relevant installer
-errors and report a private `Diagnostics:` transcript containing full tool output;
-retain it for diagnosis. Raw dependency output stays in that log. Add `--no-color`
-if needed.
+### Choose execution scope
 
-<a id="usage"></a>
-<a id="choose-a-mode-specific-workflow"></a>
-## Create a backup job
+| | User (recommended for personal application data) | Root |
+| --- | --- | --- |
+| CLI | `vaultkeep --user` | `sudo vaultkeep` |
+| Job directory | `${XDG_CONFIG_HOME:-~/.config}/vaultkeep/jobs` | `/etc/vaultkeep/jobs` |
+| Access | Backup owner's permissions | System/protected data |
 
-1. Choose the starting example. Trigger examples require checking against the
-   installed application's real processes.
+Configure and run each job as its owner. See [user mode](docs/user-mode.md) and [root mode](docs/root-mode.md).
 
-   | Job | Complete example | Application preparation |
-   | --- | --- | --- |
-   | Manual or Schedule | [General job](examples/vaultkeep-schedule.yaml) | Steps below |
-   | <a id="back-up-directory-files-separately"></a>Electrum | [Electrum job](examples/electrum-trigger.yaml) | [Electrum guide](docs/trigger/apps/electrum.md), including separate wallet archives |
-   | Bisq 1 GUI/API daemon | [Bisq job](examples/bisq-trigger.yaml) | [Bisq guide](docs/trigger/apps/bisq.md); explicit `--appDataDir` required |
-   | Bisq 1 scheduled live backup | [Bisq schedule job](examples/bisq-schedule.yaml) | Replace source and hook paths; selective live reads are not a consistent snapshot. Follow the Schedule workflow below. |
-   | Wasabi GUI/daemon | [Wasabi job](examples/wasabi-trigger.yaml) | [Wasabi guide](docs/trigger/apps/wasabi.md) |
-   | Monero Wallet GUI/RPC | [Monero job](examples/monero-trigger.yaml) | [Monero guide](docs/trigger/apps/monero.md) |
+### Choose a template
 
-   Repository examples use `.yaml`. The installer copies them into
-   `/etc/vaultkeep/jobs/` as `.yaml.example` and overwrites those templates on each
-   installation or update. Copy a template to your own job YAML before editing it.
+| Job | YAML example | Setup guide |
+| --- | --- | --- |
+| General files | [vaultkeep-schedule.yaml](examples/vaultkeep-schedule.yaml) | Below |
+| Electrum | [electrum-trigger.yaml](examples/electrum-trigger.yaml) | [Electrum](docs/trigger/apps/electrum.md) |
+| Bisq 1 | [bisq-trigger.yaml](examples/bisq-trigger.yaml) | [Bisq](docs/trigger/apps/bisq.md) |
+| Bisq 1 live schedule | [bisq-schedule.yaml](examples/bisq-schedule.yaml) | [Bisq](docs/trigger/apps/bisq.md); adjust source and hook paths |
+| Wasabi | [wasabi-trigger.yaml](examples/wasabi-trigger.yaml) | [Wasabi](docs/trigger/apps/wasabi.md) |
+| Monero GUI/RPC | [monero-trigger.yaml](examples/monero-trigger.yaml) | [Monero](docs/trigger/apps/monero.md) |
 
-2. For a **user-owned job**, copy the installed general example without overwriting
-   an existing job, then edit it as that user:
+Installed templates are also available in `/etc/vaultkeep/jobs/` with the suffix `.yaml.example`. Copy before editing; updates overwrite templates.
+
+**User job:**
 
 ```bash
 jobs_dir="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs"
 install -d -m 700 "$jobs_dir"
 job_config="$jobs_dir/app.yaml"
 if [ ! -e "$job_config" ]; then
-    install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
+  install -m 600 /opt/vaultkeep/current/src/examples/vaultkeep-schedule.yaml "$job_config"
 fi
 nano "$job_config"
 ```
 
-   For an application job, substitute `electrum-trigger.yaml`,
-   `bisq-trigger.yaml`, `wasabi-trigger.yaml`, or `monero-trigger.yaml` and name the YAML
-   to match its `job.id`, such as `electrum-main.yaml`.
-
-   For a **root-owned job**, use:
+**Root job (alternative):**
 
 ```bash
 job_config=/etc/vaultkeep/jobs/app.yaml
@@ -169,66 +74,43 @@ sudo cp --no-clobber /etc/vaultkeep/jobs/vaultkeep-schedule.yaml.example "$job_c
 sudo nano "$job_config"
 ```
 
-3. <a id="minimal-job-configuration"></a><a id="destination-name-templates"></a>Set `job.id` to the YAML filename stem, replace source paths and `destination.root`,
-   and review retention. For a simple job, edit these existing fields:
+For an application job, substitute the corresponding template and filename.
 
-   ```yaml
-   job:
-     id: app
-   sources:
-     - path: /absolute/path/to/source
-       archive_path_mode: prefix
-       archive_prefix: source
-   destination:
-     root: /absolute/path/to/backups/app
-     name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
-   schedule:
-     enabled: false
-   trigger:
-     enabled: false
-   ```
+### Configure the job
 
-   This is an edit to the complete example, not a complete job by itself. Keep its
-   other required sections. Begin with both automation settings disabled. The default
-   <a id="password-protected-backups"></a>`tar.zst`/`encryption.mode: none` produces unencrypted archives; configure
-   [password protection](docs/configuration.md#password-protected-backups) before
-   backing up secrets to a destination that requires encryption.
+Edit these fields in the complete template; retain its other required sections:
 
-4. <a id="destination-safety-checks"></a>Create a local destination if needed, as its owner, or mount and verify the intended
-   supported local filesystem or CIFS/NFS share first. `destination.root` must already exist. Optional
-   `destination.marker_file` and `destination.expected_fstype` checks can independently
-   prevent writes to an unintended local directory. For a NAS/LXC setup, follow the
-   [destination safety procedure](docs/configuration.md#destination-safety-checks)
-   before writing. Vaultkeep never creates a configured marker for you.
+```yaml
+job:
+  id: app
+sources:
+  - path: /absolute/path/to/source
+    archive_path_mode: prefix
+    archive_prefix: source
+destination:
+  root: /absolute/path/to/backups/app
+  name_template: "backup-{job}-{timestamp_utc:%Y%m%dT%H%M%SZ}"
+schedule:
+  enabled: false
+trigger:
+  enabled: false
+```
 
-   Vaultkeep creates a persistent `.vaultkeep.lock` in each destination history.
-   Every backup account needs read/write access to that file. `per_file` jobs lock
-   each child history separately; independent histories can run concurrently.
-   They also briefly lock the parent to update `.vaultkeep-files.json`, which maps
-   readable directory names to original filenames. Keep this index with the backups;
-   see [independent file backups](docs/configuration.md#back-up-directory-files-separately).
-   Keep lock files in place, including after a crash.
+- Match `job.id` to the YAML filename stem and review retention in the template.
+- Create the destination or mount the intended share first. Use an independent destination namespace per job and machine.
+- For CIFS/NFS, enable server locking and configure destination checks to prevent accidental local writes. See [destination safety](docs/configuration.md#destination-safety-checks) and [locking](docs/configuration.md#cifs-and-nfs-locking).
+- The default `tar.zst` archive is unencrypted. Configure [password protection](docs/configuration.md#password-protected-backups) before storing secrets on a destination requiring encryption.
+- For wallet/application data, follow the application guide and configure [offline consistency](docs/configuration.md#consistency-and-shared-application-identity) where required. User jobs omit `application.user`.
 
-   For CIFS/NFS, writers must reach the same remote lock file through the same
-   server locking domain. Keep server locks enabled: omit CIFS `nobrl` and NFS
-   `nolock`/`local_lock=all`/`local_lock=flock`. See
-   [CIFS and NFS locking](docs/configuration.md#cifs-and-nfs-locking) for supported
-   mount layouts, cross-machine requirements, and the NFS commit limitation.
+Optional settings: [independent file backups](docs/configuration.md#back-up-directory-files-separately), [hooks](docs/configuration.md#lifecycle-hooks), [desktop notifications](docs/notifications.md#enable-notifications), [external notifications](docs/configuration.md#external-notifications).
 
-<a id="start-backups-in-the-chosen-mode"></a>
-<a id="run-a-job-manually"></a>
-## Run and verify your first backup — Manual
+## 3. First backup
 
-<a id="manual"></a>
-1. Ensure the selected source is stable. Stop applications and related writers when
-   a live copy would be inconsistent. For wallet jobs, complete the application
-   preparation linked above; the examples are templates, not verified presets.
+Ensure the source is stable; stop applications and related writers if live reads would be inconsistent. Vaultkeep is not a filesystem snapshot system.
 
-2. Set `job_config` to the actual YAML path (`app.yaml` below is an example), then
-   validate, run, inspect status, and verify as the backup owner:
+The following examples use the user scope and the `job_config` variable defined above. For root jobs, use `sudo vaultkeep` instead of `vaultkeep --user`. Set the actual YAML path in each new shell. Preserve any `--param KEY=VALUE` selections throughout.
 
 ```bash
-job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
 vaultkeep --user --config "$job_config" validate
 vaultkeep --user --config "$job_config" run
 vaultkeep --user --config "$job_config" status
@@ -236,421 +118,163 @@ vaultkeep --user --config "$job_config" list
 vaultkeep --user --config "$job_config" verify
 ```
 
-   **For root jobs**, replace the assignment with `job_config=/etc/vaultkeep/jobs/app.yaml`,
-   omit `--user`, and prefix commands with `sudo`, for example
-   `sudo vaultkeep --config "$job_config" run`.
-   This substitution also applies to Schedule and everyday commands below.
+Confirm `Result: OK`, `run: created` and `Result: VERIFIED`, with at least one verified archive for a nonempty first backup. `run: unchanged` creates no archive and performs no retention; an empty per-file selection may verify zero archives.
 
-3. Expect validation `Result: OK` with automation disabled. A successful run reports
-   `run: created` or `run: unchanged`; the latter creates no archive and applies no
-   retention. Verification ends with a table for manifest, SHA-256, and archive
-   checks, followed by verified counts, duration, and `Result: VERIFIED` on success.
-   On the first run with selected files, confirm an archive was actually created;
-   an empty `per_file` selection is unchanged and verification can find zero archives.
+## 4. Automatic backups
 
-A created backup directory contains `<base>.tar.zst` (or `.tar.7z`), its `.sha256`,
-and a version-2 `<base>.json` manifest. `list` shows UTC dates, sizes, ELIGIBLE
-metadata classification, retention
-choices, and complete relative backup directories. Invalid entries produce warnings
-and `UNKNOWN` decisions. `verify` checks archive contents and checksums without
-requiring sources and may record demonstrated corruption as `SUSPECT`.
+Enable automation only after testing the manual backup. Editing YAML alone does not change installed automation.
 
-Unresolved suspects are protected and force a new compatible archive. Ordinary
-cleanup failures leave `run: created` successful with a warning; retry with `prune`
-or a later archive-creating run. Interrupted deletion appears as `PRUNE_PENDING`
-and resumes from its durable deletion intent; no immediate retries occur.
-`EMPTY_ORPHAN` identifies a matching empty directory eligible for guarded removal.
-Pending and invalid entries never fill retention tiers. `ELIGIBLE` does not mean
-archive contents are verified; use `verify`. Corruption found in the newly committed archive
-fails the run, including during cleanup. Unchanged runs never prune. See
-[suspect protection, replacement, and cleanup](docs/cli.md#run-a-job-manually)
-before removing suspect backups.
-
-Jobs and destinations use schema/layout version 2 and fresh local state; version-1
-repositories have no migration support and must be preserved separately. Mutations
-require a supported local Linux filesystem or CIFS/NFS share with reliable shared locks; see
-[destination checks](docs/configuration.md#destination-safety-checks).
-
-`run` and `verify` show an in-place spinner with elapsed time on interactive
-terminals. `run` keeps completed stages listed with a tick. Redirected stderr uses
-plain stage messages and a heartbeat every 10 seconds
-during long stages. Redirecting stdout also disables verification animation. Use
-`verify --verbose` for full paths and individual checks. See
-[progress display](docs/cli.md#progress-display).
-<a id="validate-a-job-configuration"></a>
-Full validation writes/renames/removes a temporary destination probe; schema-only
-validation skips runtime checks and does not establish readiness.
-
-## Enable automatic backups
-
-<a id="cli-reference"></a>
-<a id="runtime-template-parameters"></a>
-Use the same job and owner as the tested manual backup. Global options (`--user`,
-`--config`, repeated `--param KEY=VALUE`) go before the command; action-specific
-options such as `status --json` follow it. Keep parameter selections consistent.
-
-<a id="configure-a-job-timer"></a>
 ### Schedule
 
-1. Keep `trigger.enabled: false` and replace the existing schedule block:
+Set the existing schedule block, keeping `trigger.enabled: false`:
 
-   ```yaml
-   schedule:
-     enabled: true
-     interval: daily
-     at: "03:30"
-     persistent: true
-   ```
-
-2. Set the actual YAML path (`app.yaml` is an example), then validate and install.
-   For root jobs, replace the assignment with `job_config=/etc/vaultkeep/jobs/app.yaml`, omit `--user`, and
-   prefix each command with `sudo`:
+```yaml
+schedule:
+  enabled: true
+  interval: daily
+  at: "03:30"
+  persistent: true
+```
 
 ```bash
-job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
 vaultkeep --user --config "$job_config" validate
 vaultkeep --user --config "$job_config" schedule install
-vaultkeep --user --config "$job_config" status
 vaultkeep --user --config "$job_config" schedule next
 vaultkeep --user --config "$job_config" validate
 ```
 
-   Before installation, expect `Timer: NOT INSTALLED` and `SETUP INCOMPLETE`.
-   Correct any other failed checks before continuing. Afterwards, expect an enabled,
-   active timer, a next-run time, and `Result: OK`. Root jobs use system timers;
-   user jobs use the owner's user manager. For operation after logout, review
-   [user-manager lifetime and lingering](docs/user-mode.md#configure-user-mode-automatic-backups).
+Before installation, `Timer: NOT INSTALLED` and `SETUP INCOMPLETE` are expected; fix other failures first. Afterwards, confirm `Result: OK` and a next-run time.
 
-Weekly/monthly schedules and deterministic time windows are described in
-[schedule settings](docs/configuration.md#schedule-settings). Persistent timers can
-perform one catch-up activation after downtime.
+See [schedule settings](docs/configuration.md#schedule-settings) for weekly/monthly schedules and time windows. For user jobs that must run after logout, review [lingering](docs/user-mode.md#configure-user-mode-automatic-backups).
 
-<a id="optional-trigger"></a>
-<a id="configure-and-validate-trigger"></a>
-<a id="start-trigger-explicitly"></a>
 ### Trigger
 
-Omit `application.user` in user-mode YAML; Vaultkeep derives the application owner
-from the job execution account. Remove that field from existing user-mode jobs
-before updating. Keep `application.name`: it selects application-specific
-data-directory detection rules. Root-mode offline backups may use `application.user`
-to target another account. See [application identity](docs/configuration.md#consistency-and-shared-application-identity).
+Run as the non-root application owner with a reachable systemd user manager and private, account-owned `XDG_RUNTIME_DIR`.
 
-Trigger supports **non-root user mode only**. Run as the application owner with
-`--user`, without `sudo`. It needs an active systemd user manager and a private,
-account-owned `XDG_RUNTIME_DIR`; a graphical desktop is optional.
-
-1. Prepare and manually test a job using the [Electrum](docs/trigger/apps/electrum.md),
-   [Bisq 1](docs/trigger/apps/bisq.md), [Wasabi](docs/trigger/apps/wasabi.md), or
-   [Monero](docs/trigger/apps/monero.md) guide.
-   Check that it identifies the correct application/data directory and covers every
-   process that can write the selected files. Use one job/monitor per application
-   directory and an independent destination. Examples must be verified locally;
-   [process-detection details](docs/trigger/process-detection.md) remain in the reference.
-
-2. Keep `schedule.enabled: false` and set `trigger.enabled: true` only after those
-   checks. Set the actual job path (`electrum-main.yaml` is an example), then run:
+1. Follow the selected application guide, verify the matcher and data directory, and cover every writer. Use one monitor per application directory and an independent destination.
+2. Keep `schedule.enabled: false`; set `trigger.enabled: true` in the tested job.
+3. Install and check the monitor:
 
 ```bash
-job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/electrum-main.yaml"
 vaultkeep --user --config "$job_config" validate
 vaultkeep --user --config "$job_config" trigger install
 vaultkeep --user --config "$job_config" status
 vaultkeep --user --config "$job_config" validate
 ```
 
-   Before installation, `Monitor service: NOT INSTALLED` and `SETUP INCOMPLETE` are
-   expected. Fix other failed checks first. After installation, allow the monitor's
-   first observation before expecting `Result: OK`. Validation does not certify
-   application consistency, writer coverage, matcher overlap, or destination independence.
+Before installation, `Monitor service: NOT INSTALLED` and `SETUP INCOMPLETE` are expected; fix other failures first. Allow the first monitor observation before expecting `Result: OK`.
 
-3. Start the application and use `status` to confirm fresh `Application: RUNNING`.
-   Close it normally; expect `CONFIRMING STOP`, then `HAS STOPPED` and a backup
-   request. Check the Backup result and run `verify`. A monitor started with the
-   application already stopped requests nothing: it must first observe it running.
+Start the application, confirm `Application: RUNNING`, close it normally and check for `CONFIRMING STOP`, then `HAS STOPPED` and a successful backup result. Run `verify`. A monitor started while the application is stopped must first observe it running before requesting a backup.
 
-Unreadable or uncertain process evidence blocks detection. Polling can miss short
-lifecycles, and a stopped check cannot prevent a later restart. Process disappearance
-does not prove clean shutdown; review the [consistency limits](docs/trigger/consistency.md).
-For foreground monitoring, use `trigger monitor` instead of installing a service;
-run only one monitor per canonical YAML path, including when parameters differ. Trigger never configures lingering.
+Trigger detection does not guarantee clean shutdown or prevent a restart during backup. See [consistency limits](docs/trigger/consistency.md).
 
-### Change or stop automation safely
+### Change or stop automation
 
 | Action | Schedule | Trigger |
 | --- | --- | --- |
-| `install` | Create and enable/start timer | Create and enable/start monitor |
-| `update` | Refresh timer; preserve enablement | Refresh, enable, and restart monitor |
+| `install` | Create and enable/start | Create and enable/start |
+| `update` | Refresh; preserve enablement | Refresh, enable and restart |
 | `disable` | Stop/disable timer; clear persistent timestamps | Stop/disable monitor |
-| `remove` | Also remove managed schedule files/registration | Also remove generated monitor unit |
+| `remove` | Also remove managed files/registration | Also remove generated monitor unit |
 
-Use `vaultkeep --user --config /absolute/path/job.yaml schedule <action>`, replacing
-`<action>` with the table entry; substitute `trigger` for monitor actions. For root
-schedules, omit `--user`, use the root YAML path, and prefix the command with `sudo`.
-Disable/remove preserve jobs, archives, and state and leave running backups/workers
-alone. Monitor stop is refused while a backup is active or Trigger recovery/safety
-state needs reconciliation; wait and review the reported state before retrying.
-Editing YAML does not stop existing automation. Before switching mechanisms,
-disable the previous timer/monitor and drain its workers and queued work. Moving a
-Trigger YAML changes its service identity; remove the old installation using its
-original canonical path before installing the new one.
+After editing YAML, validate, run `schedule update` or `trigger update` as applicable, then validate again. Disable the previous mechanism and drain workers/queued work before switching. Disable/remove preserve jobs, archives and state and do not stop running backups. Trigger may refuse unsafe stops; resolve the reported condition before retrying.
 
-Each canonical YAML path has exactly one Trigger service:
-`vaultkeep-trigger@<yaml-filename>-<path-hash>.service`. The escaped filename omits
-`.yaml`/`.yml`; the hash comes only from the canonical absolute path. YAML edits and
-`trigger.params`/`--param` changes keep the same service. Parameters still render backup
-destinations. After execution settings change, validate and explicitly update:
-
-```bash
-vaultkeep --user --config "$job_config" validate
-vaultkeep --user --config "$job_config" trigger update
-vaultkeep --user --config "$job_config" status --verbose
-```
-
-Update safely checks the installed execution identity before switching; restart alone
-does not adopt a different identity. A single legacy service is migrated by update
-(or install), preserving execution history. Multiple legacy services require explicit
-safe resolution. `trigger disable` and `trigger remove` use verified installed metadata
-and work with changed, invalid, unreadable, or deleted YAML at the original canonical
-path. They preserve [recovery evidence](docs/trigger/recovery.md). See
-[Trigger service management](docs/cli.md#service-management) for migration and failure recovery.
-
-<a id="check-job-status"></a>
-<a id="trigger-operation-and-health"></a>
-## Check health and perform everyday operations
-
-Set the actual YAML path before using this table; replace `app.yaml` as needed:
-
-```bash
-job_config="${XDG_CONFIG_HOME:-$HOME/.config}/vaultkeep/jobs/app.yaml"
-```
-
-For root jobs, set `job_config=/etc/vaultkeep/jobs/app.yaml`, omit `--user`, and
-prefix commands with `sudo`. Keep any `--param KEY=VALUE` selections used by the job.
-<a id="terminal-output"></a>
-See [CLI output and options](docs/cli.md#terminal-output) for report conventions.
-
-| Task | Command |
-| --- | --- |
-| Validate paths and automation health | `vaultkeep --user --config "$job_config" validate` |
-| Read activity, previous result, and automation | `vaultkeep --user --config "$job_config" status` |
-| Detailed diagnostics or script-readable status | Append `--verbose` or `--json` to `status` |
-| Run now | `vaultkeep --user --config "$job_config" run` |
-| <a id="list-job-backups"></a>List backups and preview retention | `vaultkeep --user --config "$job_config" list` |
-| <a id="verify-job-backups"></a>Verify contents | `vaultkeep --user --config "$job_config" verify` |
-| <a id="prune-job-backups"></a>Check retention plan without deleting | `vaultkeep --user --config "$job_config" prune --dry-run` |
-| Apply retention | `vaultkeep --user --config "$job_config" prune` |
-| <a id="manage-all-job-timers"></a>Inspect all timers in this scope | `vaultkeep --user schedules list` |
-| Preview bulk schedule changes | `vaultkeep --user schedules sync --dry-run` |
-
-`list` shows which tiers select each backup without deleting anything. For example,
-with one hourly and one daily recovery point configured:
+## 5. CLI reference
 
 ```text
-Vaultkeep — Backups
-
-Job:         app
-Destination: /mnt/backups/app
-Retention:   1 hourly, 1 daily, 0 weekly, 0 monthly, 0 yearly
-
-Created (UTC)        Size       Classification  Decision  Tiers
-────────────────────────────────────────────────────────────
-2026-10-25 08:00:00  756.7 MiB  ELIGIBLE        KEEP      daily, hourly
-  Backup: backup-app-20261025T080000Z
-
-2026-10-25 07:00:00  756.7 MiB  ELIGIBLE        PRUNE     —
-  Backup: backup-app-20261025T070000Z
-────────────────────────────────────────────────────────────
-
-Backups: 2 · Keep: 1 · Prune: 1
-
+vaultkeep [global options] <command> [command options]
 ```
 
-Inspect warnings before pruning; `UNKNOWN` means the retention preview is incomplete.
-See [inventory and retention decisions](docs/cli.md#list-job-backups).
+Global options precede the command; command-specific options follow it.
 
-`status` is read-only and works without mounted destinations or available sources.
-Exit 0 means the report was readable, including a previous failure. Read Backup
-activity separately from the previous result and from Trigger/Schedule health.
-`UNKNOWN` requires investigation; idle status is not a guarantee that starting an
-application is safe. See [status meanings](docs/status.md).
+| Global option | Purpose |
+| --- | --- |
+| `--user` | User execution scope; omit for root scope with `sudo` |
+| `--config PATH` | Job YAML path |
+| `--param KEY=VALUE` | Runtime template parameter; repeat as needed |
+| `--version` | Installed version and commit |
 
-Retention is calendar-bucketed; time passing and unchanged runs do not prune.
-Deleting/excluding a per-file source preserves its history. Check the retention plan
-before manual pruning. A failure can occur after archive commit, so inspect existing backups
-rather than assuming none was created.
+For job commands below, use `vaultkeep --user --config "$job_config"` (or the root equivalent) followed by the command shown.
 
-For application backups, set `consistency.mode: application_offline` and configure
-the shared `application` identity. In user mode, omit `application.user`; the job's
-execution account owns the application. In root mode, set `application.user` when
-targeting another account. This policy applies equally to manual, scheduled, and
-Trigger execution. `files` is the default and uses file consistency checks.
-`after_archive` may restart the application after source reads finish. See
-[consistency settings](docs/configuration.md#consistency-and-shared-application-identity).
+| Command | Purpose |
+| --- | --- |
+| `validate` | Validate configuration and runtime readiness |
+| `run` | Run backup now |
+| `status` | Activity, previous result, automation health |
+| `status --verbose` | Detailed diagnostics |
+| `status --json` | Machine-readable status |
+| `list` | List archives and preview retention |
+| `verify` | Verify manifests, checksums and archives |
+| `verify --verbose` | Detailed verification |
+| `prune --dry-run` | Preview retention deletions |
+| `prune` | Apply retention |
+| `schedule install / update / disable / remove` | Manage timer (choose one action) |
+| `schedule next` | Show next scheduled run |
+| `trigger install / update / disable / remove` | Manage monitor (choose one action) |
+| `trigger monitor` | Foreground monitoring instead of service |
 
-### Update a job configuration
+Scope-wide commands do not use the per-job prefix:
 
-<a id="refresh-existing-monitor-commands"></a>
-Use the actual YAML path with the command prefix
-`vaultkeep --user --config /absolute/path/job.yaml` (for root, omit `--user` and use
-`sudo`). Edit and validate the YAML as its owner. For an installed timer run `schedule update`;
-for an installed monitor run `trigger update` when monitoring should resume, then
-validate again. Schedule install/update also checks source availability and destination
-readiness before changing the timer. New content/archive settings can require a new backup; retention
-changes alone do not. Apply changed retention with a prune preview followed by prune.
-See [configuration changes](docs/configuration.md#apply-configuration-changes).
+| Command (after `vaultkeep --user` or `sudo vaultkeep`) | Purpose |
+| --- | --- |
+| `schedules list` | Inspect timers |
+| `schedules validate` | Validate schedules |
+| `schedules sync --dry-run` | Preview bulk schedule changes |
+| `schedules sync` | Apply reviewed bulk changes |
 
-<a id="desktop-notifications"></a>
-### Optional desktop notifications
+`vaultkeep notify` is a lifecycle-hook helper for external notifications. See the [complete CLI reference](docs/cli.md) for additional options, validation modes, output and exit codes.
 
-Automatic desktop alerts use `desktop_notifications`; Backup and Trigger alerts
-are independently disabled by default. Follow
-[notification setup](docs/notifications.md#enable-notifications) to install/test
-`notify-send` and enable the desired category. Delivery requires a desktop session
-for the backup owner in the same host/container and is best-effort; failure never
-fails the backup. An installed monitor needs `trigger update` after settings change.
+**Operational notes:** `status` exit 0 means the report was readable, not that the last backup succeeded. `list` is non-destructive; `ELIGIBLE` is not proof of archive integrity. Inspect warnings and `UNKNOWN` decisions before pruning. See [status meanings](docs/status.md).
 
-For existing jobs, rename the old `notifications` key to `desktop_notifications`;
-the old key is rejected.
+## 6. Restore
 
-### Optional external notifications
+There is no Vaultkeep restore command. Verify before extraction, restore into an empty staging directory, inspect the files, and stop all application writers before replacing live data.
 
-For external delivery through lifecycle hooks, the included
-`vaultkeep notify` helper bounds delivery time and logs failures without
-failing the hook. Configure `external_notifier`, install/configure its executable
-(such as `telegram-notify`) separately, and follow the [external notification setup](docs/configuration.md#external-notifications).
+When the original job is available, prefer `verify` using its original parameters and confirm the selected archive was verified. Standalone recovery below does not perform all Vaultkeep structural/path-safety checks. Extract only trusted archives; use root where necessary.
 
-## Restore a backup
-
-Vaultkeep has no restore command. Verify integrity **before extracting**, then restore
-into an **empty staging directory** and inspect the result before replacing live files.
-Stop the application and related writers before copying restored data into place.
-Use `sudo` where archive access or extraction requires root.
-
-**Prefer `vaultkeep verify` when the original job configuration is available:**
-
-```bash
-vaultkeep --user --config /absolute/path/job.yaml verify
-```
-
-Use the original `--param` selections; for root jobs, omit `--user` and use `sudo`.
-Confirm the selected archive is reported as verified before extracting it.
-[Vaultkeep verification](docs/cli.md#verify-job-backups) checks manifests, archive
-structure, and TAR member paths as well as checksums and archive integrity.
-Progress shows the current backup, SHA-256 bytes and percentage when available,
-and archive validation operations, followed by validation and verification counts.
-
-The standalone checks below support disaster recovery without Vaultkeep or its job
-configuration. They detect corruption but do not perform all of Vaultkeep's structural
-and path-safety checks.
-
-<a id="restore-an-unencrypted-backup"></a>
 ### Unencrypted archive
 
-1. Replace the directory and archive filenames with the selected backup's paths:
+From the selected backup directory, substitute actual filenames. Stop if either verification fails.
 
 ```bash
-cd /absolute/path/to/backup-directory
-sha256sum --check backup.tar.zst.sha256
-zstd --test backup.tar.zst
+sha256sum --check backup.tar.zst.sha256 && zstd --test backup.tar.zst
 ```
 
-   Expect the checksum to report `OK` and the stream test to succeed. Stop if either
-   fails; do not extract an archive whose integrity could not be verified.
-
-2. From that backup directory, extract into a new staging directory:
+After successful verification:
 
 ```bash
 restore_dir="$HOME/vaultkeep-restore"
-mkdir -m 700 "$restore_dir"
-zstd --decompress --stdout backup.tar.zst \
-  | tar --extract --file=- --directory="$restore_dir"
+mkdir -m 700 "$restore_dir" &&
+  zstd --decompress --stdout backup.tar.zst | tar --extract --file=- --directory="$restore_dir"
 ```
 
-<a id="restore-an-encrypted-backup"></a>
 ### Encrypted archive
 
-1. Replace the directory and archive filenames, then verify before extracting:
+From the selected backup directory:
 
 ```bash
-cd /absolute/path/to/backup-directory
-sha256sum --check backup.tar.7z.sha256
-7z t backup.tar.7z
+sha256sum --check backup.tar.7z.sha256 && 7z t backup.tar.7z
 ```
 
-   7-Zip prompts for the original passphrase. Expect checksum `OK` and a successful
-   archive test. Stop on any checksum, password, or archive-test failure.
-
-2. From that backup directory, preserve the absolute archive path before changing
-   directories. The inner TAR is named after `job.id` (`app.tar` in this example):
+Proceed only after both checks succeed. 7-Zip prompts for the original passphrase. Substitute the inner TAR name (derived from `job.id`).
 
 ```bash
 archive="$PWD/backup.tar.7z"
 restore_root="$HOME/vaultkeep-restore-encrypted"
-mkdir -m 700 "$restore_root"
-mkdir -m 700 "$restore_root/staging" "$restore_root/work"
-cd "$restore_root/work"
-7z x "$archive"
-tar --extract --file=app.tar --directory="$restore_root/staging"
+mkdir -m 700 "$restore_root" &&
+  mkdir -m 700 "$restore_root/staging" "$restore_root/work" &&
+  cd "$restore_root/work" &&
+  7z x "$archive" &&
+  tar --extract --file=app.tar --directory="$restore_root/staging"
 ```
 
-After checking the restored content, remove the plaintext working TAR when no longer
-needed. Secure physical erasure is not guaranteed. Retain old passphrases for old
-archives; [password rotation requires a new namespace](docs/configuration.md#password-protected-backups).
-Application-specific recovery and uncertain Trigger outcomes need separate
-[evidence review](docs/trigger/recovery.md#operator-review-and-repair).
+Remove the plaintext working TAR when no longer needed. Secure physical erasure is not guaranteed. Retain old passphrases; [password rotation requires a new namespace](docs/configuration.md#password-protected-backups).
 
-<a id="logs-and-troubleshooting"></a>
-## Troubleshooting
+## 7. Maintenance
 
-Use the actual job path below, adding its `--param` selections if needed. For root
-jobs, omit `--user` and prefix commands with `sudo`:
+### Update or reinstall
 
-```bash
-vaultkeep --user --config /absolute/path/job.yaml validate
-vaultkeep --user --config /absolute/path/job.yaml status --verbose
-```
-
-If a newer or broken job schema prevents validation, `status` still reports available
-diagnostics when job identity is recognizable. Stop the existing automation with
-`trigger disable` or `schedule disable` using the same options and YAML path. These
-commands tolerate unrelated configuration errors, including unsupported properties,
-while retaining identity, ownership, and runtime safety checks. They do not edit the
-YAML. Trigger disable/remove also work with malformed, unreadable, or missing YAML
-using verified installed metadata at the original canonical path. Schedule disable
-still requires recognizable YAML job identity and parameters. See [Trigger recovery commands](docs/cli.md#service-management) and
-[schedule recovery](docs/cli.md#configure-a-job-timer).
-
-Read `Previous backup`, `Reason`, and the displayed `Log` path. Review logs before sharing.
-For scheduled user jobs use `journalctl --user -u vaultkeep@app.service`;
-root jobs use `sudo journalctl -u vaultkeep@app.service`. Parameterized unit names
-can differ. For monitors, use the exact unit name shown in verbose status:
-
-```bash
-journalctl --user -u 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service' -n 100 --no-pager
-systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
-systemctl --user list-jobs --no-pager
-```
-
-Preserve uncertain outcomes, receipts, and launch records. Do not delete Trigger
-state to unblock dispatch. Local backup `state.json` is a separate reconstructable
-cache; do not edit destination manifests to repair it. Full diagnosis is in
-[general troubleshooting](docs/troubleshooting.md) and
-[Trigger troubleshooting](docs/trigger/troubleshooting.md).
-
-<a id="maintenance-and-removal"></a>
-<a id="update-the-application"></a>
-## Update or reinstall Vaultkeep
-
-See the [release notes](CHANGELOG.md) for changes and upgrade requirements.
-
-When upgrading from ancestor-directory or share-root locking, stop automation on
-all machines writing to the affected destinations and wait for active operations
-to finish. Upgrade every writer before resuming automation; old and new releases
-use different locks. Backup files and configuration need no migration. See
-[maintenance guidance](docs/maintenance.md#update-behavior-and-failure-recovery).
-
-1. From a trusted checkout on Debian 13, select the intended newer source:
+Read the [release notes](CHANGELOG.md) and [maintenance reference](docs/maintenance.md) first. When upgrading from ancestor-directory/share-root locking, stop automation and drain operations on **all writers** before upgrading every writer and resuming.
 
 ```bash
 cd /path/to/vaultkeep
@@ -661,84 +285,88 @@ sudo ./install.sh update
 vaultkeep --version
 ```
 
-2. Validate affected jobs in their owning scopes and inspect their status. Existing
-   managed timers/monitors are refreshed automatically; only previously active
-   launchers resume. New schedules remain an explicit choice. For root schedules:
+For changed source with the same version, use `install` instead of `update`, including the dry run. Existing managed automation is refreshed automatically; only previously active launchers resume. Validate and inspect affected jobs in their owning scopes.
 
-```bash
-sudo vaultkeep schedules validate
-sudo vaultkeep schedules sync --dry-run
-```
+### Uninstall
 
-   Apply `schedules sync` only after reviewing intended additions/removals.
-
-<a id="reinstall-the-same-application-version"></a>
-The installer installs the selected checkout; it does not fetch source. For changed
-source with the **same version**, use `install --dry-run`, then `install` instead of
-`update`. Exact version/source matches perform idempotent verification.
-
-Refreshing older user schedules also removes private temporary-directory isolation
-that can cause hook ownership failures. See [scheduled hook ownership recovery](docs/troubleshooting.md#scheduled-hook-ownership-failures)
-to verify a backup through systemd after upgrading.
-
-<a id="pause-and-resume-for-maintenance"></a>
-Maintenance pauses launchers and refuses active backups, workers, queued work, held
-locks, or inconclusive activity; it never stops running backups. Preserve recovery
-snapshots on failure. Rollback excludes apt changes; power loss/SIGKILL requires
-inspection before retrying. If rollback or resumption fails, follow the reported
-journal and [maintenance recovery](docs/maintenance.md#pause-and-resume-for-maintenance).
-For old/custom launchers and custom XDG layouts, read that reference before upgrading.
-
-<a id="uninstall-the-application"></a>
-## Uninstall and optional data cleanup
-
-1. Disable every job's installed automation in its owning account, including
-   logged-out accounts. Run **only the applicable command for each job**, using its
-   actual YAML path and original `--param` selections. Manual-only jobs need neither.
-
-   For a Schedule job:
-
-```bash
-vaultkeep --user --config /absolute/path/job.yaml schedule disable
-```
-
-   For a Trigger job:
-
-```bash
-vaultkeep --user --config /absolute/path/job.yaml trigger disable
-```
-
-   For root timers, omit `--user`, use the root YAML path, and prefix with `sudo`.
-   Let backups, workers, and queued work finish; stopping a monitor does not stop
-   workers. Preserve unresolved evidence. For unit inventory, missing YAML files,
-   and remaining local units/overrides, use the [unit checklist](docs/maintenance.md#uninstall-unit-checklist).
-
-2. Preview, then remove the installation:
+Disable applicable timers/monitors in every owning account, including logged-out accounts. Let backups, workers and queued work finish; preserve unresolved recovery evidence. See the [unit checklist](docs/maintenance.md#uninstall-unit-checklist).
 
 ```bash
 sudo /opt/vaultkeep/current/src/install.sh uninstall --dry-run
 sudo /opt/vaultkeep/current/src/install.sh uninstall
 ```
 
-   To also remove managed root configuration, secrets, and local state, choose
-   `uninstall --purge --dry-run`, then `uninstall --purge` **instead**, before the
-   installed script is removed. Custom layouts require the original installer overrides.
+Normal uninstall preserves configuration, secrets, state and backups. To additionally remove managed root configuration/secrets/state, use `uninstall --purge --dry-run` followed by `uninstall --purge` **instead**. Both preserve user data, Trigger evidence, archives, wallets, hooks and Debian dependencies. See [cleanup boundaries](docs/maintenance.md#uninstall-boundaries-and-recovery-evidence).
 
-Normal uninstall preserves configuration, secrets, local state, and backups.
-Purge additionally removes managed core `/etc/vaultkeep` and `/var/lib/vaultkeep`.
-Both preserve user-mode data, Trigger evidence, archives, wallets, hook scripts,
-and Debian dependencies. See [cleanup boundaries](docs/maintenance.md#uninstall-boundaries-and-recovery-evidence)
-before deleting anything else.
+## Appendix
 
-<a id="design-and-implementation-reference"></a>
-## Further references
+### A. Destination and backup safety
 
-| Topic | Complete reference |
+- Supported destinations: local Linux filesystems and mounted CIFS/NFS shares with reliable server locking. Subdirectory mounts are supported; mounts nested inside a destination are not.
+- `destination.marker_file` and `destination.expected_fstype` independently guard against unintended writes. Vaultkeep never creates a configured marker.
+- Keep persistent `.vaultkeep.lock` files in place, including after crashes. Every backup account needs read/write access. CIFS must omit `nobrl`; NFS must omit `nolock`, `local_lock=all` and `local_lock=flock`. Writers must reach the same remote lock through the same server locking domain.
+- Per-file jobs lock child histories independently and briefly lock the parent to update `.vaultkeep-files.json`. Preserve this index with the archives.
+- Jobs and destinations use schema/layout version 2. Version-1 repositories have no migration support; preserve them separately.
+- Full validation writes, renames and removes a temporary destination probe. Schema-only validation does not establish runtime readiness.
+
+See [configuration](docs/configuration.md), including [destination checks](docs/configuration.md#destination-safety-checks) and [CIFS/NFS locking limitations](docs/configuration.md#cifs-and-nfs-locking).
+
+### B. Backup integrity and retention
+
+Each backup directory contains `.tar.zst` or `.tar.7z`, `.sha256` and a version-2 JSON manifest. Verification can run without sources and may record demonstrated corruption as `SUSPECT`. Unresolved suspects are protected and force a new compatible archive.
+
+Retention uses calendar buckets. Unchanged runs and time passing do not prune; deleted/excluded per-file sources retain their history. Retention changes alone do not force new archives. Preview before manually pruning.
+
+Ordinary cleanup failures leave a created backup successful with warnings; corruption of the newly committed archive fails the run. Interrupted deletion appears as `PRUNE_PENDING` and resumes from durable intent; `EMPTY_ORPHAN` identifies a matching empty directory eligible for guarded removal. Invalid/pending entries do not fill retention tiers. A failed run may have committed an archive; inspect inventory before assuming otherwise.
+
+See [run and cleanup behavior](docs/cli.md#run-a-job-manually), [inventory](docs/cli.md#list-job-backups) and [verification](docs/cli.md#verify-job-backups).
+
+### C. Application consistency and Trigger identity
+
+Use `consistency.mode: application_offline` and the shared application identity where offline backups are required. User jobs derive the owner from the execution account; root jobs may set `application.user`. Keep `application.name` for application-specific detection. The policy applies to manual, scheduled and Trigger runs. `files` is the default. `after_archive` may restart the application after source reads finish.
+
+Process evidence can be uncertain or unreadable; detection then blocks. Polling can miss short lifecycles. Verification and change detection do not establish application-level consistency.
+
+Each canonical YAML path has one Trigger service (`vaultkeep-trigger@<yaml-filename>-<path-hash>.service`), including foreground monitoring. YAML/parameter changes do not change this identity; explicitly update installed execution settings. Remove the old installation using its original canonical path before moving YAML. Restart alone does not adopt a changed execution identity.
+
+A single legacy service can migrate through install/update; multiple legacy services need explicit resolution. Disable/remove can use verified installed metadata even for invalid, unreadable or deleted YAML at its original canonical path. Preserve recovery evidence. Trigger never configures lingering.
+
+See [application consistency](docs/configuration.md#consistency-and-shared-application-identity), [process detection](docs/trigger/process-detection.md), [service management](docs/cli.md#service-management) and [recovery](docs/trigger/recovery.md).
+
+### D. Troubleshooting
+
+```bash
+vaultkeep --user --config "$job_config" validate
+vaultkeep --user --config "$job_config" status --verbose
+```
+
+Inspect `Previous backup`, `Reason` and `Log`. Review logs before sharing. Use the exact installed unit name (parameterized names may differ):
+
+```bash
+journalctl --user -u vaultkeep@app.service
+journalctl --user -u 'vaultkeep-trigger@<yaml-filename>-<path-hash>.service' -n 100 --no-pager
+systemctl --user list-units --all 'vaultkeep-trigger-exec@*.service'
+systemctl --user list-jobs --no-pager
+```
+
+For root schedules, use `sudo journalctl` without `--user`. Broken job configurations may still permit status and automation disable; Schedule disable requires recognizable job identity and parameters. Trigger disable/remove use verified installed metadata.
+
+Do not delete Trigger state to unblock dispatch or edit destination manifests to repair local state. Preserve uncertain outcomes, receipts and launch records. See [general troubleshooting](docs/troubleshooting.md), [Trigger troubleshooting](docs/trigger/troubleshooting.md) and [operator recovery](docs/trigger/recovery.md#operator-review-and-repair).
+
+### E. Installation and maintenance behavior
+
+Installation uses `/opt/vaultkeep/current` and `/usr/local/bin/vaultkeep`. Existing jobs are checked before activation or schedule changes; invalid configurations abort installation. Correct files as their owner and retry. Keep private `Diagnostics:` transcripts on failure; installer `--no-color` is available.
+
+Maintenance pauses launchers but refuses active backups, workers, queued work, held locks or inconclusive activity. It never stops running backups. Preserve recovery snapshots on failure; rollback excludes apt changes. Power loss/SIGKILL requires inspection before retrying. Custom layouts require original installer overrides. See [maintenance recovery](docs/maintenance.md#pause-and-resume-for-maintenance).
+
+### F. Documentation
+
+| Topic | Reference |
 | --- | --- |
-| Sources, independent file histories, destinations, encryption, retention, hooks | [Configuration](docs/configuration.md) |
-| Commands, validation, output, timer management, exit codes | [CLI](docs/cli.md) |
-| Paths, privileges, and user-manager lifetime | [Root scope](docs/root-mode.md), [user scope](docs/user-mode.md) |
-| Status and optional notifications | [Status](docs/status.md), [notifications](docs/notifications.md) |
-| Installation layout, maintenance, rollback, and recovery | [Maintenance](docs/maintenance.md), [troubleshooting](docs/troubleshooting.md) |
-| Trigger configuration and safety | [Configuration](docs/trigger/configuration.md), [process detection](docs/trigger/process-detection.md), [consistency](docs/trigger/consistency.md), [recovery](docs/trigger/recovery.md) |
-| Development and technical design | [Testing](docs/development/testing.md), [architecture](docs/design/architecture_and_design.md), [Trigger design](docs/design/trigger.md) |
+| YAML, sources, destinations, encryption, retention, hooks | [Configuration](docs/configuration.md) |
+| Commands, options, output, exit codes | [CLI](docs/cli.md) |
+| Privileges, paths and user-manager lifetime | [Root mode](docs/root-mode.md), [user mode](docs/user-mode.md) |
+| Status and notifications | [Status](docs/status.md), [notifications](docs/notifications.md) |
+| Installation, rollback and recovery | [Maintenance](docs/maintenance.md), [troubleshooting](docs/troubleshooting.md) |
+| Trigger | [Configuration](docs/trigger/configuration.md), [detection](docs/trigger/process-detection.md), [consistency](docs/trigger/consistency.md), [recovery](docs/trigger/recovery.md) |
+| Development | [Testing](docs/development/testing.md), [architecture](docs/design/architecture_and_design.md), [Trigger design](docs/design/trigger.md) |
