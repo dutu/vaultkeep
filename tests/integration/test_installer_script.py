@@ -21,6 +21,7 @@ pytestmark = pytest.mark.usefixtures("system_execution")
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "install.sh"
 CANDIDATE_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+NEWER_VERSION = f"{int(CANDIDATE_VERSION.split('.')[0]) + 1}.0.0"
 
 
 def executable(path: Path, content: str) -> None:
@@ -1047,14 +1048,10 @@ def test_manifest_replace_failure_cleans_temporary_file_and_restores_deployment(
 def test_later_version_retains_previous(host: dict[str, str], tmp_path: Path) -> None:
     run_installer(host, "install")
     before = manifest(host)
-    source = tmp_path / "later-source"
-    shutil.copytree(CANDIDATE_SOURCE, source)
-    for file in ("pyproject.toml",):
-        path = source / file
-        path.write_text(path.read_text().replace(f'"{CANDIDATE_VERSION}"', '"0.3.0"'))
+    source = candidate_source(tmp_path, "update")
     run_installer(host, "update", source=source)
     data = manifest(host)
-    assert data["version"] == "0.3.0"
+    assert data["version"] == NEWER_VERSION
     assert "components" not in data
     assert data["retained_release"] == before["active_release"]
     assert Path(before["active_release"]).is_dir()
@@ -1121,7 +1118,9 @@ def candidate_source(tmp_path: Path, mode: str) -> Path:
     shutil.copytree(CANDIDATE_SOURCE, source)
     if mode == "update":
         project = source / "pyproject.toml"
-        project.write_text(project.read_text().replace(f'"{CANDIDATE_VERSION}"', '"0.3.0"'))
+        project.write_text(
+            project.read_text().replace(f'"{CANDIDATE_VERSION}"', f'"{NEWER_VERSION}"')
+        )
     # Same-version install must also prepare a candidate rather than reuse current.
     readme = source / "README.md"
     readme.write_text(readme.read_text() + "\nCandidate configuration validation test.\n")
@@ -1228,7 +1227,8 @@ def test_candidate_schema_refuses_obsolete_system_job_before_any_schedule_change
     assert success.stdout.index("Configuration validation") < success.stdout.index(
         "Pause schedules"
     )
-    assert manifest(installed)["version"] == ("0.3.0" if mode == "update" else CANDIDATE_VERSION)
+    expected_version = NEWER_VERSION if mode == "update" else CANDIDATE_VERSION
+    assert manifest(installed)["version"] == expected_version
 
 
 @pytest.mark.parametrize("mode", ["install", "update"])
@@ -2194,7 +2194,7 @@ def test_restarting_monitor_reaches_yaml_validation_then_updates_after_correctio
         "Trigger",
         "Resumed",
     ]
-    assert manifest(installed)["version"] == "0.3.0"
+    assert manifest(installed)["version"] == NEWER_VERSION
     assert fragment.read_text() == rendered
     assert fragment.stat().st_mode & 0o777 == 0o600
     assert (config.read_bytes(), config.stat().st_mtime_ns) == config_before

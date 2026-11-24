@@ -96,6 +96,7 @@ def check() -> None:
             archive.extractall(output / "extracted", filter="data")
         extracted = next((output / "extracted").iterdir())
         for required in (
+            "CHANGELOG.md",
             "src/vaultkeep/py.typed",
             "src/vaultkeep/_commit.txt",
             "hatch_build.py",

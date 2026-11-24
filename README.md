@@ -642,6 +642,8 @@ cache; do not edit destination manifests to repair it. Full diagnosis is in
 <a id="update-the-application"></a>
 ## Update or reinstall Vaultkeep
 
+See the [release notes](CHANGELOG.md) for changes and upgrade requirements.
+
 When upgrading from ancestor-directory or share-root locking, stop automation on
 all machines writing to the affected destinations and wait for active operations
 to finish. Upgrade every writer before resuming automation; old and new releases

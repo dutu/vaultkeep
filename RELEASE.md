@@ -273,7 +273,7 @@ systemd-analyze verify /etc/systemd/system/vaultkeep@.service /etc/systemd/syste
 
   Acceptable result:
 
-  - `vaultkeep --version` prints exactly the candidate version.
+  - `vaultkeep --version` prints the candidate version and source commit hash.
   - Timer validation exits `0`.
   - `systemd-analyze verify` exits `0`.
 
@@ -309,7 +309,7 @@ sudo vaultkeep schedules validate
 
   - Command exits `0`.
   - `/opt/vaultkeep/current` points to the candidate release.
-  - `vaultkeep --version` prints exactly the candidate version.
+  - `vaultkeep --version` prints the candidate version and source commit hash.
   - The previous release is retained for rollback.
   - Timer validation exits `0`.
 
@@ -660,6 +660,7 @@ required = [
     "examples/monero-trigger.yaml",
     "examples/bisq-trigger.yaml",
     "examples/wasabi-trigger.yaml",
+    "CHANGELOG.md",
     "README.md",
     "RELEASE.md",
     "docs/design/architecture_and_design.md",
@@ -692,7 +693,7 @@ rm -rf "$tmp"
   Acceptable result:
 
   - Wheel installs from local `dist/`.
-  - `vaultkeep --version` prints exactly the candidate version.
+  - `vaultkeep --version` prints the candidate version and source commit hash.
 
 ---
 
